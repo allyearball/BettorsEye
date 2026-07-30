@@ -12,6 +12,10 @@ concurrency:
   group: build-and-deploy
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  deployments: write
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
