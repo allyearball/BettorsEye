@@ -843,6 +843,8 @@ function renderOddsPage(){
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
   main.appendChild(statusDiv);
+  const topBetsDiv = document.createElement('div');
+  main.appendChild(topBetsDiv);
   const resultsDiv = document.createElement('div');
   main.appendChild(resultsDiv);
 
@@ -914,6 +916,7 @@ function renderOddsPage(){
         cachedFetch.push({ev, detail});
         renderGameOddsBlock(resultsDiv, ev, detail, currentWindow);
       }
+      renderTopBets(topBetsDiv, cachedFetch);
       statusDiv.textContent = `Done. Showing DraftKings lines for ${events.length} game(s). Switch the hit-rate window above anytime \u2014 it won't re-fetch from the API.`;
     }catch(e){
       statusDiv.textContent = `Error fetching odds: ${e.message}. Double-check your Worker URL is correct and that you deployed it with your ODDS_API_KEY secret set.`;
@@ -941,6 +944,75 @@ function marketsByKey(bookmaker){
   const m = {};
   if(bookmaker && bookmaker.markets) bookmaker.markets.forEach(mk=>{ m[mk.key]=mk; });
   return m;
+}
+
+function renderTopBets(container, cachedFetch){
+  container.innerHTML = '';
+  if(!cachedFetch.length) return;
+
+  function candidatesForGame(ev, detail, QUAL){
+    const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+    const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+    const dk = (ev.bookmakers||[]).find(b=>b.key==='draftkings');
+    const dkDetail = detail ? (detail.bookmakers||[]).find(b=>b.key==='draftkings') : null;
+    const gameMarkets = marketsByKey(dk);
+    const detailMarkets = marketsByKey(dkDetail);
+    const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL);
+    const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+    return legs.map(l => Object.assign({}, l, {game: gameLabel}));
+  }
+
+  // Try the 75% bar first (this app's existing definition of "high confidence"); if that
+  // doesn't produce at least 5 across the whole slate, top up with the 70% pool instead
+  // of showing fewer than 5 — but never invent a bet that doesn't clear at least 70%/70%.
+  let pool = [];
+  cachedFetch.forEach(({ev, detail}) => { pool = pool.concat(candidatesForGame(ev, detail, 0.75)); });
+  if(pool.length < 5){
+    let widerPool = [];
+    cachedFetch.forEach(({ev, detail}) => { widerPool = widerPool.concat(candidatesForGame(ev, detail, 0.70)); });
+    const seen = new Set(pool.map(c=>c.game+'|'+c.label));
+    widerPool.forEach(c=>{ const key = c.game+'|'+c.label; if(!seen.has(key)){ pool.push(c); seen.add(key); } });
+  }
+
+  pool.sort((a,b)=> Math.min(b.rate10,b.rate15) - Math.min(a.rate10,a.rate15));
+  const top5 = pool.slice(0, 5);
+
+  const sec = document.createElement('div'); sec.className='section-title';
+  sec.style.fontSize='15px'; sec.textContent = '\u2b50 Today\u2019s Highest-Conviction Bets (across all games)';
+  container.appendChild(sec);
+
+  const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
+  note.textContent = 'Pulled from every game fetched below, ranked by worst-case hit rate across the last-10 and last-15-game windows (same 75%/70%\u2014qualified pool used in each game\u2019s parlay sections). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.';
+  container.appendChild(note);
+
+  if(top5.length === 0){
+    const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
+    msg.textContent = 'Nothing across today\u2019s fetched games currently clears 70% in both the last-10 and last-15 windows.';
+    container.appendChild(msg);
+    return;
+  }
+
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:22px;';
+  top5.forEach((c, idx)=>{
+    const card = document.createElement('div');
+    card.style.cssText = 'border:2px solid var(--green);border-radius:8px;padding:12px;background:var(--greenbg);';
+    const rank = document.createElement('div');
+    rank.style.cssText = 'font-weight:800;font-size:12px;color:var(--green);margin-bottom:4px;';
+    rank.textContent = `#${idx+1}`;
+    const label = document.createElement('div');
+    label.style.cssText = 'font-weight:700;font-size:13.5px;margin-bottom:4px;';
+    label.textContent = c.label;
+    const game = document.createElement('div');
+    game.style.cssText = 'font-size:11.5px;color:var(--sub);margin-bottom:6px;';
+    game.textContent = c.game;
+    const detail = document.createElement('div');
+    detail.style.cssText = 'font-size:12px;';
+    detail.innerHTML = `${fmtAmerican(c.price)} \u2014 L10: ${Math.round(c.rate10*100)}%, L15: ${Math.round(c.rate15*100)}%`;
+    card.appendChild(rank); card.appendChild(label); card.appendChild(game); card.appendChild(detail);
+    grid.appendChild(card);
+  });
+  container.appendChild(grid);
 }
 
 function renderGameOddsBlock(container, ev, detail, windowSize){
@@ -1198,11 +1270,10 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
   container.appendChild(wrap);
 }
 
-function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL){
+function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL){
   // Qualification bar: a specific side of a bet (Over/Under, team ML, team spread) must clear
   // QUAL hit rate in BOTH the last-10-game window and the last-15-game window (fixed windows,
-  // independent of the page-level hit-rate selector above) to be eligible for these parlays.
-  const qualPct = Math.round(QUAL*100);
+  // independent of the page-level hit-rate selector above) to be eligible.
   const candidates = []; // {label, price, rate10, rate15}
 
   // Moneyline (own-side only; the opposing team's high win rate already shows up as their own ML leg)
@@ -1259,7 +1330,7 @@ function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailM
     });
   })();
 
-  // Player props, both sides, all four markets
+  // Player props, both sides, all four base markets
   const MIN_GP_10 = 6;  // 60% of a 10-game window
   const MIN_GP_15 = 9;  // 60% of a 15-game window
   ['player_points','player_rebounds','player_assists','player_threes'].forEach(mkey=>{
@@ -1289,6 +1360,12 @@ function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailM
 
   // sort by worst-case confidence (min of the two windows) descending, so the safest legs lead
   candidates.sort((a,b)=> Math.min(b.rate10,b.rate15) - Math.min(a.rate10,a.rate15));
+  return candidates;
+}
+
+function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL){
+  const qualPct = Math.round(QUAL*100);
+  const candidates = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL);
 
   const secParlay = document.createElement('div'); secParlay.className='section-title';
   secParlay.textContent = `Auto-Generated Parlays \u2014 ${qualPct}%+ Cutoff (both Last 10 AND Last 15 games)`;
