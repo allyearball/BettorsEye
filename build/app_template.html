@@ -713,6 +713,40 @@ function teamOwnTotalHitRate(team, point, windowSize){
   return {gp, hits, rate: gp?hits/gp:0, found:true};
 }
 
+// ---- Half-aware versions, using h1Team/h1Opp/h2Team/h2Opp fields derived from play-by-play.
+// Games where that data wasn't available (rare — e.g. a missing/incomplete pbp log) are simply
+// excluded from the denominator rather than treated as a miss. ----
+function teamGameLogHalf(team, windowSize, half){
+  const log = teamGameLog(team, windowSize);
+  const teamKey = half===1 ? 'h1TeamPts' : 'h2TeamPts';
+  const oppKey = half===1 ? 'h1OppPts' : 'h2OppPts';
+  return log.filter(g=>g[teamKey]!==null && g[teamKey]!==undefined && g[oppKey]!==null && g[oppKey]!==undefined)
+            .map(g=>({teamPts:g[teamKey], oppPts:g[oppKey]}));
+}
+function teamMoneylineHitRateHalf(team, half, windowSize){
+  const log = teamGameLogHalf(team, windowSize, half); const gp = log.length;
+  const hits = log.filter(g=>g.teamPts>g.oppPts).length;
+  return {gp, hits, rate: gp?hits/gp:0, found: gp>0};
+}
+function teamSpreadHitRateHalf(team, half, point, windowSize){
+  const log = teamGameLogHalf(team, windowSize, half); const gp = log.length;
+  if(point===undefined||point===null) return {gp, hits:0, rate:0, found:false};
+  const hits = log.filter(g=>((g.teamPts-g.oppPts)+point) > 0).length;
+  return {gp, hits, rate: gp?hits/gp:0, found: gp>0};
+}
+function teamTotalHitRateHalf(team, half, point, windowSize){
+  const log = teamGameLogHalf(team, windowSize, half); const gp = log.length;
+  if(point===undefined||point===null) return {gp, hits:0, rate:0, found:false};
+  const hits = log.filter(g=>(g.teamPts+g.oppPts) > point).length;
+  return {gp, hits, rate: gp?hits/gp:0, found: gp>0};
+}
+function teamOwnTotalHitRateHalf(team, half, point, windowSize){
+  const log = teamGameLogHalf(team, windowSize, half); const gp = log.length;
+  if(point===undefined||point===null) return {gp, hits:0, rate:0, found:false};
+  const hits = log.filter(g=>g.teamPts > point).length;
+  return {gp, hits, rate: gp?hits/gp:0, found: gp>0};
+}
+
 function americanToDecimal(price){
   if(price===undefined||price===null) return null;
   return price>0 ? 1+price/100 : 1+100/Math.abs(price);
@@ -766,7 +800,7 @@ function renderOddsPage(){
   main.appendChild(head);
 
   const banner = document.createElement('div'); banner.className='banner';
-  banner.innerHTML = `<b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and full-game total lines show a hit-rate badge for each team (win rate, cover rate, over rate against the current line) over whichever window you pick below \u2014 same 60% color rule as everywhere else. Half/quarter markets don't get a hit-rate badge \u2014 this app's game logs track final scores only, so there's no honest historical basis for those. Player prop hit rates use the same 60% rule, windowed the same way. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom.`;
+  banner.innerHTML = `<b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same 60% rule, windowed the same way. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom.`;
   main.appendChild(banner);
 
   const controls = document.createElement('div'); controls.style.cssText='display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap;';
@@ -940,7 +974,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
   const gameMarkets = marketsByKey(dk);
   const detailMarkets = marketsByKey(dkDetail);
 
-  function lineRow(label, market, isSpread, isTotal, withHitRate){
+  function lineRow(label, market, isSpread, isTotal, withHitRate, half){
     const row = document.createElement('div'); row.style.cssText='display:grid;grid-template-columns:110px 1fr 1fr;gap:10px;padding:5px 0;font-size:13px;align-items:center;';
     const l = document.createElement('div'); l.style.color='var(--sub)'; l.textContent = label;
     row.appendChild(l);
@@ -958,7 +992,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
     if(isTotal){
       const over = dkOutcome(market,'Over'); const under = dkOutcome(market,'Under');
       const point = over ? over.point : (under ? under.point : undefined);
-      const hr = withHitRate ? teamTotalHitRate(awayShort, point, windowSize) : null; // combined game total, same for either team
+      const hr = withHitRate ? (half ? teamTotalHitRateHalf(awayShort, half, point, windowSize) : teamTotalHitRate(awayShort, point, windowSize)) : null; // combined total, same for either team
       row.appendChild(cell(over ? `Over ${over.point} (${over.price>0?'+':''}${over.price})` : '\u2014', hr));
       row.appendChild(cell(under ? `Under ${under.point} (${under.price>0?'+':''}${under.price})` : '\u2014', null));
     } else {
@@ -970,8 +1004,13 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
       }
       let awayHr = null, homeHr = null;
       if(withHitRate){
-        if(isSpread){ awayHr = teamSpreadHitRate(awayShort, away&&away.point, windowSize); homeHr = teamSpreadHitRate(homeShort, home&&home.point, windowSize); }
-        else { awayHr = teamMoneylineHitRate(awayShort, windowSize); homeHr = teamMoneylineHitRate(homeShort, windowSize); }
+        if(isSpread){
+          awayHr = half ? teamSpreadHitRateHalf(awayShort, half, away&&away.point, windowSize) : teamSpreadHitRate(awayShort, away&&away.point, windowSize);
+          homeHr = half ? teamSpreadHitRateHalf(homeShort, half, home&&home.point, windowSize) : teamSpreadHitRate(homeShort, home&&home.point, windowSize);
+        } else {
+          awayHr = half ? teamMoneylineHitRateHalf(awayShort, half, windowSize) : teamMoneylineHitRate(awayShort, windowSize);
+          homeHr = half ? teamMoneylineHitRateHalf(homeShort, half, windowSize) : teamMoneylineHitRate(homeShort, windowSize);
+        }
       }
       row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr));
       row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr));
@@ -979,7 +1018,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
     return row;
   }
 
-  function teamTotalsRow(label, market, withHitRate){
+  function teamTotalsRow(label, market, withHitRate, half){
     const row = document.createElement('div'); row.style.cssText='display:grid;grid-template-columns:110px 1fr 1fr;gap:10px;padding:5px 0;font-size:13px;align-items:center;';
     const l = document.createElement('div'); l.style.color='var(--sub)'; l.textContent = label;
     row.appendChild(l);
@@ -1002,7 +1041,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
         c.appendChild(line2);
       }
       if(withHitRate && over){
-        c.appendChild(resultBadge(teamOwnTotalHitRate(shortName, over.point, windowSize)));
+        const hr = half ? teamOwnTotalHitRateHalf(shortName, half, over.point, windowSize) : teamOwnTotalHitRate(shortName, over.point, windowSize);
+        c.appendChild(resultBadge(hr));
       }
       row.appendChild(c);
     });
@@ -1019,20 +1059,20 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
   wrap.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals'], true));
 
   const halfNote = document.createElement('div'); halfNote.className='footnote'; halfNote.style.margin='4px 0 10px';
-  halfNote.textContent = 'No hit-rate badge on half/quarter markets below \u2014 the game logs in this app track final scores only, not half-by-half scoring, so there\u2019s no historical basis to compute one honestly.';
+  halfNote.textContent = 'Half hit rates are derived from this season\u2019s play-by-play data (score at the end of Q2 = 1st half; final minus that = 2nd half). A small number of games can be missing this if their play-by-play log was incomplete \u2014 those are simply excluded from the count rather than treated as a miss, so the games-played figure in the badge may be slightly lower than the full-game one above.';
 
   const sec2 = document.createElement('div'); sec2.className='section-title'; sec2.textContent='1st Half'; wrap.appendChild(sec2);
   wrap.appendChild(halfNote.cloneNode(true));
-  wrap.appendChild(lineRow('Moneyline', detailMarkets['h2h_h1'], false, false, false));
-  wrap.appendChild(lineRow('Spread', detailMarkets['spreads_h1'], true, false, false));
-  wrap.appendChild(lineRow('Total', detailMarkets['totals_h1'], false, true, false));
-  wrap.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h1'], false));
+  wrap.appendChild(lineRow('Moneyline', detailMarkets['h2h_h1'], false, false, true, 1));
+  wrap.appendChild(lineRow('Spread', detailMarkets['spreads_h1'], true, false, true, 1));
+  wrap.appendChild(lineRow('Total', detailMarkets['totals_h1'], false, true, true, 1));
+  wrap.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h1'], true, 1));
 
   const sec3 = document.createElement('div'); sec3.className='section-title'; sec3.textContent='2nd Half'; wrap.appendChild(sec3);
-  wrap.appendChild(lineRow('Moneyline', detailMarkets['h2h_h2'], false, false, false));
-  wrap.appendChild(lineRow('Spread', detailMarkets['spreads_h2'], true, false, false));
-  wrap.appendChild(lineRow('Total', detailMarkets['totals_h2'], false, true, false));
-  wrap.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h2'], false));
+  wrap.appendChild(lineRow('Moneyline', detailMarkets['h2h_h2'], false, false, true, 2));
+  wrap.appendChild(lineRow('Spread', detailMarkets['spreads_h2'], true, false, true, 2));
+  wrap.appendChild(lineRow('Total', detailMarkets['totals_h2'], false, true, true, 2));
+  wrap.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h2'], true, 2));
 
   const sec4 = document.createElement('div'); sec4.className='section-title';
   sec4.textContent = `Player Props (Points / Rebounds / Assists / Threes / Pts+Reb+Ast) \u2014 ${windowSize==='all' ? 'Full Season' : 'Last '+windowSize} Hit Rate`;
