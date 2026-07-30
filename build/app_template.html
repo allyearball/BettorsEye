@@ -761,6 +761,106 @@ function fmtAmerican(price){
   return (price>0?'+':'')+price;
 }
 
+// Generic filterable table used on the Odds page (Player Props + Alt Lines tables).
+// columns: [{key, label, type:'text'|'select'|'numRange', options?, align?}]
+// dataRows: [{filterValues:{[colKey]: rawValueForFiltering}, cells:[stringOrNode, ...] }]
+function buildFilterableTable(container, columns, dataRows){
+  const filterState = {};
+  const wrapDiv = document.createElement('div'); wrapDiv.style.marginBottom='4px';
+
+  const filterBar = document.createElement('div');
+  filterBar.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:8px;padding:8px 10px;background:#fff;border:1px solid var(--line);border-radius:6px;';
+  columns.forEach(col=>{
+    const group = document.createElement('div');
+    group.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    const lbl = document.createElement('label'); lbl.textContent = col.label;
+    lbl.style.cssText='font-size:10px;color:var(--sub);font-weight:700;text-transform:uppercase;letter-spacing:.03em;';
+    group.appendChild(lbl);
+    const inputStyle = 'padding:4px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:var(--sans);';
+    if(col.type==='text'){
+      const inp = document.createElement('input'); inp.type='text'; inp.placeholder='Search\u2026';
+      inp.style.cssText = inputStyle + 'width:120px;';
+      inp.addEventListener('input', ()=>{ filterState[col.key] = inp.value.trim(); render(); });
+      group.appendChild(inp);
+    } else if(col.type==='select'){
+      const sel = document.createElement('select');
+      sel.style.cssText = inputStyle;
+      const optAll = document.createElement('option'); optAll.value=''; optAll.textContent='All'; sel.appendChild(optAll);
+      (col.options||[]).forEach(o=>{ const op=document.createElement('option'); op.value=o; op.textContent=o; sel.appendChild(op); });
+      sel.addEventListener('change', ()=>{ filterState[col.key] = sel.value; render(); });
+      group.appendChild(sel);
+    } else if(col.type==='numRange'){
+      const rangeRow = document.createElement('div'); rangeRow.style.cssText='display:flex;gap:4px;';
+      const minI = document.createElement('input'); minI.type='number'; minI.placeholder='Min'; minI.style.cssText = inputStyle + 'width:52px;';
+      const maxI = document.createElement('input'); maxI.type='number'; maxI.placeholder='Max'; maxI.style.cssText = inputStyle + 'width:52px;';
+      function upd(){ filterState[col.key] = { min: minI.value===''?null:parseFloat(minI.value), max: maxI.value===''?null:parseFloat(maxI.value) }; render(); }
+      minI.addEventListener('input', upd); maxI.addEventListener('input', upd);
+      rangeRow.appendChild(minI); rangeRow.appendChild(maxI);
+      group.appendChild(rangeRow);
+    }
+    filterBar.appendChild(group);
+  });
+  const clearBtn = document.createElement('button'); clearBtn.textContent='Clear Filters';
+  clearBtn.style.cssText = 'padding:6px 12px;border-radius:5px;border:1px solid var(--line);background:#fff;font-size:12px;cursor:pointer;font-family:var(--sans);';
+  clearBtn.addEventListener('click', ()=>{
+    Object.keys(filterState).forEach(k=>delete filterState[k]);
+    filterBar.querySelectorAll('input').forEach(i=>{ i.value=''; });
+    filterBar.querySelectorAll('select').forEach(s=>{ s.value=''; });
+    render();
+  });
+  filterBar.appendChild(clearBtn);
+
+  const table = document.createElement('table'); table.style.width='100%';
+  const thead = document.createElement('thead');
+  const trh = document.createElement('tr');
+  columns.forEach(col=>{ const th=document.createElement('th'); th.textContent=col.label; if(col.align==='left') th.classList.add('left'); trh.appendChild(th); });
+  thead.appendChild(trh); table.appendChild(thead);
+  const tbody = document.createElement('tbody'); table.appendChild(tbody);
+  const countDiv = document.createElement('div'); countDiv.style.cssText='font-size:11.5px;color:var(--sub);margin:2px 0 6px;';
+
+  function passes(row){
+    return columns.every(col=>{
+      const f = filterState[col.key];
+      if(f===undefined || f===null || f==='') return true;
+      const val = row.filterValues[col.key];
+      if(col.type==='text'){ if(val===null||val===undefined) return false; return String(val).toLowerCase().includes(String(f).toLowerCase()); }
+      if(col.type==='select'){ return String(val)===String(f); }
+      if(col.type==='numRange'){
+        if(val===null||val===undefined) return false;
+        if(f.min!==null && f.min!==undefined && val<f.min) return false;
+        if(f.max!==null && f.max!==undefined && val>f.max) return false;
+        return true;
+      }
+      return true;
+    });
+  }
+
+  function render(){
+    tbody.innerHTML='';
+    const filtered = dataRows.filter(passes);
+    filtered.forEach(row=>{
+      const tr = document.createElement('tr');
+      columns.forEach((col,i)=>{
+        const td = document.createElement('td');
+        if(col.align==='left') td.classList.add('left');
+        td.style.padding='5px 8px'; td.style.borderBottom='1px solid var(--line)'; td.style.fontSize='12.5px';
+        if(col.align!=='left') td.style.textAlign='center';
+        const cell = row.cells[i];
+        if(cell instanceof Node) td.appendChild(cell); else td.textContent = (cell===undefined||cell===null) ? '\u2014' : cell;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    countDiv.textContent = `${filtered.length} / ${dataRows.length} rows shown`;
+  }
+
+  wrapDiv.appendChild(filterBar);
+  wrapDiv.appendChild(countDiv);
+  wrapDiv.appendChild(table);
+  container.appendChild(wrapDiv);
+  render();
+}
+
 function resultBadge(hr){
   const span = document.createElement('span'); span.className='result neutral';
   span.style.display='inline-block'; span.style.padding='2px 8px'; span.style.borderRadius='4px'; span.style.fontSize='12px';
@@ -800,7 +900,7 @@ function renderOddsPage(){
   main.appendChild(head);
 
   const banner = document.createElement('div'); banner.className='banner';
-  banner.innerHTML = `<b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same 60% rule, windowed the same way. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom.`;
+  banner.innerHTML = `<b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same 60% rule, windowed the same way, and both prop tables can be filtered by any column. Click a game's title to drill into just that matchup with its own window toggle. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom.`;
   main.appendChild(banner);
 
   const controls = document.createElement('div'); controls.style.cssText='display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap;';
@@ -818,27 +918,34 @@ function renderOddsPage(){
   rememberRow.appendChild(rememberLabel); rememberRow.appendChild(clearLink);
   main.appendChild(rememberRow);
 
-  const windowRow = document.createElement('div');
-  windowRow.style.cssText = 'display:flex;align-items:center;gap:18px;margin-bottom:16px;font-size:13px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px 14px;';
-  const windowLabel = document.createElement('div'); windowLabel.style.cssText='font-weight:700;color:var(--navy2);'; windowLabel.textContent = 'Hit-rate window:';
-  windowRow.appendChild(windowLabel);
   const WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
-  let currentWindow = 10; // default matches prior behavior
-  const windowBtns = [];
-  WINDOW_OPTIONS.forEach(opt=>{
-    const b = document.createElement('button');
-    b.textContent = opt.label;
-    b.style.cssText = 'padding:5px 12px;border-radius:5px;border:1px solid var(--line);background:#fff;font-size:12.5px;cursor:pointer;font-family:var(--sans);';
-    if(opt.value===currentWindow){ b.style.background='var(--navy2)'; b.style.color='#fff'; b.style.borderColor='var(--navy2)'; }
-    b.addEventListener('click', ()=>{
-      currentWindow = opt.value;
-      windowBtns.forEach(x=>{ x.btn.style.background='#fff'; x.btn.style.color='var(--ink)'; x.btn.style.borderColor='var(--line)'; });
-      b.style.background='var(--navy2)'; b.style.color='#fff'; b.style.borderColor='var(--navy2)';
-      rerenderFromCache();
+
+  function buildWindowSelector(labelText, currentValue, onSelect){
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:18px;margin-bottom:16px;font-size:13px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px 14px;';
+    const lbl = document.createElement('div'); lbl.style.cssText='font-weight:700;color:var(--navy2);'; lbl.textContent = labelText;
+    row.appendChild(lbl);
+    const btns = [];
+    WINDOW_OPTIONS.forEach(opt=>{
+      const b = document.createElement('button');
+      b.textContent = opt.label;
+      const setActive = (active)=>{
+        b.style.cssText = `padding:5px 12px;border-radius:5px;border:1px solid ${active?'var(--navy2)':'var(--line)'};background:${active?'var(--navy2)':'#fff'};color:${active?'#fff':'var(--ink)'};font-size:12.5px;cursor:pointer;font-family:var(--sans);`;
+      };
+      setActive(opt.value===currentValue);
+      b.addEventListener('click', ()=>{
+        btns.forEach(x=>x.setActive(false));
+        setActive(true);
+        onSelect(opt.value);
+      });
+      btns.push({btn:b, setActive});
+      row.appendChild(b);
     });
-    windowBtns.push({btn:b, value:opt.value});
-    windowRow.appendChild(b);
-  });
+    return row;
+  }
+
+  let currentWindow = 10; // list-view window, default matches prior behavior
+  const windowRow = buildWindowSelector('Hit-rate window:', currentWindow, (val)=>{ currentWindow = val; renderResultsArea(); });
   main.appendChild(windowRow);
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
@@ -849,11 +956,33 @@ function renderOddsPage(){
   main.appendChild(resultsDiv);
 
   let cachedFetch = []; // [{ev, detail}] — so switching the window re-renders without hitting the API again
+  let viewingSingleGame = null; // {ev, detail} when drilled into one game, else null
+  let singleGameWindow = 10;
 
-  function rerenderFromCache(){
-    if(!cachedFetch.length) return;
+  function renderResultsArea(){
     resultsDiv.innerHTML = '';
-    cachedFetch.forEach(({ev, detail}) => renderGameOddsBlock(resultsDiv, ev, detail, currentWindow));
+    if(viewingSingleGame){
+      windowRow.style.display = 'none';
+      topBetsDiv.style.display = 'none';
+      const backBtn = document.createElement('button'); backBtn.className='backbtn'; backBtn.textContent='\u2190 Back to all games';
+      backBtn.addEventListener('click', ()=>{ viewingSingleGame = null; renderResultsArea(); });
+      resultsDiv.appendChild(backBtn);
+
+      const sgWindowRow = buildWindowSelector('Hit-rate window (this game):', singleGameWindow, (val)=>{ singleGameWindow = val; renderResultsArea(); });
+      resultsDiv.appendChild(sgWindowRow);
+
+      renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null);
+    } else {
+      windowRow.style.display = '';
+      topBetsDiv.style.display = '';
+      cachedFetch.forEach(({ev, detail}) => {
+        renderGameOddsBlock(resultsDiv, ev, detail, currentWindow, ()=>{
+          viewingSingleGame = {ev, detail};
+          singleGameWindow = 10;
+          renderResultsArea();
+        });
+      });
+    }
   }
 
   // ---- Worker URL persistence: tries Claude's artifact storage first, falls back to plain browser
@@ -886,7 +1015,7 @@ function renderOddsPage(){
     let workerBase = urlInput.value.trim().replace(/\/$/, '');
     if(!workerBase){ statusDiv.textContent = 'Paste your Worker URL first (see the setup instructions Claude gave you).'; return; }
     if(rememberCb.checked){ saveUrl(workerBase); }
-    resultsDiv.innerHTML = ''; cachedFetch = [];
+    resultsDiv.innerHTML = ''; cachedFetch = []; viewingSingleGame = null;
     statusDiv.textContent = 'Fetching game lines from DraftKings...';
     fetchBtn.disabled = true;
     try{
@@ -914,10 +1043,10 @@ function renderOddsPage(){
           console.warn('Detail fetch failed for', ev.id, e);
         }
         cachedFetch.push({ev, detail});
-        renderGameOddsBlock(resultsDiv, ev, detail, currentWindow);
+        renderResultsArea();
       }
       renderTopBets(topBetsDiv, cachedFetch);
-      statusDiv.textContent = `Done. Showing DraftKings lines for ${events.length} game(s). Switch the hit-rate window above anytime \u2014 it won't re-fetch from the API.`;
+      statusDiv.textContent = `Done. Showing DraftKings lines for ${events.length} game(s). Click a game's title to drill into just that matchup, or switch the hit-rate window above anytime \u2014 neither re-fetches from the API.`;
     }catch(e){
       statusDiv.textContent = `Error fetching odds: ${e.message}. Double-check your Worker URL is correct and that you deployed it with your ODDS_API_KEY secret set.`;
     }
@@ -950,6 +1079,21 @@ function renderTopBets(container, cachedFetch){
   container.innerHTML = '';
   if(!cachedFetch.length) return;
 
+  // Only games actually being played today (compared in the browser's local timezone) —
+  // DraftKings sometimes posts lines a day or two ahead, and those shouldn't count here.
+  const todayStr = new Date().toDateString();
+  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr);
+  if(todaysGames.length === 0){
+    const sec0 = document.createElement('div'); sec0.className='section-title'; sec0.style.fontSize='15px';
+    sec0.textContent = '\u2b50 Today\u2019s Highest-Conviction Bets (across all games)';
+    container.appendChild(sec0);
+    const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
+    msg0.textContent = 'None of the games currently fetched are scheduled for today \u2014 nothing to rank here yet.';
+    container.appendChild(msg0);
+    return;
+  }
+
+  const MIN_PRICE = -250; // "-250 or better" — a bet's price must be -250 or higher (less negative / more positive)
   function candidatesForGame(ev, detail, QUAL){
     const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
     const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
@@ -957,19 +1101,21 @@ function renderTopBets(container, cachedFetch){
     const dkDetail = detail ? (detail.bookmakers||[]).find(b=>b.key==='draftkings') : null;
     const gameMarkets = marketsByKey(dk);
     const detailMarkets = marketsByKey(dkDetail);
-    const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL);
+    const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL)
+      .filter(l => l.price >= MIN_PRICE);
     const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
     return legs.map(l => Object.assign({}, l, {game: gameLabel}));
   }
 
   // Try the 75% bar first (this app's existing definition of "high confidence"); if that
-  // doesn't produce at least 5 across the whole slate, top up with the 70% pool instead
-  // of showing fewer than 5 — but never invent a bet that doesn't clear at least 70%/70%.
+  // doesn't produce at least 5 across today's slate, top up with the 70% pool instead
+  // of showing fewer than 5 — but never invent a bet that doesn't clear at least 70%/70%,
+  // and never one worse than -250 regardless of how confident it is.
   let pool = [];
-  cachedFetch.forEach(({ev, detail}) => { pool = pool.concat(candidatesForGame(ev, detail, 0.75)); });
+  todaysGames.forEach(({ev, detail}) => { pool = pool.concat(candidatesForGame(ev, detail, 0.75)); });
   if(pool.length < 5){
     let widerPool = [];
-    cachedFetch.forEach(({ev, detail}) => { widerPool = widerPool.concat(candidatesForGame(ev, detail, 0.70)); });
+    todaysGames.forEach(({ev, detail}) => { widerPool = widerPool.concat(candidatesForGame(ev, detail, 0.70)); });
     const seen = new Set(pool.map(c=>c.game+'|'+c.label));
     widerPool.forEach(c=>{ const key = c.game+'|'+c.label; if(!seen.has(key)){ pool.push(c); seen.add(key); } });
   }
@@ -982,12 +1128,12 @@ function renderTopBets(container, cachedFetch){
   container.appendChild(sec);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = 'Pulled from every game fetched below, ranked by worst-case hit rate across the last-10 and last-15-game windows (same 75%/70%\u2014qualified pool used in each game\u2019s parlay sections). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.';
+  note.textContent = 'Only includes games scheduled for today, and only bets priced -250 or better. Ranked by worst-case hit rate across the last-10 and last-15-game windows (same 75%/70%-qualified pool used in each game\u2019s parlay sections). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.';
   container.appendChild(note);
 
   if(top5.length === 0){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg.textContent = 'Nothing across today\u2019s fetched games currently clears 70% in both the last-10 and last-15 windows.';
+    msg.textContent = 'Nothing in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -250 or better.';
     container.appendChild(msg);
     return;
   }
@@ -1015,16 +1161,27 @@ function renderTopBets(container, cachedFetch){
   container.appendChild(grid);
 }
 
-function renderGameOddsBlock(container, ev, detail, windowSize){
+function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
   windowSize = windowSize===undefined ? 10 : windowSize;
   const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
   const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
   const wrap = document.createElement('div'); wrap.className='table-wrap'; wrap.style.padding='16px'; wrap.style.marginBottom='20px';
 
-  const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;margin-bottom:6px;';
   const dt = new Date(ev.commence_time);
-  title.textContent = `${ev.away_team} @ ${ev.home_team} \u2014 ${dt.toLocaleString()}`;
-  wrap.appendChild(title);
+  const titleText = `${ev.away_team} @ ${ev.home_team} \u2014 ${dt.toLocaleString()}`;
+  if(onTitleClick){
+    const title = document.createElement('a');
+    title.href = 'javascript:void(0)';
+    title.style.cssText='display:block;font-weight:800;font-size:15px;margin-bottom:6px;color:var(--navy2);text-decoration:none;border-bottom:1px dashed var(--navy2);width:fit-content;cursor:pointer;';
+    title.textContent = titleText + '  \u2192';
+    title.title = 'Click to view just this matchup';
+    title.addEventListener('click', onTitleClick);
+    wrap.appendChild(title);
+  } else {
+    const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;margin-bottom:6px;';
+    title.textContent = titleText;
+    wrap.appendChild(title);
+  }
 
   const recordsDiv = document.createElement('div');
   recordsDiv.style.cssText = 'display:flex;gap:28px;flex-wrap:wrap;font-size:12.5px;color:var(--sub);margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line);';
@@ -1150,53 +1307,54 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
   sec4.textContent = `Player Props (Points / Rebounds / Assists / Threes / Pts+Reb+Ast) \u2014 ${windowSize==='all' ? 'Full Season' : 'Last '+windowSize} Hit Rate`;
   wrap.appendChild(sec4);
 
-  const propTable = document.createElement('table'); propTable.style.width='100%';
-  const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th class="left">Player</th><th class="left">Market</th><th>Line</th><th>Over</th><th>Under</th><th>Hit Rate</th></tr>';
-  propTable.appendChild(thead);
-  const tbody = document.createElement('tbody');
-  propTable.appendChild(tbody);
-
-  let anyProps = false;
+  const propDataRows = [];
+  const propMarketsSeen = new Set();
   ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists'].forEach(mkey=>{
     const market = detailMarkets[mkey];
     if(!market) return;
     const statKey = PROP_MARKET_TO_STAT[mkey];
+    const marketLabel = PROP_MARKET_LABEL[mkey];
+    propMarketsSeen.add(marketLabel);
     // group outcomes by player description
     const players = [...new Set(market.outcomes.map(o=>o.description))];
     players.forEach(pname=>{
       const overO = market.outcomes.find(o=>o.description===pname && o.name==='Over');
       const underO = market.outcomes.find(o=>o.description===pname && o.name==='Under');
       if(!overO && !underO) return;
-      anyProps = true;
       const line = (overO||underO).point;
       const team = findPlayerTeam(pname, homeShort, awayShort);
       const hr = team ? hitRateFor(pname, team, statKey, line, windowSize) : null;
 
-      const tr = document.createElement('tr');
-      const tdName = document.createElement('td'); tdName.className='left';
+      let nameCell;
       if(team){
         const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link';
         link.textContent = pname;
         link.addEventListener('click', ()=>{ goToPlayer(pname, team); });
-        tdName.appendChild(link);
-      } else {
-        tdName.textContent = pname;
-      }
-      const tdMarket = document.createElement('td'); tdMarket.className='left'; tdMarket.textContent = PROP_MARKET_LABEL[mkey];
-      const tdLine = document.createElement('td'); tdLine.textContent = line!==undefined ? line : '\u2014';
-      const tdOver = document.createElement('td'); tdOver.textContent = overO ? `${overO.price>0?'+':''}${overO.price}` : '\u2014';
-      const tdUnder = document.createElement('td'); tdUnder.textContent = underO ? `${underO.price>0?'+':''}${underO.price}` : '\u2014';
-      const tdHit = document.createElement('td'); tdHit.appendChild(resultBadge(hr));
+        nameCell = link;
+      } else { nameCell = pname; }
 
-      [tdName,tdMarket,tdLine,tdOver,tdUnder,tdHit].forEach(td=>{ td.style.padding='5px 8px'; td.style.borderBottom='1px solid var(--line)'; td.style.fontSize='12.5px'; if(td!==tdName&&td!==tdMarket) td.style.textAlign='center'; });
-      tr.appendChild(tdName); tr.appendChild(tdMarket); tr.appendChild(tdLine); tr.appendChild(tdOver); tr.appendChild(tdUnder); tr.appendChild(tdHit);
-      tbody.appendChild(tr);
+      propDataRows.push({
+        filterValues: {
+          player: pname, market: marketLabel, line: line,
+          over: overO ? overO.price : null, under: underO ? underO.price : null,
+          hitRate: (hr && hr.found) ? Math.round(hr.rate*100) : null,
+        },
+        cells: [nameCell, marketLabel, line!==undefined?line:'\u2014',
+                overO ? fmtAmerican(overO.price) : '\u2014', underO ? fmtAmerican(underO.price) : '\u2014',
+                resultBadge(hr)],
+      });
     });
   });
 
-  if(anyProps){
-    wrap.appendChild(propTable);
+  if(propDataRows.length){
+    buildFilterableTable(wrap, [
+      {key:'player', label:'Player', type:'text', align:'left'},
+      {key:'market', label:'Market', type:'select', options:[...propMarketsSeen], align:'left'},
+      {key:'line', label:'Line', type:'numRange'},
+      {key:'over', label:'Over', type:'numRange'},
+      {key:'under', label:'Under', type:'numRange'},
+      {key:'hitRate', label:'Hit Rate %', type:'numRange'},
+    ], propDataRows);
   } else {
     const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;'; na.textContent='No player props posted by DraftKings for this game yet.';
     wrap.appendChild(na);
@@ -1207,18 +1365,13 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
   sec5.textContent = `Player Props \u2014 Multiple Levels (Alt Lines, incl. Pts+Reb+Ast) \u2014 ${windowSize==='all' ? 'Full Season' : 'Last '+windowSize} Hit Rate`;
   wrap.appendChild(sec5);
 
-  const altTable = document.createElement('table'); altTable.style.width='100%';
-  const altThead = document.createElement('thead');
-  altThead.innerHTML = '<tr><th class="left">Player</th><th class="left">Market</th><th>Level</th><th>Price</th><th>Hit Rate</th></tr>';
-  altTable.appendChild(altThead);
-  const altTbody = document.createElement('tbody');
-  altTable.appendChild(altTbody);
-
-  let anyAltProps = false;
+  const altDataRows = [];
+  const altMarketsSeen = new Set();
   ['player_points_alternate','player_rebounds_alternate','player_assists_alternate','player_threes_alternate','player_points_rebounds_assists_alternate'].forEach(mkey=>{
     const market = detailMarkets[mkey];
     if(!market) return;
     const statKey = PROP_MARKET_TO_STAT[mkey];
+    const marketLabel = PROP_MARKET_LABEL[mkey];
     // group "Over" outcomes by player, since DraftKings shows alt lines as milestone (X+) prices —
     // functionally the Over side of each available threshold, same as the screenshot's "20+ / 22+ / 25+"
     const players = [...new Set(market.outcomes.filter(o=>o.name==='Over').map(o=>o.description))];
@@ -1229,36 +1382,36 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
       if(!levels.length) return;
       const team = findPlayerTeam(pname, homeShort, awayShort);
       levels.forEach(lvl=>{
-        anyAltProps = true;
+        altMarketsSeen.add(marketLabel);
         const hr = team ? altHitRateFor(pname, team, statKey, lvl.point, windowSize) : null;
 
-        const tr = document.createElement('tr');
-        const tdName = document.createElement('td'); tdName.className='left';
+        let nameCell;
         if(team){
           const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link';
           link.textContent = pname;
           link.addEventListener('click', ()=>{ goToPlayer(pname, team); });
-          tdName.appendChild(link);
-        } else {
-          tdName.textContent = pname;
-        }
-        const tdMarket = document.createElement('td'); tdMarket.className='left'; tdMarket.textContent = PROP_MARKET_LABEL[mkey];
-        const tdLevel = document.createElement('td'); tdLevel.textContent = `${lvl.point}+`;
-        const tdPrice = document.createElement('td'); tdPrice.textContent = fmtAmerican(lvl.price);
-        const tdHit = document.createElement('td'); tdHit.appendChild(resultBadge(hr));
+          nameCell = link;
+        } else { nameCell = pname; }
 
-        [tdName,tdMarket,tdLevel,tdPrice,tdHit].forEach(td=>{
-          td.style.padding='5px 8px'; td.style.borderBottom='1px solid var(--line)'; td.style.fontSize='12.5px';
-          if(td!==tdName && td!==tdMarket) td.style.textAlign='center';
+        altDataRows.push({
+          filterValues: {
+            player: pname, market: marketLabel, level: lvl.point, price: lvl.price,
+            hitRate: (hr && hr.found) ? Math.round(hr.rate*100) : null,
+          },
+          cells: [nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr)],
         });
-        tr.appendChild(tdName); tr.appendChild(tdMarket); tr.appendChild(tdLevel); tr.appendChild(tdPrice); tr.appendChild(tdHit);
-        altTbody.appendChild(tr);
       });
     });
   });
 
-  if(anyAltProps){
-    wrap.appendChild(altTable);
+  if(altDataRows.length){
+    buildFilterableTable(wrap, [
+      {key:'player', label:'Player', type:'text', align:'left'},
+      {key:'market', label:'Market', type:'select', options:[...altMarketsSeen], align:'left'},
+      {key:'level', label:'Level', type:'numRange'},
+      {key:'price', label:'Price', type:'numRange'},
+      {key:'hitRate', label:'Hit Rate %', type:'numRange'},
+    ], altDataRows);
   } else {
     const na2 = document.createElement('div'); na2.style.cssText='color:var(--sub);font-size:13px;'; na2.textContent='No alternate-line (multiple level) player props posted by DraftKings for this game yet.';
     wrap.appendChild(na2);
