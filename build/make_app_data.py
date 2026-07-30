@@ -5,7 +5,7 @@ so the CI pipeline (build.py) can call it after downloading fresh source data.
 """
 import pandas as pd
 import numpy as np
-import json, re
+import json, re, os
 
 TEAMS = ['Aces', 'Dream', 'Fever', 'Fire', 'Liberty', 'Lynx', 'Mercury', 'Mystics', 'Sky',
          'Sparks', 'Storm', 'Sun', 'Tempo', 'Valkyries', 'Wings']
@@ -65,7 +65,39 @@ def pct(a, b):
     return round(a / b, 4)
 
 
-def generate(box_csv_path, ros_csv_path, out_json_path):
+def compute_halftime_splits(pbp_csv_path, id_to_short_name):
+    """
+    Returns {game_id: {'home': {'h1': pts, 'h2': pts}, 'away': {'h1': pts, 'h2': pts}}}
+    derived from the running score in the play-by-play log — the score at the last play
+    of period 2 is the halftime score; final - halftime = second-half points.
+    Games with incomplete/missing period data are simply omitted (caller treats as unavailable).
+    """
+    cols = ['game_id', 'game_play_number', 'period_number', 'away_score', 'home_score',
+            'home_team_id', 'away_team_id']
+    pbp = pd.read_csv(pbp_csv_path, usecols=cols)
+    pbp = pbp.sort_values(['game_id', 'game_play_number'])
+
+    half_end = pbp[pbp['period_number'] <= 2].groupby('game_id').tail(1)
+    final_end = pbp.groupby('game_id').tail(1)
+
+    half_by_game = half_end.set_index('game_id')[['away_score', 'home_score']].to_dict('index')
+    final_by_game = final_end.set_index('game_id')[['away_score', 'home_score']].to_dict('index')
+
+    splits = {}
+    for gid, half in half_by_game.items():
+        final = final_by_game.get(gid)
+        if final is None:
+            continue
+        h1_away, h1_home = half['away_score'], half['home_score']
+        f_away, f_home = final['away_score'], final['home_score']
+        splits[gid] = {
+            'home': {'h1': int(h1_home), 'h2': int(f_home) - int(h1_home)},
+            'away': {'h1': int(h1_away), 'h2': int(f_away) - int(h1_away)},
+        }
+    return splits
+
+
+def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None):
     box = pd.read_csv(box_csv_path)
     ros = pd.read_csv(ros_csv_path)
 
@@ -218,14 +250,33 @@ def generate(box_csv_path, ros_csv_path, out_json_path):
                 })
             full_player_logs[key] = {'player': name, 'team': t, 'athleteId': int(aid), 'log': log}
 
+    halftime_splits = {}
+    if pbp_csv_path and os.path.exists(pbp_csv_path):
+        try:
+            id_to_short_name = box.set_index('team_id')['team_name'].to_dict()
+            halftime_splits = compute_halftime_splits(pbp_csv_path, id_to_short_name)
+        except Exception as e:
+            print(f'WARNING: halftime split computation failed, half markets will show as unavailable: {e}')
+            halftime_splits = {}
+
     full_team_games = {}
     for t in TEAMS:
         sub_full = box[box['team_name'] == t][['game_id', 'game_date', 'opponent_team_name', 'home_away', 'team_score', 'opponent_team_score']].drop_duplicates().sort_values('game_date')
-        full_team_games[t] = [
-            {'date': r['game_date'], 'opponent': r['opponent_team_name'], 'homeAway': r['home_away'],
-             'teamPts': n(r['team_score']), 'oppPts': n(r['opponent_team_score'])}
-            for _, r in sub_full.iterrows()
-        ]
+        rows = []
+        for _, r in sub_full.iterrows():
+            row = {'date': r['game_date'], 'opponent': r['opponent_team_name'], 'homeAway': r['home_away'],
+                   'teamPts': n(r['team_score']), 'oppPts': n(r['opponent_team_score'])}
+            split = halftime_splits.get(r['game_id'])
+            if split:
+                side = 'home' if r['home_away'] == 'home' else 'away'
+                other = 'away' if side == 'home' else 'home'
+                row['h1TeamPts'] = split[side]['h1']; row['h1OppPts'] = split[other]['h1']
+                row['h2TeamPts'] = split[side]['h2']; row['h2OppPts'] = split[other]['h2']
+            else:
+                row['h1TeamPts'] = None; row['h1OppPts'] = None
+                row['h2TeamPts'] = None; row['h2OppPts'] = None
+            rows.append(row)
+        full_team_games[t] = rows
 
     team_records = {}
     for t in TEAMS:
@@ -269,5 +320,6 @@ if __name__ == '__main__':
     box_path = sys.argv[1] if len(sys.argv) > 1 else 'data/player_box_2026.csv'
     ros_path = sys.argv[2] if len(sys.argv) > 2 else 'data/rosters_2026.csv'
     out_path = sys.argv[3] if len(sys.argv) > 3 else 'build_output/app_data.json'
-    stats = generate(box_path, ros_path, out_path)
+    pbp_path = sys.argv[4] if len(sys.argv) > 4 else 'data/pbp_2026.csv'
+    stats = generate(box_path, ros_path, out_path, pbp_path)
     print(stats)
