@@ -621,11 +621,22 @@ const SHORT_TEAM_NAME = Object.fromEntries(Object.entries(FULL_TEAM_NAME).map(([
 const PROP_MARKET_TO_STAT = {
   player_points: 'pts', player_rebounds: 'reb', player_assists: 'ast', player_threes: 'tpm',
   player_points_alternate: 'pts', player_rebounds_alternate: 'reb', player_assists_alternate: 'ast', player_threes_alternate: 'tpm',
+  player_points_rebounds_assists: 'pra', player_points_rebounds_assists_alternate: 'pra',
 };
 const PROP_MARKET_LABEL = {
   player_points: 'Points', player_rebounds: 'Rebounds', player_assists: 'Assists', player_threes: 'Threes',
   player_points_alternate: 'Points', player_rebounds_alternate: 'Rebounds', player_assists_alternate: 'Assists', player_threes_alternate: 'Threes',
+  player_points_rebounds_assists: 'Pts+Reb+Ast', player_points_rebounds_assists_alternate: 'Pts+Reb+Ast',
 };
+
+// 'pra' isn't a stored field on a game-log entry — it's derived on the fly from pts+reb+ast.
+function statValue(g, statKey){
+  if(statKey==='pra'){
+    if(g.pts===null||g.pts===undefined||g.reb===null||g.reb===undefined||g.ast===null||g.ast===undefined) return null;
+    return g.pts + g.reb + g.ast;
+  }
+  return g[statKey];
+}
 
 // windowSize: 'all' | 15 | 10 | 5 — how many of the most recent games to look at
 function windowSlice(arr, windowSize){
@@ -642,7 +653,7 @@ function hitRateFor(playerName, team, statKey, line, windowSize){
   const played = windowSlice(pl.log, windowSize).filter(g=>!g.dnp);
   const gp = played.length;
   if(gp===0) return {gp:0, hits:0, rate:0, found:true};
-  const hits = played.filter(g=>g[statKey]!==null && g[statKey]>=threshold).length;
+  const hits = played.filter(g=>{ const v=statValue(g,statKey); return v!==null && v>=threshold; }).length;
   return {gp, hits, rate: hits/gp, found:true};
 }
 
@@ -656,7 +667,7 @@ function altHitRateFor(playerName, team, statKey, threshold, windowSize){
   const played = windowSlice(pl.log, windowSize).filter(g=>!g.dnp);
   const gp = played.length;
   if(gp===0) return {gp:0, hits:0, rate:0, found:true};
-  const hits = played.filter(g=>g[statKey]!==null && g[statKey]>=threshold).length;
+  const hits = played.filter(g=>{ const v=statValue(g,statKey); return v!==null && v>=threshold; }).length;
   return {gp, hits, rate: hits/gp, found:true};
 }
 
@@ -861,7 +872,7 @@ function renderOddsPage(){
         let detail = null;
         try{
           const detailUrl = `${workerBase}/v4/sports/basketball_wnba/events/${ev.id}/odds`
-            + `?regions=us&bookmakers=draftkings&markets=h2h_h1,h2h_h2,spreads_h1,spreads_h2,totals_h1,totals_h2,team_totals,team_totals_h1,team_totals_h2,player_points,player_rebounds,player_assists,player_threes,player_points_alternate,player_rebounds_alternate,player_assists_alternate,player_threes_alternate&oddsFormat=american`;
+            + `?regions=us&bookmakers=draftkings&markets=h2h_h1,h2h_h2,spreads_h1,spreads_h2,totals_h1,totals_h2,team_totals,team_totals_h1,team_totals_h2,player_points,player_rebounds,player_assists,player_threes,player_points_rebounds_assists,player_points_alternate,player_rebounds_alternate,player_assists_alternate,player_threes_alternate,player_points_rebounds_assists_alternate&oddsFormat=american`;
           detail = await fetchJson(detailUrl);
         }catch(e){
           console.warn('Detail fetch failed for', ev.id, e);
@@ -1024,7 +1035,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
   wrap.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h2'], false));
 
   const sec4 = document.createElement('div'); sec4.className='section-title';
-  sec4.textContent = `Player Props (Points / Rebounds / Assists / Threes) \u2014 ${windowSize==='all' ? 'Full Season' : 'Last '+windowSize} Hit Rate`;
+  sec4.textContent = `Player Props (Points / Rebounds / Assists / Threes / Pts+Reb+Ast) \u2014 ${windowSize==='all' ? 'Full Season' : 'Last '+windowSize} Hit Rate`;
   wrap.appendChild(sec4);
 
   const propTable = document.createElement('table'); propTable.style.width='100%';
@@ -1035,7 +1046,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
   propTable.appendChild(tbody);
 
   let anyProps = false;
-  ['player_points','player_rebounds','player_assists','player_threes'].forEach(mkey=>{
+  ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists'].forEach(mkey=>{
     const market = detailMarkets[mkey];
     if(!market) return;
     const statKey = PROP_MARKET_TO_STAT[mkey];
@@ -1081,7 +1092,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
 
   // ================= Alternate lines (multiple X+ milestone levels per player) =================
   const sec5 = document.createElement('div'); sec5.className='section-title';
-  sec5.textContent = `Player Props \u2014 Multiple Levels (Alt Lines) \u2014 ${windowSize==='all' ? 'Full Season' : 'Last '+windowSize} Hit Rate`;
+  sec5.textContent = `Player Props \u2014 Multiple Levels (Alt Lines, incl. Pts+Reb+Ast) \u2014 ${windowSize==='all' ? 'Full Season' : 'Last '+windowSize} Hit Rate`;
   wrap.appendChild(sec5);
 
   const altTable = document.createElement('table'); altTable.style.width='100%';
@@ -1092,7 +1103,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize){
   altTable.appendChild(altTbody);
 
   let anyAltProps = false;
-  ['player_points_alternate','player_rebounds_alternate','player_assists_alternate','player_threes_alternate'].forEach(mkey=>{
+  ['player_points_alternate','player_rebounds_alternate','player_assists_alternate','player_threes_alternate','player_points_rebounds_assists_alternate'].forEach(mkey=>{
     const market = detailMarkets[mkey];
     if(!market) return;
     const statKey = PROP_MARKET_TO_STAT[mkey];
