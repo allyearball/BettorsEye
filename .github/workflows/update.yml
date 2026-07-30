@@ -1,0 +1,40 @@
+name: Rebuild and deploy WNBA app
+
+on:
+  schedule:
+    # Runs every 10 minutes, all day, every day. GitHub's scheduler is best-effort —
+    # during high load across GitHub it can occasionally run a few minutes late, but
+    # this is the tightest practical interval for a free scheduled workflow.
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}   # adds a "Run workflow" button in the Actions tab, for manual testing
+
+concurrency:
+  group: build-and-deploy
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build app (download fresh data, regenerate index.html)
+        run: python build/build.py
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: wnba-explorer
+          directory: dist
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
