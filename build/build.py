@@ -11,6 +11,7 @@ import gzip
 import base64
 import json
 import os
+import shutil
 import sys
 import urllib.request
 
@@ -23,6 +24,7 @@ DIST_DIR = os.path.join(REPO_ROOT, 'dist')
 
 BOX_URL = 'https://github.com/sportsdataverse/sportsdataverse-data/releases/download/espn_wnba_player_boxscores/player_box_2026.csv'
 ROS_URL = 'https://github.com/sportsdataverse/sportsdataverse-data/releases/download/espn_wnba_rosters/rosters_2026.csv'
+PBP_URL = 'https://github.com/sportsdataverse/sportsdataverse-data/releases/download/espn_wnba_pbp/play_by_play_2026.csv'
 
 
 def download(url, dest):
@@ -38,12 +40,18 @@ def main():
 
     box_csv = os.path.join(DATA_DIR, 'player_box_2026.csv')
     ros_csv = os.path.join(DATA_DIR, 'rosters_2026.csv')
+    pbp_csv = os.path.join(DATA_DIR, 'pbp_2026.csv')
     data_json = os.path.join(DATA_DIR, 'app_data.json')
 
     download(BOX_URL, box_csv)
     download(ROS_URL, ros_csv)
+    try:
+        download(PBP_URL, pbp_csv)
+    except Exception as e:
+        print(f'WARNING: play-by-play download failed ({e}) — half-time markets will show as unavailable this run.')
+        pbp_csv = None
 
-    stats = generate(box_csv, ros_csv, data_json)
+    stats = generate(box_csv, ros_csv, data_json, pbp_csv)
     print('Generated dataset:', stats)
 
     with open(data_json, 'rb') as f:
@@ -76,6 +84,15 @@ def main():
     out_path = os.path.join(DIST_DIR, 'index.html')
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write(out_html)
+
+    # PWA assets — needed for "Add to Home Screen" + push notifications to work at all.
+    build_dir = os.path.dirname(os.path.abspath(__file__))
+    for asset in ['manifest.json', 'sw.js', 'icon-192.png', 'icon-512.png']:
+        src = os.path.join(build_dir, asset)
+        if os.path.exists(src):
+            shutil.copy(src, os.path.join(DIST_DIR, asset))
+        else:
+            print(f'WARNING: expected PWA asset {asset} not found in build/ — Home Screen install / push notifications may not work.')
 
     print(f'Wrote {out_path} ({len(out_html):,} bytes)')
     print('Build info:', build_info)
