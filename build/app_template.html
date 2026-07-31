@@ -584,10 +584,16 @@ function buildNav(){
 }
 function buildTopLinks(){
   const tl = document.getElementById('toplinks');
-  const explorerBtn = document.createElement('button'); explorerBtn.textContent='Team Explorer'; explorerBtn.classList.add('active');
+  const homeBtn = document.createElement('button'); homeBtn.textContent='Home'; homeBtn.classList.add('active');
+  const explorerBtn = document.createElement('button'); explorerBtn.textContent='Team Explorer';
   const propsBtn = document.createElement('button'); propsBtn.textContent='Player Props Board';
   const oddsBtn = document.createElement('button'); oddsBtn.textContent='DraftKings Odds (Live)';
-  function clearActive(){ [explorerBtn,propsBtn,oddsBtn].forEach(b=>b.classList.remove('active')); }
+  function clearActive(){ [homeBtn,explorerBtn,propsBtn,oddsBtn].forEach(b=>b.classList.remove('active')); }
+  homeBtn.addEventListener('click', ()=>{
+    clearActive(); homeBtn.classList.add('active');
+    nav.innerHTML=''; nav.style.display='none';
+    renderHomePage();
+  });
   explorerBtn.addEventListener('click', ()=>{
     clearActive(); explorerBtn.classList.add('active');
     nav.style.display=''; buildNav();
@@ -602,7 +608,7 @@ function buildTopLinks(){
     nav.innerHTML=''; nav.style.display='none';
     renderOddsPage();
   });
-  tl.appendChild(explorerBtn); tl.appendChild(propsBtn); tl.appendChild(oddsBtn);
+  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(propsBtn); tl.appendChild(oddsBtn);
 }
 async function initApp(){
   try {
@@ -617,7 +623,8 @@ async function initApp(){
   document.getElementById('asOf').textContent = DATA.generatedThrough;
   TEAM_NAMES = Object.keys(DATA.teams).sort();
   buildTopLinks();
-  buildNav();
+  nav.style.display = 'none';
+  renderHomePage();
 }
 initApp();
 
@@ -925,6 +932,86 @@ async function fetchJson(url){
   return resp.json();
 }
 
+// ---- Shared Worker URL persistence + default, used by both the Home page and the Odds page ----
+const WORKER_URL_LS_KEY = 'wnba_odds_worker_url';
+// Baked-in default Worker URL — since this is just an address (not a secret; your real API
+// key lives inside the Worker's environment now), it's safe to hardcode so every device
+// works immediately with no per-browser setup step.
+const DEFAULT_WORKER_URL = 'https://odds-api-proxy.allyearball.workers.dev';
+
+async function saveUrl(workerUrl){
+  try{
+    if(window.storage && window.storage.set){ await window.storage.set('odds_worker_url', workerUrl, false); }
+  }catch(e){ /* fall through to localStorage */ }
+  try{ localStorage.setItem(WORKER_URL_LS_KEY, workerUrl); }catch(e){ /* ignore */ }
+}
+async function loadSavedUrl(){
+  try{
+    if(window.storage && window.storage.get){
+      const res = await window.storage.get('odds_worker_url', false);
+      if(res && res.value) return res.value;
+    }
+  }catch(e){ /* fall through */ }
+  try{ return localStorage.getItem(WORKER_URL_LS_KEY); }catch(e){ return null; }
+}
+
+// ---- Home page: today's Top 10 bets, fetched fresh each visit (today's games + only the
+// markets gatherCandidateLegs actually needs, so this stays a light, fast fetch) ----
+async function renderHomePage(){
+  lastRender = () => renderHomePage();
+  main.innerHTML = '';
+  const head = document.createElement('div'); head.className='pagehead';
+  head.innerHTML = `<h2>\ud83c\udfe0 Today\u2019s Top 10 Bets</h2><div class="meta">Pulled live from DraftKings via your Worker, ranked by historical hit rate over the last 10 and 15 games \u2014 same method as the DraftKings Odds page.</div>`;
+  main.appendChild(head);
+
+  const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
+  statusDiv.textContent = 'Loading today\u2019s games\u2026';
+  main.appendChild(statusDiv);
+
+  const refreshBtn = document.createElement('button'); refreshBtn.className='addbtn'; refreshBtn.textContent = '\u21bb Refresh';
+  refreshBtn.style.marginBottom = '14px';
+  refreshBtn.addEventListener('click', ()=>renderHomePage());
+  main.appendChild(refreshBtn);
+
+  const contentDiv = document.createElement('div');
+  main.appendChild(contentDiv);
+
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+
+  try{
+    const events = await fetchJson(
+      `${workerBase}/v4/sports/basketball_wnba/odds?regions=us&bookmakers=draftkings&markets=h2h,spreads,totals&oddsFormat=american`
+    );
+    if(!events || events.length===0){
+      statusDiv.textContent = 'DraftKings has no WNBA games listed right now.';
+      return;
+    }
+    const todayStr = new Date().toDateString();
+    const todaysGames = events.filter(ev => new Date(ev.commence_time).toDateString() === todayStr);
+    if(todaysGames.length===0){
+      statusDiv.textContent = 'No games scheduled for today among what DraftKings currently has listed.';
+      return;
+    }
+
+    statusDiv.textContent = `Found ${todaysGames.length} game(s) today \u2014 fetching player props and team totals\u2026`;
+    const cachedForToday = [];
+    for(const ev of todaysGames){
+      let detail = null;
+      try{
+        detail = await fetchJson(
+          `${workerBase}/v4/sports/basketball_wnba/events/${ev.id}/odds`
+          + `?regions=us&bookmakers=draftkings&markets=team_totals,player_points,player_rebounds,player_assists,player_threes&oddsFormat=american`
+        );
+      }catch(e){ console.warn('Detail fetch failed for', ev.id, e); }
+      cachedForToday.push({ev, detail});
+    }
+    renderTopBets(contentDiv, cachedForToday, 10);
+    statusDiv.textContent = `Showing today\u2019s top bets across ${todaysGames.length} game(s). Tap Refresh to pull the latest lines again.`;
+  }catch(e){
+    statusDiv.textContent = `Couldn\u2019t load today\u2019s bets: ${e.message}. Double-check your Worker URL is reachable, or visit the DraftKings Odds page directly.`;
+  }
+}
+
 function renderOddsPage(){
   lastRender = () => renderOddsPage();
   main.innerHTML = '';
@@ -1065,27 +1152,10 @@ function renderOddsPage(){
     }
   }
 
-  // ---- Worker URL persistence: tries Claude's artifact storage first, falls back to plain browser
-  // localStorage if that's unavailable (e.g. this file opened directly rather than viewed in Claude) ----
-  const LS_KEY = 'wnba_odds_worker_url';
-  async function saveUrl(workerUrl){
-    try{
-      if(window.storage && window.storage.set){ await window.storage.set('odds_worker_url', workerUrl, false); }
-    }catch(e){ /* fall through to localStorage */ }
-    try{ localStorage.setItem(LS_KEY, workerUrl); }catch(e){ /* ignore */ }
-  }
-  async function loadSavedUrl(){
-    try{
-      if(window.storage && window.storage.get){
-        const res = await window.storage.get('odds_worker_url', false);
-        if(res && res.value) return res.value;
-      }
-    }catch(e){ /* fall through */ }
-    try{ return localStorage.getItem(LS_KEY); }catch(e){ return null; }
-  }
+  // ---- Worker URL persistence (shared global helpers, defined once near the top of this file) ----
   async function clearSavedUrl(){
     try{ if(window.storage && window.storage.delete) await window.storage.delete('odds_worker_url', false); }catch(e){ /* ignore */ }
-    try{ localStorage.removeItem(LS_KEY); }catch(e){ /* ignore */ }
+    try{ localStorage.removeItem(WORKER_URL_LS_KEY); }catch(e){ /* ignore */ }
     urlInput.value = '';
     statusDiv.textContent = 'Saved Worker URL cleared from this device.';
   }
@@ -1135,11 +1205,6 @@ function renderOddsPage(){
 
   fetchBtn.addEventListener('click', runFetch);
 
-  // Baked-in default Worker URL — since this is just an address (not a secret; your real API
-  // key lives inside the Worker's environment now), it's safe to hardcode so every device
-  // works immediately with no per-browser setup step.
-  const DEFAULT_WORKER_URL = 'https://odds-api-proxy.allyearball.workers.dev';
-
   // auto-load a previously saved Worker URL (falling back to the baked-in default) and fetch immediately
   loadSavedUrl().then(saved=>{
     const urlToUse = saved || DEFAULT_WORKER_URL;
@@ -1155,7 +1220,8 @@ function marketsByKey(bookmaker){
   return m;
 }
 
-function renderTopBets(container, cachedFetch){
+function renderTopBets(container, cachedFetch, topN){
+  topN = topN || 5;
   container.innerHTML = '';
   if(!cachedFetch.length) return;
 
@@ -1165,7 +1231,7 @@ function renderTopBets(container, cachedFetch){
   const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr);
   if(todaysGames.length === 0){
     const sec0 = document.createElement('div'); sec0.className='section-title'; sec0.style.fontSize='15px';
-    sec0.textContent = '\u2b50 Today\u2019s Highest-Conviction Bets (across all games)';
+    sec0.textContent = `\u2b50 Today\u2019s Top ${topN} Bets (across all games)`;
     container.appendChild(sec0);
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
     msg0.textContent = 'None of the games currently fetched are scheduled for today \u2014 nothing to rank here yet.';
@@ -1188,12 +1254,12 @@ function renderTopBets(container, cachedFetch){
   }
 
   // Try the 75% bar first (this app's existing definition of "high confidence"); if that
-  // doesn't produce at least 5 across today's slate, top up with the 70% pool instead
-  // of showing fewer than 5 — but never invent a bet that doesn't clear at least 70%/70%,
+  // doesn't produce at least topN across today's slate, top up with the 70% pool instead
+  // of showing fewer than topN — but never invent a bet that doesn't clear at least 70%/70%,
   // and never one worse than -250 regardless of how confident it is.
   let pool = [];
   todaysGames.forEach(({ev, detail}) => { pool = pool.concat(candidatesForGame(ev, detail, 0.75)); });
-  if(pool.length < 5){
+  if(pool.length < topN){
     let widerPool = [];
     todaysGames.forEach(({ev, detail}) => { widerPool = widerPool.concat(candidatesForGame(ev, detail, 0.70)); });
     const seen = new Set(pool.map(c=>c.game+'|'+c.label));
@@ -1201,17 +1267,17 @@ function renderTopBets(container, cachedFetch){
   }
 
   pool.sort((a,b)=> Math.min(b.rate10,b.rate15) - Math.min(a.rate10,a.rate15));
-  const top5 = pool.slice(0, 5);
+  const topBets = pool.slice(0, topN);
 
   const sec = document.createElement('div'); sec.className='section-title';
-  sec.style.fontSize='15px'; sec.textContent = '\u2b50 Today\u2019s Highest-Conviction Bets (across all games)';
+  sec.style.fontSize='15px'; sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets (across all games)`;
   container.appendChild(sec);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
   note.textContent = 'Only includes games scheduled for today, and only bets priced -250 or better. Ranked by worst-case hit rate across the last-10 and last-15-game windows (same 75%/70%-qualified pool used in each game\u2019s parlay sections). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.';
   container.appendChild(note);
 
-  if(top5.length === 0){
+  if(topBets.length === 0){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
     msg.textContent = 'Nothing in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -250 or better.';
     container.appendChild(msg);
@@ -1220,7 +1286,7 @@ function renderTopBets(container, cachedFetch){
 
   const grid = document.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:22px;';
-  top5.forEach((c, idx)=>{
+  topBets.forEach((c, idx)=>{
     const worstCase = Math.round(Math.min(c.rate10,c.rate15)*100);
     const isGold = worstCase>=96;
     const card = document.createElement('div');
