@@ -7,6 +7,7 @@
   :root{
     --navy:#0b1f3a; --navy2:#122c52; --bg:#f4f5f7; --panel:#ffffff; --line:#dfe3ea; --ink:#1a2233; --sub:#5b6472;
     --green:#0d7a3e; --greenbg:#e6f6ec; --red:#b3261e; --redbg:#fdecea;
+    --gold:#8a6d00; --goldbg:#fff3c4;
     --sans: 'Inter','Segoe UI',Arial,sans-serif;
   }
   *{box-sizing:border-box;}
@@ -51,6 +52,7 @@
   .propboard-row .result{font-weight:800;font-size:13px;text-align:center;padding:4px;border-radius:4px;}
   .result.green{color:var(--green);background:var(--greenbg);}
   .result.red{color:var(--red);background:var(--redbg);}
+  .result.gold{color:var(--gold);background:var(--goldbg);font-weight:800;}
   .result.neutral{color:var(--sub);background:#f0f2f6;}
   .rmbtn{background:none;border:none;color:#b3261e;font-size:18px;cursor:pointer;}
   .addbtn{margin-top:6px;background:var(--navy2);color:#fff;border:none;padding:8px 16px;border-radius:6px;font-size:13px;cursor:pointer;font-family:var(--sans);}
@@ -515,9 +517,13 @@ function renderPropsPage(){
       if(gp === 0){
         resultDiv.className='result neutral'; resultDiv.textContent='No data';
       } else if(rate >= 0.6){
-        resultDiv.className='result green'; resultDiv.textContent = pctTxt+' OVER';
+        const pctNum = Math.round(rate*100);
+        resultDiv.className = pctNum>=96 ? 'result gold' : 'result green';
+        resultDiv.textContent = pctTxt+' OVER';
       } else if(rate <= 0.4){
-        resultDiv.className='result red'; resultDiv.textContent = (100-Math.round(rate*100))+'% UNDER';
+        const underPct = 100-Math.round(rate*100);
+        resultDiv.className = underPct>=96 ? 'result gold' : 'result red';
+        resultDiv.textContent = underPct+'% UNDER';
       } else {
         resultDiv.className='result neutral'; resultDiv.textContent = pctTxt+' over';
       }
@@ -867,9 +873,16 @@ function resultBadge(hr){
   if(!hr || !hr.found){ span.textContent='no data'; return span; }
   const pct = Math.round(hr.rate*100);
   if(hr.gp===0){ span.textContent='no games'; return span; }
-  if(hr.rate >= 0.6){ span.className='result green'; span.textContent = `${hr.hits}/${hr.gp} (${pct}% OVER)`; }
-  else if(hr.rate <= 0.4){ span.className='result red'; span.textContent = `${hr.hits}/${hr.gp} (${100-pct}% UNDER)`; }
-  else { span.className='result neutral'; span.textContent = `${hr.hits}/${hr.gp} (${pct}%)`; }
+  if(hr.rate >= 0.6){
+    span.className = pct>=96 ? 'result gold' : 'result green';
+    span.textContent = `${hr.hits}/${hr.gp} (${pct}% OVER)`;
+  } else if(hr.rate <= 0.4){
+    const underPct = 100-pct;
+    span.className = underPct>=96 ? 'result gold' : 'result red';
+    span.textContent = `${hr.hits}/${hr.gp} (${underPct}% UNDER)`;
+  } else {
+    span.className='result neutral'; span.textContent = `${hr.hits}/${hr.gp} (${pct}%)`;
+  }
   return span;
 }
 
@@ -900,7 +913,7 @@ function renderOddsPage(){
   main.appendChild(head);
 
   const banner = document.createElement('div'); banner.className='banner';
-  banner.innerHTML = `<b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same 60% rule, windowed the same way, and both prop tables can be filtered by any column. Click a game's title to drill into just that matchup with its own window toggle. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom.`;
+  banner.innerHTML = `<b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else, with <b style="color:var(--gold)">gold</b> instead of green whenever that rate is 96% or higher. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same rule, windowed the same way, and both prop tables can be filtered by any column. Click a game's title to drill into just that matchup with its own window toggle. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom.`;
   main.appendChild(banner);
 
   const controls = document.createElement('div'); controls.style.cssText='display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap;';
@@ -1141,10 +1154,12 @@ function renderTopBets(container, cachedFetch){
   const grid = document.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:22px;';
   top5.forEach((c, idx)=>{
+    const worstCase = Math.round(Math.min(c.rate10,c.rate15)*100);
+    const isGold = worstCase>=96;
     const card = document.createElement('div');
-    card.style.cssText = 'border:2px solid var(--green);border-radius:8px;padding:12px;background:var(--greenbg);';
+    card.style.cssText = `border:2px solid var(${isGold?'--gold':'--green'});border-radius:8px;padding:12px;background:var(${isGold?'--goldbg':'--greenbg'});`;
     const rank = document.createElement('div');
-    rank.style.cssText = 'font-weight:800;font-size:12px;color:var(--green);margin-bottom:4px;';
+    rank.style.cssText = `font-weight:800;font-size:12px;color:var(${isGold?'--gold':'--green'});margin-bottom:4px;`;
     rank.textContent = `#${idx+1}`;
     const label = document.createElement('div');
     label.style.cssText = 'font-weight:700;font-size:13.5px;margin-bottom:4px;';
