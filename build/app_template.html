@@ -3,6 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <title>WNBA Box Score Explorer &amp; Prop Board</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="WNBA Explorer">
+<meta name="theme-color" content="#0b1f3a">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
   :root{
     --navy:#0b1f3a; --navy2:#122c52; --bg:#f4f5f7; --panel:#ffffff; --line:#dfe3ea; --ink:#1a2233; --sub:#5b6472;
@@ -624,6 +630,20 @@ const FULL_TEAM_NAME = {
 };
 const SHORT_TEAM_NAME = Object.fromEntries(Object.entries(FULL_TEAM_NAME).map(([s,f])=>[f,s]));
 
+// Public VAPID key for push notifications — safe to be public (it's the whole point of
+// public-key crypto); the matching private key lives only in the GitHub Actions secret
+// that actually sends notifications, never here.
+const VAPID_PUBLIC_KEY = 'BAhDUHv4NRfNvDIfxE-66aqCidzcRmyLruiE-E4BecH9FnDEDlqPtXvZKQQQDRPZyWGLo52j4PP6Uq1H2GgT60M';
+
+function urlBase64ToUint8Array(base64String){
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
 const PROP_MARKET_TO_STAT = {
   player_points: 'pts', player_rebounds: 'reb', player_assists: 'ast', player_threes: 'tpm',
   player_points_alternate: 'pts', player_rebounds_alternate: 'reb', player_assists_alternate: 'ast', player_threes_alternate: 'tpm',
@@ -930,6 +950,53 @@ function renderOddsPage(){
   const clearLink = document.createElement('a'); clearLink.href='javascript:void(0)'; clearLink.className='player-link'; clearLink.textContent='Forget saved URL';
   rememberRow.appendChild(rememberLabel); rememberRow.appendChild(clearLink);
   main.appendChild(rememberRow);
+
+  // ---- Push notifications: gold-tier (96%+) bets with 10+ games of history behind them ----
+  const pushRow = document.createElement('div');
+  pushRow.style.cssText = 'display:flex;align-items:center;gap:14px;margin-bottom:16px;padding:10px 14px;background:var(--goldbg);border:1px solid var(--gold);border-radius:6px;flex-wrap:wrap;';
+  const pushBtn = document.createElement('button'); pushBtn.className='addbtn'; pushBtn.style.background='var(--gold)';
+  pushBtn.textContent = '\ud83d\udd14 Enable Gold-Tier Bet Alerts';
+  const pushStatus = document.createElement('div'); pushStatus.style.cssText = 'font-size:12.5px;color:var(--ink);';
+  pushStatus.textContent = 'Get a push notification the moment a bet clears 96% with at least 10 games of history behind it. Requires adding this app to your Home Screen first (Share \u2192 Add to Home Screen), then opening it from that icon.';
+  pushRow.appendChild(pushBtn); pushRow.appendChild(pushStatus);
+  main.appendChild(pushRow);
+
+  pushBtn.addEventListener('click', async ()=>{
+    const workerBase = urlInput.value.trim().replace(/\/$/, '') || DEFAULT_WORKER_URL;
+    if(!('serviceWorker' in navigator) || !('PushManager' in window)){
+      pushStatus.textContent = 'Push notifications aren\u2019t supported in this browser/view. On iPhone: add this app to your Home Screen first, then open it from that icon (not from Safari directly).';
+      return;
+    }
+    try{
+      pushStatus.textContent = 'Setting up notifications\u2026';
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      const permission = await Notification.requestPermission();
+      if(permission !== 'granted'){
+        pushStatus.textContent = 'Notification permission was not granted \u2014 check your iPhone\u2019s Settings > Notifications for this app if you want to enable it later.';
+        return;
+      }
+      let sub = await reg.pushManager.getSubscription();
+      if(!sub){
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        });
+      }
+      const resp = await fetch(`${workerBase}/push/subscribe`, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(sub),
+      });
+      if(resp.ok){
+        pushStatus.textContent = '\u2705 Notifications enabled! You\u2019ll get a push whenever a gold-tier (96%+) bet with 10+ games of history appears on today\u2019s slate.';
+      } else {
+        pushStatus.textContent = `Saved the subscription locally, but the Worker returned an error (${resp.status}) \u2014 double-check the Worker URL above and that it\u2019s been redeployed with push support.`;
+      }
+    }catch(e){
+      pushStatus.textContent = `Couldn\u2019t enable notifications: ${e.message}. On iPhone this only works after adding the app to your Home Screen and opening it from that icon, not from a regular Safari tab.`;
+    }
+  });
 
   const WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
 
