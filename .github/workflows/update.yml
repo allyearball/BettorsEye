@@ -42,3 +42,11 @@ jobs:
           projectName: wnba-explorer
           directory: dist
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check for gold-tier bets and send push notifications
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+        run: python build/check_gold_bets.py
