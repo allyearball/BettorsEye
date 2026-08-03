@@ -129,6 +129,7 @@ function makeTable(container, columns, rows, opts){
   if(hasPlayedConcept){
     const label = document.createElement('label');
     cb = document.createElement('input'); cb.type='checkbox';
+    if(opts.defaultHideDNP) cb.checked = true;
     label.appendChild(cb); label.appendChild(document.createTextNode(opts.hideLabel || 'Hide players who didn\u2019t play (0 minutes)'));
     controls.appendChild(label);
   }
@@ -395,7 +396,22 @@ function renderTeamPage(team, year, month){
   makeTable(main, AVG_COLS, summary.averages, {defaultSort:'pts', teamFor:()=>team});
 
   const t3 = document.createElement('div'); t3.className='section-title'; t3.textContent='Opponent Totals by Game'; main.appendChild(t3);
-  makeTable(main, OPP_COLS, summary.opponents, {defaultSort:'date', defaultDir:'asc'});
+  const OPP_NUMERIC_KEYS = OPP_COLS.filter(c=>!c.left).map(c=>c.key);
+  const oppFooterRows = [];
+  const oppLabels = [
+    {label:'TOTAL', fn: arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)*100)/100 : null},
+    {label:'MIN', fn: arr => arr.length ? Math.min(...arr) : null},
+    {label:'MAX', fn: arr => arr.length ? Math.max(...arr) : null},
+    {label:'AVERAGE', fn: arr => arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*100)/100 : null},
+    {label:'MEDIAN', fn: median},
+    {label:'MODE', fn: mode},
+  ];
+  oppLabels.forEach(({label, fn})=>{
+    const values = {};
+    OPP_NUMERIC_KEYS.forEach(k=>{ values[k] = fn(summary.opponents.map(r=>r[k]).filter(v=>v!==null && v!==undefined)); });
+    oppFooterRows.push({label, values});
+  });
+  makeTable(main, OPP_COLS, summary.opponents, {defaultSort:'date', defaultDir:'asc', footerRows: oppFooterRows});
 
   const t4 = document.createElement('div'); t4.className='section-title'; t4.textContent='Individual Games (click to view box score)'; main.appendChild(t4);
   const list = document.createElement('div'); list.className='gamelist';
@@ -421,18 +437,46 @@ function bioLookup(player, team){
   return { height: row.height, weight: row.weight, age: row.age, dob: row.dob, heightIn: row.heightIn };
 }
 
+const GAME_COLS_PER_TEAM = GAME_COLS.filter(c=>c.key!=='team');
+
+function computeGameTeamTotals(rows, team){
+  const teamRows = rows.filter(r=>r.team===team);
+  const sum = k => teamRows.reduce((a,r)=> a + (r[k]||0), 0);
+  const fgm=sum('fgm'), fga=sum('fga'), tpm=sum('tpm'), tpa=sum('tpa'), ftm=sum('ftm'), fta=sum('fta');
+  return {
+    min: sum('min'), pts: sum('pts'), fgm, fga, fgPct: fga? Math.round((fgm/fga)*10000)/10000 : null,
+    tpm, tpa, tpPct: tpa? Math.round((tpm/tpa)*10000)/10000 : null,
+    ftm, fta, ftPct: fta? Math.round((ftm/fta)*10000)/10000 : null,
+    oreb: sum('oreb'), dreb: sum('dreb'), reb: sum('reb'),
+    ast: sum('ast'), stl: sum('stl'), blk: sum('blk'), to: sum('to'), pf: sum('pf'),
+  };
+}
+
 function renderGamePage(game){
   lastRender = () => renderGamePage(game);
   main.innerHTML = '';
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>${game.label}</h2><div class="meta">Full box score, both teams. Click any column header to sort, or a player's name to see her full recent game log.</div>`;
+  const venue = (DATA.teamVenues && DATA.teamVenues[game.home]) || {};
+  const venueLine = venue.name ? `<br>${venue.name}${venue.city ? ' \u2014 '+venue.city+(venue.state?', '+venue.state:'') : ''}` : '';
+  head.innerHTML = `<h2>${game.label}</h2><div class="meta">Full box score, each team in its own table with team totals at the bottom. Click any column header to sort, or a player's name to see her full recent game log.${venueLine}</div>`;
   main.appendChild(head);
   const back = document.createElement('button'); back.className='addbtn'; back.textContent='← Back';
   back.style.marginBottom='14px';
   back.addEventListener('click', ()=>{ setActiveNav(game.home); renderTeamPage(game.home); });
   main.appendChild(back);
+
   const rowsWithBio = game.rows.map(r => Object.assign({}, r, bioLookup(r.player, r.team)));
-  makeTable(main, GAME_COLS, rowsWithBio, {defaultSort:'pts', teamFor:(r)=>r.team});
+
+  [{team:game.away, label:`${game.away} (Away)`}, {team:game.home, label:`${game.home} (Home)`}].forEach(side=>{
+    const sec = document.createElement('div'); sec.className='section-title'; sec.textContent = side.label;
+    main.appendChild(sec);
+    const teamRows = rowsWithBio.filter(r=>r.team===side.team);
+    const totalsRow = computeGameTeamTotals(rowsWithBio, side.team);
+    makeTable(main, GAME_COLS_PER_TEAM, teamRows, {
+      defaultSort:'pts', teamFor:()=>side.team, defaultHideDNP: true,
+      footerRows: [{label:'TEAM TOTAL', values: totalsRow}],
+    });
+  });
 }
 
 function median(arr){
@@ -1333,8 +1377,10 @@ function renderOddsPage(){
       });
 
       const timeStr = dt.toLocaleString(undefined, {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+      const venue = (DATA.teamVenues && DATA.teamVenues[homeShort]) || {};
+      const venueStr = venue.name ? `${venue.name}${venue.city ? ' \u2014 '+venue.city+(venue.state?', '+venue.state:'') : ''}` : '';
       card.innerHTML = `
-        <div style="font-size:11px;color:var(--sub);margin-bottom:6px;">${timeStr}</div>
+        <div style="font-size:11px;color:var(--sub);margin-bottom:6px;">${timeStr}${venueStr ? ' \u00b7 '+venueStr : ''}</div>
         <div style="font-weight:800;font-size:13.5px;margin-bottom:8px;">${ev.away_team} @ ${ev.home_team}</div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:11px;color:var(--sub);font-weight:700;text-transform:uppercase;margin-bottom:2px;">
           <div>Spread</div><div>Total</div><div>ML</div>
@@ -1639,21 +1685,36 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
   const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
   const wrap = document.createElement('div'); wrap.className='table-wrap'; wrap.style.padding='16px'; wrap.style.marginBottom='20px';
 
+  const titleRow = document.createElement('div'); titleRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
+  const gameArrow = document.createElement('span');
+  gameArrow.textContent = '\u25be';
+  gameArrow.style.cssText = 'font-size:13px;color:var(--navy2);cursor:pointer;user-select:none;display:inline-block;width:14px;flex-shrink:0;';
+  titleRow.appendChild(gameArrow);
+
   const dt = new Date(ev.commence_time);
   const titleText = `${ev.away_team} @ ${ev.home_team} \u2014 ${dt.toLocaleString()}`;
   if(onTitleClick){
     const title = document.createElement('a');
     title.href = 'javascript:void(0)';
-    title.style.cssText='display:block;font-weight:800;font-size:15px;margin-bottom:6px;color:var(--navy2);text-decoration:none;border-bottom:1px dashed var(--navy2);width:fit-content;cursor:pointer;';
+    title.style.cssText='display:block;font-weight:800;font-size:15px;color:var(--navy2);text-decoration:none;border-bottom:1px dashed var(--navy2);width:fit-content;cursor:pointer;';
     title.textContent = titleText + '  \u2192';
     title.title = 'Click to view just this matchup';
     title.addEventListener('click', onTitleClick);
-    wrap.appendChild(title);
+    titleRow.appendChild(title);
   } else {
-    const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;margin-bottom:6px;';
+    const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;';
     title.textContent = titleText;
-    wrap.appendChild(title);
+    titleRow.appendChild(title);
   }
+  wrap.appendChild(titleRow);
+
+  const gameContentDiv = document.createElement('div'); gameContentDiv.style.marginTop = '6px';
+  wrap.appendChild(gameContentDiv);
+  gameArrow.addEventListener('click', ()=>{
+    const isExpanded = gameContentDiv.style.display !== 'none';
+    gameContentDiv.style.display = isExpanded ? 'none' : '';
+    gameArrow.textContent = isExpanded ? '\u25b8' : '\u25be';
+  });
 
   const recordsDiv = document.createElement('div');
   recordsDiv.style.cssText = 'display:flex;gap:28px;flex-wrap:wrap;font-size:12.5px;color:var(--sub);margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line);';
@@ -1668,7 +1729,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
     recBox.innerHTML = `<b style="color:var(--ink)">${t.full}</b> \u2014 Overall: ${recordText(rec.overall)} &nbsp;|&nbsp; ${homeAwayLabel}: ${recordText(homeAwayRec)} &nbsp;|&nbsp; vs ${t.isHome ? ev.away_team : ev.home_team}: ${recordText(h2h)}`;
     recordsDiv.appendChild(recBox);
   });
-  wrap.appendChild(recordsDiv);
+  gameContentDiv.appendChild(recordsDiv);
 
   const dk = (ev.bookmakers||[]).find(b=>b.key==='draftkings');
   const dkDetail = detail ? (detail.bookmakers||[]).find(b=>b.key==='draftkings') : null;
@@ -1697,8 +1758,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
       const over = dkOutcome(market,'Over'); const under = dkOutcome(market,'Under');
       const point = over ? over.point : (under ? under.point : undefined);
       const hr = withHitRate ? (half ? teamTotalHitRateHalf(awayShort, half, point, windowSize) : teamTotalHitRate(awayShort, point, windowSize)) : null; // combined total, same for either team
-      const overTrack = (!half && over) ? makeTrackAndHistoryButtons({label:`Game Total Over ${point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time}, 10) : null;
-      const underTrack = (!half && under) ? makeTrackAndHistoryButtons({label:`Game Total Under ${point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time}, 10) : null;
+      const overTrack = (!half && over) ? makeTrackAndHistoryButtons({label:`Game Total Over ${point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
+      const underTrack = (!half && under) ? makeTrackAndHistoryButtons({label:`Game Total Under ${point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
       row.appendChild(cell(over ? `Over ${over.point} (${over.price>0?'+':''}${over.price})` : '\u2014', hr, overTrack));
       row.appendChild(cell(under ? `Under ${under.point} (${under.price>0?'+':''}${under.price})` : '\u2014', null, underTrack));
     } else {
@@ -1719,8 +1780,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         }
       }
       const betType = isSpread ? 'spread' : 'moneyline';
-      const awayTrack = (!half && away) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.away_team}${isSpread?' '+(away.point>0?'+':'')+away.point:' Moneyline'}`, price:away.price, betType, team:awayShort, opponent:homeShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time}, isSpread?{line:away.point}:{}), 10) : null;
-      const homeTrack = (!half && home) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.home_team}${isSpread?' '+(home.point>0?'+':'')+home.point:' Moneyline'}`, price:home.price, betType, team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time}, isSpread?{line:home.point}:{}), 10) : null;
+      const awayTrack = (!half && away) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.away_team}${isSpread?' '+(away.point>0?'+':'')+away.point:' Moneyline'}`, price:away.price, betType, team:awayShort, opponent:homeShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, isSpread?{line:away.point}:{}), 10) : null;
+      const homeTrack = (!half && home) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.home_team}${isSpread?' '+(home.point>0?'+':'')+home.point:' Moneyline'}`, price:home.price, betType, team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, isSpread?{line:home.point}:{}), 10) : null;
       row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr, awayTrack));
       row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr, homeTrack));
     }
@@ -1757,7 +1818,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         c.appendChild(resultBadge(hr));
       }
       if(!half && over){
-        c.appendChild(makeTrackAndHistoryButtons({label:`${teamFullName} Team Total Over ${over.point}`, price:over.price, betType:'team_total', team:shortName, opponent:oppShort, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time}, 10));
+        c.appendChild(makeTrackAndHistoryButtons({label:`${teamFullName} Team Total Over ${over.point}`, price:over.price, betType:'team_total', team:shortName, opponent:oppShort, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10));
       }
       row.appendChild(c);
     });
@@ -1765,33 +1826,54 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
   }
 
   const windowLabelText = windowSize==='all' ? 'Full Season' : `Last ${windowSize}`;
-  const sec1 = document.createElement('div'); sec1.className='section-title'; sec1.style.marginTop='4px'; sec1.textContent = `Full Game \u2014 ${windowLabelText} Hit Rate`; wrap.appendChild(sec1);
-  wrap.appendChild(lineRow('Moneyline', gameMarkets['h2h'], false, false, true));
-  wrap.appendChild(lineRow('Spread', gameMarkets['spreads'], true, false, true));
-  wrap.appendChild(lineRow('Total', gameMarkets['totals'], false, true, true));
 
-  const secTT = document.createElement('div'); secTT.className='section-title'; secTT.textContent = `Team Totals (Full Game) \u2014 ${windowLabelText} Hit Rate`; wrap.appendChild(secTT);
-  wrap.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals'], true));
+  // Small helper: a clickable ▶/▼ header that shows/hides a content block below it.
+  function makeCollapsibleSection(parentEl, titleText, startExpanded){
+    const headerRow = document.createElement('div');
+    headerRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-top:4px;';
+    const arrow = document.createElement('span');
+    arrow.textContent = startExpanded ? '\u25be' : '\u25b8';
+    arrow.style.cssText = 'font-size:12px;color:var(--navy2);display:inline-block;width:12px;flex-shrink:0;';
+    const titleEl = document.createElement('div'); titleEl.className='section-title'; titleEl.style.margin='0';
+    titleEl.textContent = titleText;
+    headerRow.appendChild(arrow); headerRow.appendChild(titleEl);
+    parentEl.appendChild(headerRow);
+    const content = document.createElement('div');
+    content.style.display = startExpanded ? '' : 'none';
+    parentEl.appendChild(content);
+    headerRow.addEventListener('click', ()=>{
+      const isExpanded = content.style.display !== 'none';
+      content.style.display = isExpanded ? 'none' : '';
+      arrow.textContent = isExpanded ? '\u25b8' : '\u25be';
+    });
+    return content;
+  }
+
+  const sec1Content = makeCollapsibleSection(gameContentDiv, `Full Game \u2014 ${windowLabelText} Hit Rate`, true);
+  sec1Content.appendChild(lineRow('Moneyline', gameMarkets['h2h'], false, false, true));
+  sec1Content.appendChild(lineRow('Spread', gameMarkets['spreads'], true, false, true));
+  sec1Content.appendChild(lineRow('Total', gameMarkets['totals'], false, true, true));
+
+  const secTTContent = makeCollapsibleSection(gameContentDiv, `Team Totals (Full Game) \u2014 ${windowLabelText} Hit Rate`, true);
+  secTTContent.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals'], true));
 
   const halfNote = document.createElement('div'); halfNote.className='footnote'; halfNote.style.margin='4px 0 10px';
   halfNote.textContent = 'Half hit rates are derived from this season\u2019s play-by-play data (score at the end of Q2 = 1st half; final minus that = 2nd half). A small number of games can be missing this if their play-by-play log was incomplete \u2014 those are simply excluded from the count rather than treated as a miss, so the games-played figure in the badge may be slightly lower than the full-game one above.';
 
-  const sec2 = document.createElement('div'); sec2.className='section-title'; sec2.textContent='1st Half'; wrap.appendChild(sec2);
-  wrap.appendChild(halfNote.cloneNode(true));
-  wrap.appendChild(lineRow('Moneyline', detailMarkets['h2h_h1'], false, false, true, 1));
-  wrap.appendChild(lineRow('Spread', detailMarkets['spreads_h1'], true, false, true, 1));
-  wrap.appendChild(lineRow('Total', detailMarkets['totals_h1'], false, true, true, 1));
-  wrap.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h1'], true, 1));
+  const sec2Content = makeCollapsibleSection(gameContentDiv, '1st Half', false);
+  sec2Content.appendChild(halfNote.cloneNode(true));
+  sec2Content.appendChild(lineRow('Moneyline', detailMarkets['h2h_h1'], false, false, true, 1));
+  sec2Content.appendChild(lineRow('Spread', detailMarkets['spreads_h1'], true, false, true, 1));
+  sec2Content.appendChild(lineRow('Total', detailMarkets['totals_h1'], false, true, true, 1));
+  sec2Content.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h1'], true, 1));
 
-  const sec3 = document.createElement('div'); sec3.className='section-title'; sec3.textContent='2nd Half'; wrap.appendChild(sec3);
-  wrap.appendChild(lineRow('Moneyline', detailMarkets['h2h_h2'], false, false, true, 2));
-  wrap.appendChild(lineRow('Spread', detailMarkets['spreads_h2'], true, false, true, 2));
-  wrap.appendChild(lineRow('Total', detailMarkets['totals_h2'], false, true, true, 2));
-  wrap.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h2'], true, 2));
+  const sec3Content = makeCollapsibleSection(gameContentDiv, '2nd Half', false);
+  sec3Content.appendChild(lineRow('Moneyline', detailMarkets['h2h_h2'], false, false, true, 2));
+  sec3Content.appendChild(lineRow('Spread', detailMarkets['spreads_h2'], true, false, true, 2));
+  sec3Content.appendChild(lineRow('Total', detailMarkets['totals_h2'], false, true, true, 2));
+  sec3Content.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h2'], true, 2));
 
-  const sec4 = document.createElement('div'); sec4.className='section-title';
-  sec4.textContent = `Player Props (Points / Rebounds / Assists / Threes / Pts+Reb+Ast) \u2014 ${windowSize==='all' ? 'Full Season' : 'Last '+windowSize} Hit Rate`;
-  wrap.appendChild(sec4);
+  const sec4Content = makeCollapsibleSection(gameContentDiv, `Player Props (Points / Rebounds / Assists / Threes / Pts+Reb+Ast) \u2014 ${windowLabelText} Hit Rate`, true);
 
   const propDataRows = [];
   const propMarketsSeen = new Set();
@@ -1825,7 +1907,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         const overBtn = makeTrackAndHistoryButtons({
           label:`${pname} Over ${line} ${marketLabel}`, price:overO.price, betType:'player_prop',
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'over',
-          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10),
+          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10), eventId: ev.id,
         }, 10);
         overBtn.textContent = '+O'; overBtn.title = 'Track the Over';
         trackCell.appendChild(overBtn);
@@ -1834,7 +1916,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         const underBtn = makeTrackAndHistoryButtons({
           label:`${pname} Under ${line} ${marketLabel}`, price:underO.price, betType:'player_prop',
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'under',
-          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10),
+          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10), eventId: ev.id,
         }, 10);
         underBtn.textContent = '+U'; underBtn.title = 'Track the Under';
         trackCell.appendChild(underBtn);
@@ -1854,7 +1936,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
   });
 
   if(propDataRows.length){
-    buildFilterableTable(wrap, [
+    buildFilterableTable(sec4Content, [
       {key:'player', label:'Player', type:'text', align:'left'},
       {key:'market', label:'Market', type:'select', options:[...propMarketsSeen], align:'left'},
       {key:'line', label:'Line', type:'numRange'},
@@ -1865,13 +1947,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
     ], propDataRows);
   } else {
     const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;'; na.textContent='No player props posted by DraftKings for this game yet.';
-    wrap.appendChild(na);
+    sec4Content.appendChild(na);
   }
 
   // ================= Alternate lines (multiple X+ milestone levels per player) =================
-  const sec5 = document.createElement('div'); sec5.className='section-title';
-  sec5.textContent = `Player Props \u2014 Multiple Levels (Alt Lines, incl. Pts+Reb+Ast) \u2014 ${windowSize==='all' ? 'Full Season' : 'Last '+windowSize} Hit Rate`;
-  wrap.appendChild(sec5);
+  const sec5Content = makeCollapsibleSection(gameContentDiv, `Player Props \u2014 Multiple Levels (Alt Lines, incl. Pts+Reb+Ast) \u2014 ${windowLabelText} Hit Rate`, false);
 
   const altDataRows = [];
   const altMarketsSeen = new Set();
@@ -1904,7 +1984,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         const trackBtn = team ? makeTrackAndHistoryButtons({
           label:`${pname} Over ${lvl.point} ${marketLabel}`, price:lvl.price, betType:'player_prop_alt',
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line:lvl.point, side:'over',
-          thresholdToHit: lvl.point, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10),
+          thresholdToHit: lvl.point, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10), eventId: ev.id,
         }, 10) : null;
 
         altDataRows.push({
@@ -1919,7 +1999,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
   });
 
   if(altDataRows.length){
-    buildFilterableTable(wrap, [
+    buildFilterableTable(sec5Content, [
       {key:'player', label:'Player', type:'text', align:'left'},
       {key:'market', label:'Market', type:'select', options:[...altMarketsSeen], align:'left'},
       {key:'level', label:'Level', type:'numRange'},
@@ -1929,11 +2009,12 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
     ], altDataRows);
   } else {
     const na2 = document.createElement('div'); na2.style.cssText='color:var(--sub);font-size:13px;'; na2.textContent='No alternate-line (multiple level) player props posted by DraftKings for this game yet.';
-    wrap.appendChild(na2);
+    sec5Content.appendChild(na2);
   }
 
-  buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.75);
-  buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.70);
+  const sec6Content = makeCollapsibleSection(gameContentDiv, 'Auto-Generated Parlays', false);
+  buildParlaySection(sec6Content, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.75);
+  buildParlaySection(sec6Content, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.70);
 
   container.appendChild(wrap);
 }
