@@ -53,10 +53,6 @@
   .gamechip{text-align:left;background:#fff;border:1px solid var(--line);border-radius:6px;padding:8px 12px;font-size:12.5px;cursor:pointer;}
   .gamechip:hover{background:#eef4ff;}
   .gamechip .d{color:var(--sub);font-size:11px;}
-  .propboard{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;margin-top:10px;}
-  .propboard-row{display:grid;grid-template-columns:1.4fr 1fr 1fr 90px 1fr 90px 30px;gap:8px;align-items:center;margin-bottom:8px;}
-  .propboard-row select, .propboard-row input{padding:6px 8px;border:1px solid var(--line);border-radius:5px;font-size:13px;font-family:var(--sans);}
-  .propboard-row .result{font-weight:800;font-size:13px;text-align:center;padding:4px;border-radius:4px;}
   .result.green{color:var(--green);background:var(--greenbg);}
   .result.red{color:var(--red);background:var(--redbg);}
   .result.gold{color:var(--gold);background:var(--goldbg);font-weight:800;}
@@ -623,121 +619,6 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   main.appendChild(fn2);
 }
 
-/* ---------- Player Props Board ---------- */
-const STAT_OPTIONS = [
-  {key:'pts', label:'Points'}, {key:'reb', label:'Rebounds'}, {key:'ast', label:'Assists'}, {key:'tpm', label:'3-Pointers Made'},
-];
-function allPlayers(){
-  return Object.values(DATA.fullPlayerLogs).sort((a,b)=>a.player.localeCompare(b.player));
-}
-function renderPropsPage(){
-  lastRender = () => renderPropsPage();
-  main.innerHTML='';
-  const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>Player Prop Board</h2><div class="meta">Enter a stat line the way a sportsbook would show it (e.g. "12+ Points"), and see the last-10-game hit rate for that exact number.</div>`;
-  main.appendChild(head);
-
-  const banner = document.createElement('div'); banner.className='banner';
-  banner.innerHTML = `<b>How to use this:</b> DraftKings doesn't expose a public data feed I can pull automatically, so lines aren't loaded live here. Paste in lines from the DraftKings app (or ask me in chat to look a game's props up and I'll fill this board for you), pick the player/stat/line below, and this board instantly computes their hit rate over their team's last 10 games and colors it: <span style="color:var(--green);font-weight:700">green</span> if they've hit the over in 60%+ of those games, <span style="color:var(--red);font-weight:700">red</span> if they've hit the under 60%+ of the time.`;
-  main.appendChild(banner);
-
-  const board = document.createElement('div'); board.className='propboard';
-  const headerRow = document.createElement('div'); headerRow.className='propboard-row';
-  headerRow.style.fontWeight='700'; headerRow.style.fontSize='11px'; headerRow.style.textTransform='uppercase'; headerRow.style.color='var(--sub)';
-  headerRow.innerHTML = '<div>Player</div><div>Team</div><div>Stat</div><div>Line (X+)</div><div>Hit Rate</div><div>Result</div><div></div>';
-  board.appendChild(headerRow);
-  const rowsContainer = document.createElement('div');
-  board.appendChild(rowsContainer);
-
-  const players = allPlayers();
-
-  function addRow(presetPlayerKey, presetStat, presetLine){
-    const row = document.createElement('div'); row.className='propboard-row';
-
-    const playerSel = document.createElement('select');
-    players.forEach(p=>{
-      const opt = document.createElement('option');
-      opt.value = p.player+'|'+p.team; opt.textContent = `${p.player} (${p.team})`;
-      playerSel.appendChild(opt);
-    });
-    if(presetPlayerKey) playerSel.value = presetPlayerKey;
-
-    const teamSpan = document.createElement('div'); teamSpan.style.color='var(--sub)'; teamSpan.style.fontSize='12px';
-
-    const statSel = document.createElement('select');
-    STAT_OPTIONS.forEach(s=>{
-      const opt = document.createElement('option'); opt.value=s.key; opt.textContent=s.label; statSel.appendChild(opt);
-    });
-    if(presetStat) statSel.value = presetStat;
-
-    const lineInput = document.createElement('input'); lineInput.type='number'; lineInput.min='0'; lineInput.placeholder='e.g. 12';
-    if(presetLine !== undefined) lineInput.value = presetLine;
-
-    const hitRateDiv = document.createElement('div'); hitRateDiv.style.fontSize='12px';
-    const resultDiv = document.createElement('div'); resultDiv.className='result neutral'; resultDiv.textContent='—';
-    const rmBtn = document.createElement('button'); rmBtn.className='rmbtn'; rmBtn.textContent='✕';
-    rmBtn.addEventListener('click', ()=>{ row.remove(); });
-
-    function recompute(){
-      const key = playerSel.value;
-      const pl = windowedPlayerLog(key, 10);
-      teamSpan.textContent = pl ? pl.team : '';
-      const statKey = statSel.value;
-      const line = parseFloat(lineInput.value);
-      if(!pl || isNaN(line)){
-        hitRateDiv.innerHTML=''; resultDiv.className='result neutral'; resultDiv.textContent='—';
-        return;
-      }
-      const played = pl.log.filter(g=>!g.dnp);
-      const gp = played.length;
-      const hits = played.filter(g=>g[statKey] !== null && g[statKey] >= line).length;
-      const rate = gp ? hits/gp : 0;
-      hitRateDiv.innerHTML = '';
-      const link = document.createElement('a');
-      link.href = 'javascript:void(0)'; link.className='player-link'; link.style.fontSize='12px';
-      link.textContent = `${hits}/${gp} games (view log)`;
-      link.addEventListener('click', ()=>{ goToPlayer(pl.player, pl.team); });
-      hitRateDiv.appendChild(link);
-      const pctTxt = (rate*100).toFixed(0)+'%';
-      if(gp === 0){
-        resultDiv.className='result neutral'; resultDiv.textContent='No data';
-      } else if(rate >= 0.6){
-        const pctNum = Math.round(rate*100);
-        resultDiv.className = pctNum>=96 ? 'result gold' : 'result green';
-        resultDiv.textContent = pctTxt+' OVER';
-      } else if(rate <= 0.4){
-        const underPct = 100-Math.round(rate*100);
-        resultDiv.className = underPct>=96 ? 'result gold' : 'result red';
-        resultDiv.textContent = underPct+'% UNDER';
-      } else {
-        resultDiv.className='result neutral'; resultDiv.textContent = pctTxt+' over';
-      }
-    }
-    playerSel.addEventListener('change', recompute);
-    statSel.addEventListener('change', recompute);
-    lineInput.addEventListener('input', recompute);
-
-    row.appendChild(playerSel); row.appendChild(teamSpan); row.appendChild(statSel);
-    row.appendChild(lineInput); row.appendChild(hitRateDiv); row.appendChild(resultDiv); row.appendChild(rmBtn);
-    rowsContainer.appendChild(row);
-    recompute();
-  }
-
-  // seed with a few example rows so the board isn't empty
-  addRow('Kelsey Mitchell|Fever', 'tpm', 3);
-  addRow('Aliyah Boston|Fever', 'reb', 6);
-  addRow('Caitlin Clark|Fever', 'ast', 6);
-
-  const addBtn = document.createElement('button'); addBtn.className='addbtn'; addBtn.textContent='+ Add another line';
-  addBtn.addEventListener('click', ()=>addRow());
-  board.appendChild(addBtn);
-  main.appendChild(board);
-
-  const fn = document.createElement('div'); fn.className='footnote';
-  fn.innerHTML = "Hit rate is computed over each player's own team's last 10 games actually played (DNPs excluded from the denominator). This is historical frequency, not a probability forecast \u2014 small samples (10 games) carry real uncertainty, especially near the 60% cutoff.";
-  main.appendChild(fn);
-}
-
 /* ---------- nav ---------- */
 function navBtn(text, onClick){
   const b = document.createElement('button'); b.className='navbtn'; b.textContent=text;
@@ -765,10 +646,9 @@ function buildTopLinks(){
   const tl = document.getElementById('toplinks');
   const homeBtn = document.createElement('button'); homeBtn.textContent='Home'; homeBtn.classList.add('active');
   const explorerBtn = document.createElement('button'); explorerBtn.textContent='Team Explorer';
-  const propsBtn = document.createElement('button'); propsBtn.textContent='Player Props Board';
   const oddsBtn = document.createElement('button'); oddsBtn.textContent='DraftKings Odds (Live)';
   const trackerBtn = document.createElement('button'); trackerBtn.textContent='Bet Tracker';
-  function clearActive(){ [homeBtn,explorerBtn,propsBtn,oddsBtn,trackerBtn].forEach(b=>b.classList.remove('active')); }
+  function clearActive(){ [homeBtn,explorerBtn,oddsBtn,trackerBtn].forEach(b=>b.classList.remove('active')); }
   homeBtn.addEventListener('click', ()=>{
     clearActive(); homeBtn.classList.add('active');
     nav.innerHTML=''; nav.style.display='none';
@@ -777,11 +657,6 @@ function buildTopLinks(){
   explorerBtn.addEventListener('click', ()=>{
     clearActive(); explorerBtn.classList.add('active');
     nav.style.display=''; buildNav();
-  });
-  propsBtn.addEventListener('click', ()=>{
-    clearActive(); propsBtn.classList.add('active');
-    nav.innerHTML=''; nav.style.display='none';
-    renderPropsPage();
   });
   oddsBtn.addEventListener('click', ()=>{
     clearActive(); oddsBtn.classList.add('active');
@@ -793,7 +668,7 @@ function buildTopLinks(){
     nav.innerHTML=''; nav.style.display='none';
     renderBetTrackerPage();
   });
-  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(propsBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn);
+  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn);
 }
 async function initApp(){
   try {
