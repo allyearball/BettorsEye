@@ -1414,7 +1414,7 @@ function renderOddsPage(){
       const sgWindowRow = buildWindowSelector('Hit-rate window (this game):', singleGameWindow, (val)=>{ singleGameWindow = val; renderResultsArea(); });
       resultsDiv.appendChild(sgWindowRow);
 
-      renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null);
+      renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null, false);
     } else {
       windowRow.style.display = '';
       topBetsDiv.style.display = '';
@@ -1679,15 +1679,16 @@ function renderTopBets(container, cachedFetch, topN){
   container.appendChild(grid);
 }
 
-function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
+function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, startCollapsed){
   windowSize = windowSize===undefined ? 10 : windowSize;
+  startCollapsed = startCollapsed===undefined ? true : startCollapsed;
   const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
   const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
   const wrap = document.createElement('div'); wrap.className='table-wrap'; wrap.style.padding='16px'; wrap.style.marginBottom='20px';
 
   const titleRow = document.createElement('div'); titleRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
   const gameArrow = document.createElement('span');
-  gameArrow.textContent = '\u25be';
+  gameArrow.textContent = startCollapsed ? '\u25b8' : '\u25be';
   gameArrow.style.cssText = 'font-size:13px;color:var(--navy2);cursor:pointer;user-select:none;display:inline-block;width:14px;flex-shrink:0;';
   titleRow.appendChild(gameArrow);
 
@@ -1709,6 +1710,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
   wrap.appendChild(titleRow);
 
   const gameContentDiv = document.createElement('div'); gameContentDiv.style.marginTop = '6px';
+  if(startCollapsed) gameContentDiv.style.display = 'none';
   wrap.appendChild(gameContentDiv);
   gameArrow.addEventListener('click', ()=>{
     const isExpanded = gameContentDiv.style.display !== 'none';
