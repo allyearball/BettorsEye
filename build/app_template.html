@@ -255,30 +255,137 @@ function goToPlayer(playerName, team, windowMode){
   renderPlayerPage(playerName, team, returnTo, windowMode);
 }
 
-function renderTeamPage(team, viewMode){
-  viewMode = viewMode || 'last10'; // 'last10' | 'full'
-  lastRender = () => renderTeamPage(team, viewMode);
-  const t = DATA.teams[team];
-  const isFull = viewMode === 'full';
-  const gameIds = isFull ? t.gameIdsFull : t.gameIds;
-  const summary = isFull ? t.summaryFull : t.summary;
+const MONTH_NAMES = {'01':'January','02':'February','03':'March','04':'April','05':'May','06':'June',
+  '07':'July','08':'August','09':'September','10':'October','11':'November','12':'December'};
+
+function teamGameDates(team){
+  return DATA.teams[team].gameIdsFull.map(gid => ({gid, date: DATA.games[String(gid)].date}));
+}
+function availableYears(team){
+  return [...new Set(teamGameDates(team).map(d=>d.date.slice(0,4)))].sort();
+}
+function availableMonthsForYear(team, year){
+  return [...new Set(teamGameDates(team).filter(d=>d.date.slice(0,4)===year).map(d=>d.date.slice(5,7)))].sort();
+}
+function filterGameIdsByYearMonth(team, year, month){
+  return teamGameDates(team)
+    .filter(d => d.date.slice(0,4)===year && (month==='full' || d.date.slice(5,7)===month))
+    .map(d => d.gid);
+}
+
+function availableYearsForLog(log){ return [...new Set(log.map(g=>g.date.slice(0,4)))].sort(); }
+function availableMonthsForYearInLog(log, year){ return [...new Set(log.filter(g=>g.date.slice(0,4)===year).map(g=>g.date.slice(5,7)))].sort(); }
+
+// Builds the Year + Month dropdown pair used on Team Explorer and Player pages.
+// onChange(year, month) fires whenever either selection changes; month always resets
+// to 'full' (Full Season) when the year changes, since prior months may not apply.
+function buildYearMonthSelector(yearsList, monthsForYearFn, currentYear, currentMonth, onChange){
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;gap:10px;align-items:center;';
+  const selStyle = 'padding:6px 10px;border:1px solid var(--line);border-radius:6px;font-size:12.5px;font-family:var(--sans);background:#fff;';
+
+  const yearSel = document.createElement('select'); yearSel.style.cssText = selStyle;
+  yearsList.forEach(y=>{ const op=document.createElement('option'); op.value=y; op.textContent=y; yearSel.appendChild(op); });
+  yearSel.value = currentYear;
+
+  const monthSel = document.createElement('select'); monthSel.style.cssText = selStyle;
+  function rebuildMonths(year, preferredMonth){
+    monthSel.innerHTML = '';
+    const full = document.createElement('option'); full.value='full'; full.textContent='Full Season'; monthSel.appendChild(full);
+    monthsForYearFn(year).forEach(m=>{
+      const op = document.createElement('option'); op.value=m; op.textContent=MONTH_NAMES[m]||m; monthSel.appendChild(op);
+    });
+    monthSel.value = preferredMonth;
+    if(monthSel.value !== preferredMonth) monthSel.value = 'full'; // preferred month doesn't exist in this year
+  }
+  rebuildMonths(currentYear, currentMonth);
+
+  yearSel.addEventListener('change', ()=>{ rebuildMonths(yearSel.value, 'full'); onChange(yearSel.value, monthSel.value); });
+  monthSel.addEventListener('change', ()=>{ onChange(yearSel.value, monthSel.value); });
+
+  wrap.appendChild(yearSel); wrap.appendChild(monthSel);
+  return wrap;
+}
+
+// Computes Player Totals / Averages / Opponent Totals entirely client-side for an arbitrary
+// set of game IDs — this is what makes Year/Month (or any future custom range) possible
+// without needing Python to have pre-baked every possible slice server-side.
+function computeTeamSummaryClientSide(team, gameIds){
+  const STAT_KEYS = ['min','pts','fgm','fga','tpm','tpa','ftm','fta','oreb','dreb','reb','ast','stl','blk','to','pf'];
+  const totalsMap = {};
+  gameIds.forEach(gid=>{
+    const g = DATA.games[String(gid)];
+    if(!g) return;
+    g.rows.forEach(r=>{
+      if(r.team !== team) return;
+      if(!totalsMap[r.athleteId]){
+        const row = {player:r.player, athleteId:r.athleteId, gp:0, gs:0};
+        STAT_KEYS.forEach(k=>{ row[k]=0; });
+        totalsMap[r.athleteId] = row;
+      }
+      const acc = totalsMap[r.athleteId];
+      if(!r.dnp){ acc.gp++; if(r.starter) acc.gs++; }
+      STAT_KEYS.forEach(k=>{ const v = r[k]; if(v!==null && v!==undefined) acc[k]+=v; });
+    });
+  });
+  const totals = Object.values(totalsMap).map(t=>{
+    const bio = bioLookup(t.player, team);
+    return Object.assign({}, t, bio, {
+      fgPct: t.fga ? Math.round((t.fgm/t.fga)*10000)/10000 : null,
+      tpPct: t.tpa ? Math.round((t.tpm/t.tpa)*10000)/10000 : null,
+      ftPct: t.fta ? Math.round((t.ftm/t.fta)*10000)/10000 : null,
+    });
+  });
+  const averages = totals.map(t=>{
+    const a = Object.assign({}, t);
+    STAT_KEYS.forEach(k=>{ a[k] = t.gp ? Math.round((t[k]/t.gp)*100)/100 : null; });
+    return a;
+  });
+  const opponents = gameIds.map(gid=>{
+    const g = DATA.games[String(gid)];
+    if(!g) return null;
+    const isHome = g.home === team;
+    const teamPts = isHome ? g.homeScore : g.awayScore;
+    const oppPts = isHome ? g.awayScore : g.homeScore;
+    const oppName = isHome ? g.away : g.home;
+    const oppRows = g.rows.filter(r=>r.team !== team);
+    const sum = key => oppRows.reduce((a,r)=> a + (r[key]||0), 0);
+    const oppFgm = sum('fgm'), oppFga = sum('fga'), oppTpm = sum('tpm'), oppTpa = sum('tpa'),
+          oppFtm = sum('ftm'), oppFta = sum('fta');
+    return {
+      date: g.date, opponent: oppName, teamPts, oppPts,
+      oppFgm, oppFga, oppFgPct: oppFga ? Math.round((oppFgm/oppFga)*10000)/10000 : null,
+      oppTpm, oppTpa, oppFtm, oppFta,
+      oppOreb: sum('oreb'), oppDreb: sum('dreb'), oppReb: sum('reb'),
+      oppAst: sum('ast'), oppStl: sum('stl'), oppBlk: sum('blk'), oppTo: sum('to'), oppPf: sum('pf'),
+    };
+  }).filter(Boolean).sort((a,b)=>a.date.localeCompare(b.date));
+
+  return {totals, averages, opponents};
+}
+
+function renderTeamPage(team, year, month){
+  const years = availableYears(team);
+  year = year || years[years.length-1];
+  month = month || 'full';
+  lastRender = () => renderTeamPage(team, year, month);
+
+  const gameIds = filterGameIdsByYearMonth(team, year, month);
+  const summary = computeTeamSummaryClientSide(team, gameIds);
+  const monthLabel = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
 
   main.innerHTML = '';
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>${team} \u2014 ${isFull ? 'Full Season' : 'Last '+t.gameIds.length+' Games'}</h2><div class="meta">Player totals, per-game averages, opponent output, and individual game box scores. Click any player's name to see her full recent game log.</div>`;
+  head.innerHTML = `<h2>${team} \u2014 ${year}, ${monthLabel} (${gameIds.length} Games)</h2><div class="meta">Player totals, per-game averages, opponent output, and individual game box scores. Click any player's name to see her full recent game log.</div>`;
   main.appendChild(head);
 
-  const toggleRow = document.createElement('div');
-  toggleRow.style.cssText = 'display:flex;gap:8px;margin-bottom:16px;';
-  [ {label:`Last ${t.gameIds.length} Games`, mode:'last10'}, {label:`Full Season (${t.gameIdsFull.length} Games)`, mode:'full'} ].forEach(opt=>{
-    const b = document.createElement('button');
-    b.textContent = opt.label;
-    const active = opt.mode === viewMode;
-    b.style.cssText = `padding:6px 14px;border-radius:6px;border:1px solid ${active?'var(--navy2)':'var(--line)'};background:${active?'var(--navy2)':'#fff'};color:${active?'#fff':'var(--ink)'};font-size:12.5px;cursor:pointer;font-family:var(--sans);font-weight:${active?'700':'400'};`;
-    b.addEventListener('click', ()=>{ if(opt.mode!==viewMode) renderTeamPage(team, opt.mode); });
-    toggleRow.appendChild(b);
-  });
-  main.appendChild(toggleRow);
+  const selectorRow = document.createElement('div');
+  selectorRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:16px;';
+  const selectorLabel = document.createElement('div'); selectorLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;';
+  selectorLabel.textContent = 'Season:';
+  selectorRow.appendChild(selectorLabel);
+  selectorRow.appendChild(buildYearMonthSelector(availableYears(team), (y)=>availableMonthsForYear(team,y), year, month, (y,m)=>renderTeamPage(team, y, m)));
+  main.appendChild(selectorRow);
 
   const t1 = document.createElement('div'); t1.className='section-title'; t1.textContent='Player Totals'; main.appendChild(t1);
   makeTable(main, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team});
@@ -291,6 +398,10 @@ function renderTeamPage(team, viewMode){
 
   const t4 = document.createElement('div'); t4.className='section-title'; t4.textContent='Individual Games (click to view box score)'; main.appendChild(t4);
   const list = document.createElement('div'); list.className='gamelist';
+  if(gameIds.length===0){
+    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;'; na.textContent='No games in this range.';
+    list.appendChild(na);
+  }
   gameIds.slice().reverse().forEach(gid=>{
     const g = DATA.games[String(gid)];
     const chip = document.createElement('button'); chip.className='gamechip';
@@ -351,23 +462,31 @@ const PLAYER_LOG_COLS = [
 const STAT_KEYS_FOR_SUMMARY = ['min','pts','fgm','fga','fgPct','tpm','tpa','tpPct','ftm','fta','ftPct',
   'oreb','dreb','reb','ast','stl','blk','to','pf','plusMinus'];
 
-function renderPlayerPage(playerName, team, returnTo, windowMode){
+function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   windowMode = windowMode===undefined ? 10 : windowMode; // default matches prior behavior
-  lastRender = () => renderPlayerPage(playerName, team, returnTo, windowMode);
+  month = month || 'full';
   const key = `${playerName}|${team}`;
-  const pl = windowedPlayerLog(key, windowMode);
+  const fullLogObj = DATA.fullPlayerLogs[key];
+  const fullLog = fullLogObj ? fullLogObj.log : [];
+  const years = availableYearsForLog(fullLog);
+  year = year || years[years.length-1];
+  lastRender = () => renderPlayerPage(playerName, team, returnTo, windowMode, year, month);
   main.innerHTML = '';
 
   const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
   back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else buildNav(); });
   main.appendChild(back);
 
-  if(!pl){
+  if(!fullLogObj){
     const head = document.createElement('div'); head.className='pagehead';
     head.innerHTML = `<h2>${playerName}</h2><div class="meta">No recent game log found for ${playerName} on ${team}.</div>`;
     main.appendChild(head);
     return;
   }
+
+  const dateFiltered = fullLog.filter(g => g.date.slice(0,4)===year && (month==='full' || g.date.slice(5,7)===month));
+  const windowedLog = windowSlice(dateFiltered, windowMode);
+  const pl = { player: fullLogObj.player, team: fullLogObj.team, athleteId: fullLogObj.athleteId, log: windowedLog };
 
   const teamData = DATA.teams[team];
   let bio = null;
@@ -389,14 +508,27 @@ function renderPlayerPage(playerName, team, returnTo, windowMode){
       <span><b>Weight:</b> ${bio.weight ?? '\u2014'} lb</span>
       <span><b>Age:</b> ${bio.age ?? '\u2014'}</span>
       <span><b>DOB:</b> ${bio.dob ?? '\u2014'}</span>
-      <span><b>GP:</b> ${gpInWindow} / <b>GS:</b> ${gsInWindow} (in window selected below)</span>
+      <span><b>GP:</b> ${gpInWindow} / <b>GS:</b> ${gsInWindow} (in range/window selected below)</span>
     `;
     main.appendChild(bioDiv);
   }
 
+  // Year/Month filter — narrows the calendar range; the rolling-window buttons below then
+  // apply within whatever that range contains (e.g. "Last 10" within June 2026 specifically).
+  const selectorRow = document.createElement('div');
+  selectorRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin:14px 0;';
+  const selectorLabel = document.createElement('div'); selectorLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;';
+  selectorLabel.textContent = 'Season:';
+  selectorRow.appendChild(selectorLabel);
+  selectorRow.appendChild(buildYearMonthSelector(
+    years, (y)=>availableMonthsForYearInLog(fullLog,y), year, month,
+    (y,m)=>renderPlayerPage(playerName, team, returnTo, windowMode, y, m)
+  ));
+  main.appendChild(selectorRow);
+
   // window filter — same control style as the Odds page, applied to the game log + summary rows below
   const windowRow = document.createElement('div');
-  windowRow.style.cssText = 'display:flex;align-items:center;gap:18px;margin:14px 0 16px;font-size:13px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px 14px;';
+  windowRow.style.cssText = 'display:flex;align-items:center;gap:18px;margin:0 0 16px;font-size:13px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px 14px;';
   const windowLabel = document.createElement('div'); windowLabel.style.cssText='font-weight:700;color:var(--navy2);'; windowLabel.textContent = 'Game log window:';
   windowRow.appendChild(windowLabel);
   const WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
@@ -405,14 +537,15 @@ function renderPlayerPage(playerName, team, returnTo, windowMode){
     b.textContent = opt.label;
     const active = opt.value===windowMode;
     b.style.cssText = `padding:5px 12px;border-radius:5px;border:1px solid ${active?'var(--navy2)':'var(--line)'};background:${active?'var(--navy2)':'#fff'};color:${active?'#fff':'var(--ink)'};font-size:12.5px;cursor:pointer;font-family:var(--sans);`;
-    b.addEventListener('click', ()=>{ if(opt.value!==windowMode) renderPlayerPage(playerName, team, returnTo, opt.value); });
+    b.addEventListener('click', ()=>{ if(opt.value!==windowMode) renderPlayerPage(playerName, team, returnTo, opt.value, year, month); });
     windowRow.appendChild(b);
   });
   main.appendChild(windowRow);
 
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
+  const monthLabelText = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
   const t1 = document.createElement('div'); t1.className='section-title';
-  t1.textContent = `Full Box Score \u2014 ${windowLabelText} (${pl.log.length} Games, DNPs included)`;
+  t1.textContent = `Full Box Score \u2014 ${year} ${monthLabelText}, ${windowLabelText} (${pl.log.length} Games, DNPs included)`;
   main.appendChild(t1);
 
   const logRows = pl.log.map(g=>({
@@ -425,6 +558,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode){
 
   const footerRows = [];
   const labels = [
+    {label:'TOTAL (games played)', fn: arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)*100)/100 : null},
     {label:'MIN (games played)', fn: arr => arr.length ? Math.min(...arr) : null},
     {label:'MAX (games played)', fn: arr => arr.length ? Math.max(...arr) : null},
     {label:'AVERAGE (games played)', fn: arr => arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*100)/100 : null},
@@ -588,7 +722,8 @@ function buildTopLinks(){
   const explorerBtn = document.createElement('button'); explorerBtn.textContent='Team Explorer';
   const propsBtn = document.createElement('button'); propsBtn.textContent='Player Props Board';
   const oddsBtn = document.createElement('button'); oddsBtn.textContent='DraftKings Odds (Live)';
-  function clearActive(){ [homeBtn,explorerBtn,propsBtn,oddsBtn].forEach(b=>b.classList.remove('active')); }
+  const trackerBtn = document.createElement('button'); trackerBtn.textContent='Bet Tracker';
+  function clearActive(){ [homeBtn,explorerBtn,propsBtn,oddsBtn,trackerBtn].forEach(b=>b.classList.remove('active')); }
   homeBtn.addEventListener('click', ()=>{
     clearActive(); homeBtn.classList.add('active');
     nav.innerHTML=''; nav.style.display='none';
@@ -608,7 +743,12 @@ function buildTopLinks(){
     nav.innerHTML=''; nav.style.display='none';
     renderOddsPage();
   });
-  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(propsBtn); tl.appendChild(oddsBtn);
+  trackerBtn.addEventListener('click', ()=>{
+    clearActive(); trackerBtn.classList.add('active');
+    nav.innerHTML=''; nav.style.display='none';
+    renderBetTrackerPage();
+  });
+  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(propsBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn);
 }
 async function initApp(){
   try {
@@ -923,8 +1063,8 @@ function dkPlayerOutcomes(market, playerName, side){
   return market.outcomes.find(x=>x.description===playerName && x.name===side) || null;
 }
 
-async function fetchJson(url){
-  const resp = await fetch(url);
+async function fetchJson(url, options){
+  const resp = await fetch(url, options);
   if(!resp.ok){
     const text = await resp.text().catch(()=> '');
     throw new Error(`HTTP ${resp.status}: ${text.slice(0,200)}`);
@@ -1304,6 +1444,7 @@ function renderTopBets(container, cachedFetch, topN){
     detail.style.cssText = 'font-size:12px;';
     detail.innerHTML = `${fmtAmerican(c.price)} \u2014 L10: ${Math.round(c.rate10*100)}%, L15: ${Math.round(c.rate15*100)}%`;
     card.appendChild(rank); card.appendChild(label); card.appendChild(game); card.appendChild(detail);
+    card.appendChild(makeTrackButton(c, 10));
     grid.appendChild(card);
   });
   container.appendChild(grid);
@@ -1360,18 +1501,23 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
       row.appendChild(na);
       return row;
     }
-    function cell(text, hr){
+    function cell(text, hr, trackBtn){
       const c = document.createElement('div');
       const span = document.createElement('span'); span.textContent = text; c.appendChild(span);
       if(withHitRate && hr){ c.appendChild(document.createElement('br')); c.appendChild(resultBadge(hr)); }
+      if(trackBtn){ c.appendChild(document.createElement('br')); c.appendChild(trackBtn); }
       return c;
     }
+    const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+    const gameDate = (ev.commence_time||'').slice(0,10);
     if(isTotal){
       const over = dkOutcome(market,'Over'); const under = dkOutcome(market,'Under');
       const point = over ? over.point : (under ? under.point : undefined);
       const hr = withHitRate ? (half ? teamTotalHitRateHalf(awayShort, half, point, windowSize) : teamTotalHitRate(awayShort, point, windowSize)) : null; // combined total, same for either team
-      row.appendChild(cell(over ? `Over ${over.point} (${over.price>0?'+':''}${over.price})` : '\u2014', hr));
-      row.appendChild(cell(under ? `Under ${under.point} (${under.price>0?'+':''}${under.price})` : '\u2014', null));
+      const overTrack = (!half && over) ? makeTrackButton({label:`Game Total Over ${point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time}, 10) : null;
+      const underTrack = (!half && under) ? makeTrackButton({label:`Game Total Under ${point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time}, 10) : null;
+      row.appendChild(cell(over ? `Over ${over.point} (${over.price>0?'+':''}${over.price})` : '\u2014', hr, overTrack));
+      row.appendChild(cell(under ? `Under ${under.point} (${under.price>0?'+':''}${under.price})` : '\u2014', null, underTrack));
     } else {
       const away = dkOutcome(market, ev.away_team); const home = dkOutcome(market, ev.home_team);
       function fmtSide(o){
@@ -1389,8 +1535,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
           homeHr = half ? teamMoneylineHitRateHalf(homeShort, half, windowSize) : teamMoneylineHitRate(homeShort, windowSize);
         }
       }
-      row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr));
-      row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr));
+      const betType = isSpread ? 'spread' : 'moneyline';
+      const awayTrack = (!half && away) ? makeTrackButton(Object.assign({label:`${ev.away_team}${isSpread?' '+(away.point>0?'+':'')+away.point:' Moneyline'}`, price:away.price, betType, team:awayShort, opponent:homeShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time}, isSpread?{line:away.point}:{}), 10) : null;
+      const homeTrack = (!half && home) ? makeTrackButton(Object.assign({label:`${ev.home_team}${isSpread?' '+(home.point>0?'+':'')+home.point:' Moneyline'}`, price:home.price, betType, team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time}, isSpread?{line:home.point}:{}), 10) : null;
+      row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr, awayTrack));
+      row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr, homeTrack));
     }
     return row;
   }
@@ -1404,8 +1553,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
       row.appendChild(na);
       return row;
     }
+    const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+    const gameDate = (ev.commence_time||'').slice(0,10);
     [ev.away_team, ev.home_team].forEach((teamFullName, idx)=>{
       const shortName = idx===0 ? awayShort : homeShort;
+      const oppShort = idx===0 ? homeShort : awayShort;
       const over = market.outcomes.find(o=>o.name==='Over' && o.description===teamFullName);
       const under = market.outcomes.find(o=>o.name==='Under' && o.description===teamFullName);
       const c = document.createElement('div');
@@ -1420,6 +1572,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
       if(withHitRate && over){
         const hr = half ? teamOwnTotalHitRateHalf(shortName, half, over.point, windowSize) : teamOwnTotalHitRate(shortName, over.point, windowSize);
         c.appendChild(resultBadge(hr));
+      }
+      if(!half && over){
+        c.appendChild(makeTrackButton({label:`${teamFullName} Team Total Over ${over.point}`, price:over.price, betType:'team_total', team:shortName, opponent:oppShort, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time}, 10));
       }
       row.appendChild(c);
     });
@@ -1481,6 +1636,27 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         nameCell = link;
       } else { nameCell = pname; }
 
+      const overThreshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
+      const trackCell = document.createElement('div'); trackCell.style.cssText='display:flex;gap:4px;justify-content:center;';
+      if(overO && team){
+        const overBtn = makeTrackButton({
+          label:`${pname} Over ${line} ${marketLabel}`, price:overO.price, betType:'player_prop',
+          team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'over',
+          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10),
+        }, 10);
+        overBtn.textContent = '+O'; overBtn.title = 'Track the Over';
+        trackCell.appendChild(overBtn);
+      }
+      if(underO && team){
+        const underBtn = makeTrackButton({
+          label:`${pname} Under ${line} ${marketLabel}`, price:underO.price, betType:'player_prop',
+          team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'under',
+          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10),
+        }, 10);
+        underBtn.textContent = '+U'; underBtn.title = 'Track the Under';
+        trackCell.appendChild(underBtn);
+      }
+
       propDataRows.push({
         filterValues: {
           player: pname, market: marketLabel, line: line,
@@ -1489,7 +1665,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         },
         cells: [nameCell, marketLabel, line!==undefined?line:'\u2014',
                 overO ? fmtAmerican(overO.price) : '\u2014', underO ? fmtAmerican(underO.price) : '\u2014',
-                resultBadge(hr)],
+                resultBadge(hr), trackCell],
       });
     });
   });
@@ -1502,6 +1678,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
       {key:'over', label:'Over', type:'numRange'},
       {key:'under', label:'Under', type:'numRange'},
       {key:'hitRate', label:'Hit Rate %', type:'numRange'},
+      {key:'track', label:'Track'},
     ], propDataRows);
   } else {
     const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;'; na.textContent='No player props posted by DraftKings for this game yet.';
@@ -1541,12 +1718,18 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
           nameCell = link;
         } else { nameCell = pname; }
 
+        const trackBtn = team ? makeTrackButton({
+          label:`${pname} Over ${lvl.point} ${marketLabel}`, price:lvl.price, betType:'player_prop_alt',
+          team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line:lvl.point, side:'over',
+          thresholdToHit: lvl.point, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10),
+        }, 10) : null;
+
         altDataRows.push({
           filterValues: {
             player: pname, market: marketLabel, level: lvl.point, price: lvl.price,
             hitRate: (hr && hr.found) ? Math.round(hr.rate*100) : null,
           },
-          cells: [nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr)],
+          cells: [nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr), trackBtn || '\u2014'],
         });
       });
     });
@@ -1559,6 +1742,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
       {key:'level', label:'Level', type:'numRange'},
       {key:'price', label:'Price', type:'numRange'},
       {key:'hitRate', label:'Hit Rate %', type:'numRange'},
+      {key:'track', label:'Track'},
     ], altDataRows);
   } else {
     const na2 = document.createElement('div'); na2.style.cssText='color:var(--sub);font-size:13px;'; na2.textContent='No alternate-line (multiple level) player props posted by DraftKings for this game yet.';
@@ -1575,26 +1759,30 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   // Qualification bar: a specific side of a bet (Over/Under, team ML, team spread) must clear
   // QUAL hit rate in BOTH the last-10-game window and the last-15-game window (fixed windows,
   // independent of the page-level hit-rate selector above) to be eligible.
-  const candidates = []; // {label, price, rate10, rate15}
+  const candidates = []; // {label, price, rate10, rate15, ...structured fields for the bet tracker}
+  const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+  const gameDate = (ev.commence_time||'').slice(0,10);
 
   // Moneyline (own-side only; the opposing team's high win rate already shows up as their own ML leg)
-  [{short:awayShort, full:ev.away_team, outcome:dkOutcome(gameMarkets['h2h'], ev.away_team)},
-   {short:homeShort, full:ev.home_team, outcome:dkOutcome(gameMarkets['h2h'], ev.home_team)}].forEach(side=>{
+  [{short:awayShort, full:ev.away_team, opp:homeShort, outcome:dkOutcome(gameMarkets['h2h'], ev.away_team)},
+   {short:homeShort, full:ev.home_team, opp:awayShort, outcome:dkOutcome(gameMarkets['h2h'], ev.home_team)}].forEach(side=>{
     if(!side.outcome) return;
     const r10 = teamMoneylineHitRate(side.short, 10), r15 = teamMoneylineHitRate(side.short, 15);
     if(r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
-      candidates.push({label:`${side.full} Moneyline`, price:side.outcome.price, rate10:r10.rate, rate15:r15.rate});
+      candidates.push({label:`${side.full} Moneyline`, price:side.outcome.price, rate10:r10.rate, rate15:r15.rate,
+        betType:'moneyline', team:side.short, opponent:side.opp, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time});
     }
   });
 
   // Spread (own-side only, same reasoning as moneyline)
-  [{short:awayShort, full:ev.away_team, outcome:dkOutcome(gameMarkets['spreads'], ev.away_team)},
-   {short:homeShort, full:ev.home_team, outcome:dkOutcome(gameMarkets['spreads'], ev.home_team)}].forEach(side=>{
+  [{short:awayShort, full:ev.away_team, opp:homeShort, outcome:dkOutcome(gameMarkets['spreads'], ev.away_team)},
+   {short:homeShort, full:ev.home_team, opp:awayShort, outcome:dkOutcome(gameMarkets['spreads'], ev.home_team)}].forEach(side=>{
     if(!side.outcome) return;
     const pt = side.outcome.point;
     const r10 = teamSpreadHitRate(side.short, pt, 10), r15 = teamSpreadHitRate(side.short, pt, 15);
     if(r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
-      candidates.push({label:`${side.full} ${pt>0?'+':''}${pt}`, price:side.outcome.price, rate10:r10.rate, rate15:r15.rate});
+      candidates.push({label:`${side.full} ${pt>0?'+':''}${pt}`, price:side.outcome.price, rate10:r10.rate, rate15:r15.rate,
+        betType:'spread', team:side.short, opponent:side.opp, line:pt, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time});
     }
   });
 
@@ -1606,27 +1794,31 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
     if(point===undefined) return;
     const r10 = teamTotalHitRate(awayShort, point, 10), r15 = teamTotalHitRate(awayShort, point, 15);
     if(over && r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
-      candidates.push({label:`Game Total Over ${point}`, price:over.price, rate10:r10.rate, rate15:r15.rate});
+      candidates.push({label:`Game Total Over ${point}`, price:over.price, rate10:r10.rate, rate15:r15.rate,
+        betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time});
     }
     if(under && r10.gp>0 && r15.gp>0 && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
-      candidates.push({label:`Game Total Under ${point}`, price:under.price, rate10:1-r10.rate, rate15:1-r15.rate});
+      candidates.push({label:`Game Total Under ${point}`, price:under.price, rate10:1-r10.rate, rate15:1-r15.rate,
+        betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time});
     }
   })();
 
   // Team Totals (full game), both sides, both teams
   (()=>{
     const market = detailMarkets['team_totals']; if(!market) return;
-    [{short:awayShort, full:ev.away_team},{short:homeShort, full:ev.home_team}].forEach(side=>{
+    [{short:awayShort, full:ev.away_team, opp:homeShort},{short:homeShort, full:ev.home_team, opp:awayShort}].forEach(side=>{
       const over = market.outcomes.find(o=>o.name==='Over' && o.description===side.full);
       const under = market.outcomes.find(o=>o.name==='Under' && o.description===side.full);
       const point = over ? over.point : (under ? under.point : undefined);
       if(point===undefined) return;
       const r10 = teamOwnTotalHitRate(side.short, point, 10), r15 = teamOwnTotalHitRate(side.short, point, 15);
       if(over && r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
-        candidates.push({label:`${side.full} Team Total Over ${point}`, price:over.price, rate10:r10.rate, rate15:r15.rate});
+        candidates.push({label:`${side.full} Team Total Over ${point}`, price:over.price, rate10:r10.rate, rate15:r15.rate,
+          betType:'team_total', team:side.short, opponent:side.opp, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time});
       }
       if(under && r10.gp>0 && r15.gp>0 && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
-        candidates.push({label:`${side.full} Team Total Under ${point}`, price:under.price, rate10:1-r10.rate, rate15:1-r15.rate});
+        candidates.push({label:`${side.full} Team Total Under ${point}`, price:under.price, rate10:1-r10.rate, rate15:1-r15.rate,
+          betType:'team_total', team:side.short, opponent:side.opp, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time});
       }
     });
   })();
@@ -1645,16 +1837,20 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
       if(line===undefined) return;
       const team = findPlayerTeam(pname, homeShort, awayShort);
       if(!team) return;
+      const opponent = team===homeShort ? awayShort : homeShort;
+      const overThreshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
       const r10 = hitRateFor(pname, team, statKey, line, 10), r15 = hitRateFor(pname, team, statKey, line, 15);
       if(!r10 || !r15) return;
       // require she actually played at least 60% of the games in BOTH windows (6-of-10, 9-of-15) —
       // otherwise a small-sample player (e.g. 2 games played all year) can slip through on a fluke rate
       if(r10.gp < MIN_GP_10 || r15.gp < MIN_GP_15) return;
       if(overO && r10.rate>=QUAL && r15.rate>=QUAL){
-        candidates.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:overO.price, rate10:r10.rate, rate15:r15.rate, gp10:r10.gp, gp15:r15.gp});
+        candidates.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:overO.price, rate10:r10.rate, rate15:r15.rate, gp10:r10.gp, gp15:r15.gp,
+          betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'over', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time});
       }
       if(underO && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
-        candidates.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:underO.price, rate10:1-r10.rate, rate15:1-r15.rate, gp10:r10.gp, gp15:r15.gp});
+        candidates.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:underO.price, rate10:1-r10.rate, rate15:1-r15.rate, gp10:r10.gp, gp15:r15.gp,
+          betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'under', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time});
       }
     });
   });
@@ -1662,6 +1858,860 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   // sort by worst-case confidence (min of the two windows) descending, so the safest legs lead
   candidates.sort((a,b)=> Math.min(b.rate10,b.rate15) - Math.min(a.rate10,a.rate15));
   return candidates;
+}
+
+// ================= Mock Bet Tracker =================
+
+function findHistoricalGame(team, opponent, gameDate){
+  const candidates = Object.values(DATA.games).filter(g=>
+    (g.home===team||g.away===team) && (opponent ? (g.home===opponent||g.away===opponent) : true)
+  );
+  if(candidates.length===0) return null;
+  if(gameDate){
+    const exact = candidates.find(g=>g.date===gameDate);
+    if(exact) return exact;
+  }
+  if(gameDate){
+    candidates.sort((a,b)=> Math.abs(new Date(a.date)-new Date(gameDate)) - Math.abs(new Date(b.date)-new Date(gameDate)));
+  }
+  return candidates[0];
+}
+
+// Grades a single leg (works the same whether it's a standalone straight bet or one leg
+// of a parlay). Returns 'won' | 'lost' | 'push' | null (null = can't grade yet).
+function gradeLeg(leg){
+  const g = findHistoricalGame(leg.team, leg.opponent, leg.gameDate);
+  if(!g) return null;
+  const isHome = g.home === leg.team;
+  const teamPts = isHome ? g.homeScore : g.awayScore;
+  const oppPts = isHome ? g.awayScore : g.homeScore;
+
+  if(leg.betType === 'moneyline'){
+    return teamPts>oppPts ? 'won' : (teamPts===oppPts ? 'push' : 'lost');
+  }
+  if(leg.betType === 'spread'){
+    const margin = (teamPts - oppPts) + leg.line;
+    return margin>0 ? 'won' : (margin===0 ? 'push' : 'lost');
+  }
+  if(leg.betType === 'total'){
+    const combined = teamPts + oppPts;
+    if(leg.side==='over') return combined>leg.line ? 'won' : (combined===leg.line?'push':'lost');
+    return combined<leg.line ? 'won' : (combined===leg.line?'push':'lost');
+  }
+  if(leg.betType === 'team_total'){
+    if(leg.side==='over') return teamPts>leg.line ? 'won' : (teamPts===leg.line?'push':'lost');
+    return teamPts<leg.line ? 'won' : (teamPts===leg.line?'push':'lost');
+  }
+  if(leg.betType === 'player_prop' || leg.betType === 'player_prop_alt'){
+    const row = g.rows.find(r=>r.player===leg.player && r.team===leg.team);
+    if(!row || row.dnp) return null; // no data, or she didn't play — leave pending rather than guess
+    const val = statValue(row, leg.statKey);
+    if(val===null || val===undefined) return null;
+    const threshold = leg.thresholdToHit!==undefined ? leg.thresholdToHit : leg.line;
+    if(leg.side==='under') return val<threshold ? 'won' : 'lost';
+    return val>=threshold ? 'won' : 'lost';
+  }
+  return null;
+}
+
+// Grades a tracked entry — a straight bet (single implicit leg, using the bet's own
+// top-level fields) or a parlay (bet.legs array; wins only if every leg wins, pushes
+// are treated as removed/neutral per standard parlay rules, still pending if any leg
+// hasn't resolved yet). Returns 'won' | 'lost' | 'push' | null.
+function gradeTrackedBet(bet){
+  if(bet.isParlay && Array.isArray(bet.legs)){
+    const results = bet.legs.map(gradeLeg);
+    if(results.some(r=>r==='lost')) return 'lost';
+    if(results.some(r=>r===null)) return null; // still waiting on at least one leg
+    if(results.every(r=>r==='push')) return 'push';
+    return 'won'; // rest are won/push, none lost, none pending
+  }
+  return gradeLeg(bet);
+}
+
+function americanPayoutProfit(price, stake){
+  const dec = americanToDecimal(price);
+  if(!dec) return 0;
+  return stake * (dec - 1);
+}
+
+async function trackerAdd(bet){
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  return fetchJson(`${workerBase}/tracker/add`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(bet)});
+}
+async function trackerList(){
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  return fetchJson(`${workerBase}/tracker/list`);
+}
+async function trackerUpdate(id, patch){
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  return fetchJson(`${workerBase}/tracker/update`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id, patch})});
+}
+async function trackerDelete(id){
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  return fetchJson(`${workerBase}/tracker/delete`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id})});
+}
+
+// Quick one-click "+ Track" button, usable anywhere a structured leg object is already
+// on hand (Top Bets cards, game lines, player props, alt lines). Quick-add is always a
+// pregame straight bet, since that's the only kind of line this app ever displays live.
+function makeTrackButton(legLikeObject, defaultStake){
+  const btn = document.createElement('button');
+  btn.textContent = '+ Track';
+  btn.style.cssText = 'padding:3px 8px;border-radius:4px;border:1px solid var(--navy2);background:#fff;color:var(--navy2);font-size:11px;cursor:pointer;font-family:var(--sans);margin-left:6px;';
+  btn.addEventListener('click', async ()=>{
+    btn.disabled = true; btn.textContent = 'Saving\u2026';
+    // Determined at the moment you actually click Track, not when the page loaded — if the
+    // game has already tipped off by now, this was a live bet; otherwise pregame.
+    let timing = 'pregame';
+    if(legLikeObject.commenceTime){
+      const ct = new Date(legLikeObject.commenceTime);
+      if(!isNaN(ct.getTime()) && new Date() >= ct) timing = 'live';
+    }
+    const bet = Object.assign({}, legLikeObject, {
+      stake: defaultStake || 10,
+      result: 'pending',
+      trackedFrom: 'quick-add',
+      timing,
+      isParlay: false,
+    });
+    try{
+      await trackerAdd(bet);
+      btn.textContent = '\u2713 Tracked';
+      btn.style.background = 'var(--greenbg)'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)';
+    }catch(e){
+      btn.textContent = 'Failed'; btn.disabled = false;
+      console.warn('Track failed', e);
+    }
+  });
+  return btn;
+}
+
+// ================= Bet Tracker page =================
+
+function fmtResultBadge(result){
+  const span = document.createElement('span');
+  span.style.cssText = 'display:inline-block;padding:2px 8px;border-radius:4px;font-size:11.5px;font-weight:700;';
+  if(result==='won'){ span.textContent='WON'; span.style.background='var(--greenbg)'; span.style.color='var(--green)'; }
+  else if(result==='lost'){ span.textContent='LOST'; span.style.background='var(--redbg)'; span.style.color='var(--red)'; }
+  else if(result==='push'){ span.textContent='PUSH'; span.style.background='#f0f2f6'; span.style.color='var(--sub)'; }
+  else { span.textContent='PENDING'; span.style.background='#fff8e6'; span.style.color='#7a5c00'; }
+  return span;
+}
+
+async function renderBetTrackerPage(){
+  lastRender = () => renderBetTrackerPage();
+  main.innerHTML = '';
+  const head = document.createElement('div'); head.className='pagehead';
+  head.innerHTML = `<h2>\ud83d\udcdd Bet Tracker</h2><div class="meta">A mock record of bets you've made or want to track \u2014 stored on your Worker, so it's the same list on any device. Auto-grades against this app's own historical box scores whenever the game is already in our data.</div>`;
+  main.appendChild(head);
+
+  const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
+  statusDiv.textContent = 'Loading your tracked bets\u2026';
+  main.appendChild(statusDiv);
+
+  const summaryDiv = document.createElement('div');
+  main.appendChild(summaryDiv);
+
+  const analysisDiv = document.createElement('div');
+  main.appendChild(analysisDiv);
+
+  const actionsRow = document.createElement('div'); actionsRow.style.cssText='display:flex;gap:10px;margin:14px 0;flex-wrap:wrap;';
+  const gradeBtn = document.createElement('button'); gradeBtn.className='addbtn'; gradeBtn.textContent = '\u2705 Auto-Grade Pending Bets';
+  const addFormBtn = document.createElement('button'); addFormBtn.className='addbtn'; addFormBtn.textContent = '+ Add Bet Manually';
+  const importBtn = document.createElement('button'); importBtn.className='addbtn'; importBtn.textContent = '\u2b07 Import From Odds History';
+  actionsRow.appendChild(gradeBtn); actionsRow.appendChild(addFormBtn); actionsRow.appendChild(importBtn);
+  main.appendChild(actionsRow);
+
+  const formDiv = document.createElement('div'); formDiv.style.display = 'none';
+  main.appendChild(formDiv);
+  const importDiv = document.createElement('div'); importDiv.style.display = 'none';
+  main.appendChild(importDiv);
+
+  const tableDiv = document.createElement('div');
+  main.appendChild(tableDiv);
+
+  let bets = [];
+
+  function renderSummary(){
+    const graded = bets.filter(b=>b.result==='won'||b.result==='lost');
+    const won = bets.filter(b=>b.result==='won').length;
+    const lost = bets.filter(b=>b.result==='lost').length;
+    const push = bets.filter(b=>b.result==='push').length;
+    const pending = bets.filter(b=>!b.result || b.result==='pending').length;
+    const hitRate = graded.length ? Math.round((won/graded.length)*100) : null;
+    const totalPL = bets.reduce((acc,b)=>{
+      const stake = b.stake || 10;
+      if(b.result==='won') return acc + americanPayoutProfit(b.price, stake);
+      if(b.result==='lost') return acc - stake;
+      return acc;
+    }, 0);
+
+    summaryDiv.innerHTML = '';
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;';
+    const cards = [
+      {label:'Record', value:`${won}-${lost}${push?'-'+push+' P':''}`},
+      {label:'Hit Rate', value: hitRate!==null ? hitRate+'%' : '\u2014'},
+      {label:'Pending', value: pending},
+      {label:'Mock P/L', value: (totalPL>=0?'+':'') + '$' + totalPL.toFixed(2)},
+    ];
+    cards.forEach(c=>{
+      const card = document.createElement('div');
+      card.style.cssText = 'border:1px solid var(--line);border-radius:6px;padding:10px 14px;background:#fff;';
+      card.innerHTML = `<div style="font-size:11px;color:var(--sub);text-transform:uppercase;font-weight:700;">${c.label}</div><div style="font-size:20px;font-weight:800;color:var(--navy2);">${c.value}</div>`;
+      grid.appendChild(card);
+    });
+    summaryDiv.appendChild(grid);
+  }
+
+  // ---- Performance Analysis: date range + every breakdown ----
+  let analysisRangeStart = null; // null = no lower bound (All Time)
+  let analysisRangeEnd = null;
+
+  function flattenLegs(betList){
+    const out = [];
+    betList.forEach(b=>{
+      if(b.isParlay && Array.isArray(b.legs)){
+        b.legs.forEach(leg=>{ out.push(Object.assign({}, leg, {_legResult: gradeLeg(leg)})); });
+      } else {
+        out.push(Object.assign({}, b, {_legResult: gradeTrackedBet(b)}));
+      }
+    });
+    return out;
+  }
+  function ticketStats(betList){
+    const won = betList.filter(b=>b.result==='won').length;
+    const lost = betList.filter(b=>b.result==='lost').length;
+    const push = betList.filter(b=>b.result==='push').length;
+    const graded = won+lost;
+    const hitRate = graded ? Math.round((won/graded)*100) : null;
+    const pl = betList.reduce((acc,b)=>{
+      const stake = b.stake||10;
+      if(b.result==='won') return acc + americanPayoutProfit(b.price, stake);
+      if(b.result==='lost') return acc - stake;
+      return acc;
+    },0);
+    return {won,lost,push,hitRate,pl,total:betList.length};
+  }
+  function legStats(legs){
+    const won = legs.filter(l=>l._legResult==='won').length;
+    const lost = legs.filter(l=>l._legResult==='lost').length;
+    const graded = won+lost;
+    const hitRate = graded ? Math.round((won/graded)*100) : null;
+    return {won,lost,hitRate,total:legs.length};
+  }
+  function renderStatsTable(container, title, rows, showPL){
+    const sec = document.createElement('div'); sec.style.cssText='font-weight:700;font-size:13px;color:var(--navy2);margin:14px 0 6px;';
+    sec.textContent = title;
+    container.appendChild(sec);
+    const wrap = document.createElement('div'); wrap.className='table-wrap';
+    const table = document.createElement('table'); table.style.width='100%';
+    const thead = document.createElement('thead');
+    thead.innerHTML = `<tr><th class="left">Category</th><th>Record</th><th>Hit Rate</th>${showPL?'<th>P/L</th>':''}<th>Bets</th></tr>`;
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody'); table.appendChild(tbody);
+    rows.forEach(r=>{
+      if(r.stats.total===0) return; // skip empty categories entirely rather than show a row of dashes
+      const tr = document.createElement('tr');
+      const cells = [
+        r.label,
+        `${r.stats.won}-${r.stats.lost}${r.stats.push?'-'+r.stats.push+' P':''}`,
+        r.stats.hitRate!==null ? r.stats.hitRate+'%' : '\u2014',
+      ];
+      if(showPL) cells.push((r.stats.pl>=0?'+':'')+'$'+r.stats.pl.toFixed(2));
+      cells.push(String(r.stats.total));
+      cells.forEach((c,i)=>{
+        const td = document.createElement('td');
+        if(i===0) td.classList.add('left');
+        td.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;'+(i>0?'text-align:center;':'');
+        td.textContent = c;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    wrap.appendChild(table);
+    container.appendChild(wrap);
+  }
+
+  function renderAnalysis(){
+    analysisDiv.innerHTML = '';
+    if(bets.length===0) return;
+
+    const title = document.createElement('div'); title.className='section-title'; title.textContent = '\ud83d\udcca Performance Analysis';
+    analysisDiv.appendChild(title);
+
+    const rangeRow = document.createElement('div');
+    rangeRow.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;background:#fff;border:1px solid var(--line);border-radius:6px;';
+    const rangeLabel = document.createElement('div'); rangeLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;'; rangeLabel.textContent='Range:';
+    rangeRow.appendChild(rangeLabel);
+
+    const PRESETS = [
+      ['7d','Last 7 Days'], ['30d','Last 30 Days'], ['month','This Month'], ['year','This Year'], ['all','All Time'],
+    ];
+    let activePreset = 'all';
+    const presetBtns = [];
+    PRESETS.forEach(([key,lbl])=>{
+      const b = document.createElement('button'); b.textContent = lbl;
+      function setActive(){
+        const isActive = key===activePreset;
+        b.style.cssText = `padding:5px 12px;border-radius:5px;border:1px solid ${isActive?'var(--navy2)':'var(--line)'};background:${isActive?'var(--navy2)':'#fff'};color:${isActive?'#fff':'var(--ink)'};font-size:12px;cursor:pointer;font-family:var(--sans);`;
+      }
+      b.addEventListener('click', ()=>{
+        activePreset = key;
+        const now = new Date();
+        if(key==='7d'){ const d=new Date(now); d.setDate(d.getDate()-7); analysisRangeStart=d.toISOString().slice(0,10); analysisRangeEnd=null; }
+        else if(key==='30d'){ const d=new Date(now); d.setDate(d.getDate()-30); analysisRangeStart=d.toISOString().slice(0,10); analysisRangeEnd=null; }
+        else if(key==='month'){ analysisRangeStart = now.toISOString().slice(0,8)+'01'; analysisRangeEnd=null; }
+        else if(key==='year'){ analysisRangeStart = now.toISOString().slice(0,4)+'-01-01'; analysisRangeEnd=null; }
+        else { analysisRangeStart=null; analysisRangeEnd=null; }
+        startInput.value = analysisRangeStart || '';
+        endInput.value = analysisRangeEnd || '';
+        presetBtns.forEach(pb=>pb.update());
+        renderBreakdowns();
+      });
+      b.update = setActive;
+      setActive();
+      presetBtns.push(b);
+      rangeRow.appendChild(b);
+    });
+
+    const startInput = document.createElement('input'); startInput.type='date';
+    startInput.style.cssText='padding:5px;border:1px solid var(--line);border-radius:5px;font-size:12px;';
+    const endInput = document.createElement('input'); endInput.type='date';
+    endInput.style.cssText='padding:5px;border:1px solid var(--line);border-radius:5px;font-size:12px;';
+    function customRangeChanged(){
+      activePreset = null;
+      presetBtns.forEach(pb=>pb.update());
+      analysisRangeStart = startInput.value || null;
+      analysisRangeEnd = endInput.value || null;
+      renderBreakdowns();
+    }
+    startInput.addEventListener('change', customRangeChanged);
+    endInput.addEventListener('change', customRangeChanged);
+    rangeRow.appendChild(document.createTextNode('to'));
+    rangeRow.appendChild(startInput);
+    rangeRow.appendChild(document.createTextNode('\u2192'));
+    rangeRow.appendChild(endInput);
+    analysisDiv.appendChild(rangeRow);
+
+    const breakdownsDiv = document.createElement('div');
+    analysisDiv.appendChild(breakdownsDiv);
+
+    function renderBreakdowns(){
+      breakdownsDiv.innerHTML = '';
+      const inRange = bets.filter(b=>{
+        const d = b.gameDate;
+        if(!d) return true;
+        if(analysisRangeStart && d < analysisRangeStart) return false;
+        if(analysisRangeEnd && d > analysisRangeEnd) return false;
+        return true;
+      });
+      if(inRange.length===0){
+        const na = document.createElement('div'); na.style.cssText='font-size:13px;color:var(--sub);'; na.textContent='No tracked bets in this date range.';
+        breakdownsDiv.appendChild(na);
+        return;
+      }
+
+      renderStatsTable(breakdownsDiv, 'Overall / Pregame vs Live / Straight vs Parlay', [
+        {label:'Overall', stats: ticketStats(inRange)},
+        {label:'Pregame', stats: ticketStats(inRange.filter(b=>b.timing!=='live'))},
+        {label:'Live / In-Game', stats: ticketStats(inRange.filter(b=>b.timing==='live'))},
+        {label:'Straight Bets', stats: ticketStats(inRange.filter(b=>!b.isParlay))},
+        {label:'Parlays', stats: ticketStats(inRange.filter(b=>b.isParlay))},
+      ], true);
+
+      renderStatsTable(breakdownsDiv, 'Pregame vs Live, by Structure', [
+        {label:'Pregame Straight', stats: ticketStats(inRange.filter(b=>!b.isParlay && b.timing!=='live'))},
+        {label:'Live Straight', stats: ticketStats(inRange.filter(b=>!b.isParlay && b.timing==='live'))},
+        {label:'Pregame Parlay', stats: ticketStats(inRange.filter(b=>b.isParlay && b.timing!=='live'))},
+        {label:'Live Parlay', stats: ticketStats(inRange.filter(b=>b.isParlay && b.timing==='live'))},
+      ], true);
+
+      const legs = flattenLegs(inRange);
+      const BET_TYPE_LABELS = {moneyline:'Moneyline', spread:'Spread', total:'Game Total', team_total:'Team Total', player_prop:'Player Prop', player_prop_alt:'Player Prop (Alt Line)'};
+      renderStatsTable(breakdownsDiv, 'What You Tend To Do Well On \u2014 By Bet Type (leg-level)', 
+        Object.entries(BET_TYPE_LABELS).map(([k,l])=>({label:l, stats: legStats(legs.filter(g=>g.betType===k))})), false);
+
+      const STAT_LABELS = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'Threes', pra:'Pts+Reb+Ast'};
+      const propLegs = legs.filter(g=>g.betType==='player_prop'||g.betType==='player_prop_alt');
+      renderStatsTable(breakdownsDiv, 'Player Props \u2014 By Stat Type (leg-level)',
+        Object.entries(STAT_LABELS).map(([k,l])=>({label:l, stats: legStats(propLegs.filter(g=>g.statKey===k))})), false);
+    }
+    renderBreakdowns();
+  }
+
+  function renderTable(){
+    tableDiv.innerHTML = '';
+    if(bets.length===0){
+      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-top:16px;';
+      na.textContent = 'No tracked bets yet. Add one manually below, import from your odds history, or use the "+ Track" buttons on the Home/Odds pages going forward.';
+      tableDiv.appendChild(na);
+      return;
+    }
+    const sorted = bets.slice().sort((a,b)=> (b.gameDate||'').localeCompare(a.gameDate||''));
+    const wrap = document.createElement('div'); wrap.className='table-wrap';
+    const table = document.createElement('table'); table.style.width='100%';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th class="left">Date</th><th class="left">Game</th><th class="left">Bet</th><th>Price</th><th>Stake</th><th>P/L</th><th>Result</th><th>Actions</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody'); table.appendChild(tbody);
+
+    sorted.forEach(bet=>{
+      const tr = document.createElement('tr');
+      const stake = bet.stake || 10;
+      let pl = 0;
+      if(bet.result==='won') pl = americanPayoutProfit(bet.price, stake);
+      else if(bet.result==='lost') pl = -stake;
+
+      const cells = [
+        bet.gameDate || '\u2014',
+        bet.gameLabel || '\u2014',
+        bet.label || '\u2014',
+        fmtAmerican(bet.price),
+        '$'+stake.toFixed(2),
+        (bet.result==='won'||bet.result==='lost') ? (pl>=0?'+':'')+'$'+pl.toFixed(2) : '\u2014',
+      ];
+      cells.forEach((c,i)=>{
+        const td = document.createElement('td');
+        if(i<=2) td.classList.add('left');
+        td.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;'+(i>2?'text-align:center;':'');
+        td.textContent = c;
+        tr.appendChild(td);
+      });
+
+      const tdResult = document.createElement('td'); tdResult.style.cssText='padding:6px 8px;border-bottom:1px solid var(--line);text-align:center;';
+      tdResult.appendChild(fmtResultBadge(bet.result));
+      tr.appendChild(tdResult);
+
+      const tdActions = document.createElement('td'); tdActions.style.cssText='padding:6px 8px;border-bottom:1px solid var(--line);text-align:center;white-space:nowrap;';
+      const editBtn = document.createElement('button'); editBtn.textContent='Edit';
+      editBtn.style.cssText='padding:3px 8px;margin-right:4px;border-radius:4px;border:1px solid var(--line);background:#fff;font-size:11px;cursor:pointer;font-family:var(--sans);';
+      editBtn.addEventListener('click', ()=>openEditForm(bet));
+      const delBtn = document.createElement('button'); delBtn.textContent='Delete';
+      delBtn.style.cssText='padding:3px 8px;border-radius:4px;border:1px solid var(--red);background:#fff;color:var(--red);font-size:11px;cursor:pointer;font-family:var(--sans);';
+      delBtn.addEventListener('click', async ()=>{
+        if(!confirm('Delete this tracked bet?')) return;
+        await trackerDelete(bet.id);
+        await refresh();
+      });
+      tdActions.appendChild(editBtn); tdActions.appendChild(delBtn);
+      tr.appendChild(tdActions);
+
+      tbody.appendChild(tr);
+    });
+    wrap.appendChild(table);
+    tableDiv.appendChild(wrap);
+  }
+
+  async function refresh(){
+    statusDiv.textContent = 'Loading your tracked bets\u2026';
+    try{
+      bets = await trackerList();
+      statusDiv.textContent = `${bets.length} tracked bet(s) loaded.`;
+    }catch(e){
+      statusDiv.textContent = `Couldn\u2019t load tracked bets: ${e.message}`;
+      bets = [];
+    }
+    renderSummary();
+    renderAnalysis();
+    renderTable();
+  }
+
+  gradeBtn.addEventListener('click', async ()=>{
+    gradeBtn.disabled = true; gradeBtn.textContent = 'Grading\u2026';
+    let gradedCount = 0;
+    for(const bet of bets){
+      if(bet.result && bet.result!=='pending') continue;
+      const result = gradeTrackedBet(bet);
+      if(result){
+        await trackerUpdate(bet.id, {result});
+        gradedCount++;
+      }
+    }
+    gradeBtn.disabled = false; gradeBtn.textContent = '\u2705 Auto-Grade Pending Bets';
+    statusDiv.textContent = `Graded ${gradedCount} bet(s). Refreshing\u2026`;
+    await refresh();
+  });
+
+  // ---- Manual Add Bet form ----
+  function buildAddForm(existingBet){
+    formDiv.innerHTML = '';
+    formDiv.style.display = 'block';
+    const card = document.createElement('div'); card.className='table-wrap'; card.style.padding='16px';
+    const title = document.createElement('div'); title.className='section-title';
+    title.textContent = existingBet ? 'Edit Tracked Bet' : 'Add a Bet Manually';
+    card.appendChild(title);
+
+    const allGames = Object.values(DATA.games).sort((a,b)=>b.date.localeCompare(a.date));
+    let parlayLegs = (existingBet && existingBet.isParlay) ? existingBet.legs.slice() : [];
+
+    const structRow = document.createElement('div'); structRow.style.cssText='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;';
+    const structSel = document.createElement('select'); structSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;';
+    [['straight','Straight Bet'],['parlay','Parlay']].forEach(([v,l])=>{ const op=document.createElement('option'); op.value=v; op.textContent=l; structSel.appendChild(op); });
+    structSel.value = existingBet && existingBet.isParlay ? 'parlay' : 'straight';
+    structRow.appendChild(labeled('Bet Structure', structSel));
+    card.appendChild(structRow);
+
+    const row1 = document.createElement('div'); row1.style.cssText='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;';
+    const gameSel = document.createElement('select'); gameSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;min-width:260px;';
+    allGames.forEach(g=>{ const op=document.createElement('option'); op.value=g.id; op.textContent=g.label; gameSel.appendChild(op); });
+    row1.appendChild(labeled('Game', gameSel));
+
+    const typeSel = document.createElement('select'); typeSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;';
+    [['moneyline','Moneyline'],['spread','Spread'],['total','Game Total'],['team_total','Team Total'],['player_prop','Player Prop']].forEach(([v,l])=>{
+      const op=document.createElement('option'); op.value=v; op.textContent=l; typeSel.appendChild(op);
+    });
+    row1.appendChild(labeled('Bet Type', typeSel));
+    card.appendChild(row1);
+
+    const row2 = document.createElement('div'); row2.style.cssText='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;';
+    const teamSel = document.createElement('select'); teamSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;';
+    const playerSel = document.createElement('select'); playerSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;min-width:180px;';
+    const statSel = document.createElement('select'); statSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;';
+    [['pts','Points'],['reb','Rebounds'],['ast','Assists'],['tpm','Threes'],['pra','Pts+Reb+Ast']].forEach(([v,l])=>{
+      const op=document.createElement('option'); op.value=v; op.textContent=l; statSel.appendChild(op);
+    });
+    const teamWrap = labeled('Team', teamSel);
+    const playerWrap = labeled('Player', playerSel);
+    const statWrap = labeled('Stat', statSel);
+    row2.appendChild(teamWrap); row2.appendChild(playerWrap); row2.appendChild(statWrap);
+    card.appendChild(row2);
+
+    const row3 = document.createElement('div'); row3.style.cssText='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;';
+    const sideSel = document.createElement('select'); sideSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;';
+    [['over','Over'],['under','Under']].forEach(([v,l])=>{ const op=document.createElement('option'); op.value=v; op.textContent=l; sideSel.appendChild(op); });
+    const lineInput = document.createElement('input'); lineInput.type='number'; lineInput.step='0.5'; lineInput.placeholder='e.g. 17.5';
+    lineInput.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;width:90px;';
+    row3.appendChild(labeled('Side', sideSel));
+    row3.appendChild(labeled('Line', lineInput));
+    card.appendChild(row3);
+
+    // Only shown in Parlay mode — builds up the legs list one at a time from the fields above.
+    const addLegRow = document.createElement('div'); addLegRow.style.cssText='display:none;margin-bottom:10px;';
+    const addLegBtn = document.createElement('button'); addLegBtn.textContent = '+ Add This Leg to Parlay';
+    addLegBtn.style.cssText = 'padding:7px 14px;border-radius:6px;border:1px solid var(--navy2);background:#fff;color:var(--navy2);font-size:12.5px;cursor:pointer;font-family:var(--sans);';
+    addLegRow.appendChild(addLegBtn);
+    card.appendChild(addLegRow);
+
+    const legsListDiv = document.createElement('div'); legsListDiv.style.cssText='display:none;margin-bottom:10px;';
+    card.appendChild(legsListDiv);
+
+    function renderLegsList(){
+      legsListDiv.innerHTML = '';
+      if(parlayLegs.length===0) return;
+      const l = document.createElement('div'); l.style.cssText='font-size:10px;color:var(--sub);font-weight:700;text-transform:uppercase;margin-bottom:4px;';
+      l.textContent = `Legs in this parlay (${parlayLegs.length})`;
+      legsListDiv.appendChild(l);
+      parlayLegs.forEach((leg, idx)=>{
+        const row = document.createElement('div'); row.style.cssText='display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;border-bottom:1px solid var(--line);';
+        const txt = document.createElement('span'); txt.style.flex='1'; txt.textContent = `${leg.label} (${leg.gameLabel})`;
+        const rm = document.createElement('button'); rm.textContent='Remove';
+        rm.style.cssText='padding:2px 8px;border-radius:4px;border:1px solid var(--red);background:#fff;color:var(--red);font-size:11px;cursor:pointer;font-family:var(--sans);';
+        rm.addEventListener('click', ()=>{ parlayLegs.splice(idx,1); renderLegsList(); });
+        row.appendChild(txt); row.appendChild(rm);
+        legsListDiv.appendChild(row);
+      });
+    }
+
+    const row4 = document.createElement('div'); row4.style.cssText='display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;';
+    const priceInput = document.createElement('input'); priceInput.type='number'; priceInput.placeholder='e.g. -115 or 120';
+    priceInput.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;width:110px;';
+    const priceLabel = labeled('Your Price', priceInput);
+    const stakeInput = document.createElement('input'); stakeInput.type='number'; stakeInput.value='10'; stakeInput.step='1';
+    stakeInput.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;width:80px;';
+    const timingSel = document.createElement('select'); timingSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;';
+    [['pregame','Pregame'],['live','Live/In-Game']].forEach(([v,l])=>{ const op=document.createElement('option'); op.value=v; op.textContent=l; timingSel.appendChild(op); });
+    row4.appendChild(priceLabel);
+    row4.appendChild(labeled('Stake ($)', stakeInput));
+    row4.appendChild(labeled('Timing', timingSel));
+    card.appendChild(row4);
+
+    const notesInput = document.createElement('textarea'); notesInput.placeholder='Notes (optional)';
+    notesInput.style.cssText='width:100%;padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;margin-bottom:10px;min-height:50px;';
+    card.appendChild(notesInput);
+
+    function populateTeams(){
+      const g = DATA.games[gameSel.value];
+      teamSel.innerHTML='';
+      [{v:g.away,l:g.away+' (Away)'},{v:g.home,l:g.home+' (Home)'}].forEach(t=>{
+        const op=document.createElement('option'); op.value=t.v; op.textContent=t.l; teamSel.appendChild(op);
+      });
+      populatePlayers();
+    }
+    function populatePlayers(){
+      const g = DATA.games[gameSel.value];
+      const teamRows = g.rows.filter(r=>r.team===teamSel.value);
+      playerSel.innerHTML='';
+      teamRows.forEach(r=>{
+        const op=document.createElement('option'); op.value=r.player; op.textContent=r.player+(r.dnp?' (DNP)':''); playerSel.appendChild(op);
+      });
+    }
+    function updateVisibility(){
+      const t = typeSel.value;
+      teamWrap.style.display = (t==='moneyline'||t==='spread'||t==='total'||t==='team_total') ? 'flex' : 'none';
+      playerWrap.style.display = (t==='player_prop') ? 'flex' : 'none';
+      statWrap.style.display = (t==='player_prop') ? 'flex' : 'none';
+      sideSel.parentElement.style.display = (t==='moneyline') ? 'none' : 'flex';
+      lineInput.parentElement.style.display = (t==='moneyline') ? 'none' : 'flex';
+    }
+    function updateStructureVisibility(){
+      const isParlay = structSel.value === 'parlay';
+      addLegRow.style.display = isParlay ? 'block' : 'none';
+      legsListDiv.style.display = isParlay ? 'block' : 'none';
+      priceLabel.querySelector('label').textContent = isParlay ? 'Combined Price' : 'Your Price';
+      renderLegsList();
+    }
+    gameSel.addEventListener('change', populateTeams);
+    teamSel.addEventListener('change', populatePlayers);
+    typeSel.addEventListener('change', updateVisibility);
+    structSel.addEventListener('change', updateStructureVisibility);
+    populateTeams();
+    updateVisibility();
+    updateStructureVisibility();
+
+    function buildLegFromFields(){
+      const g = DATA.games[gameSel.value];
+      const team = teamSel.value;
+      const opponent = team===g.home ? g.away : g.home;
+      const line = lineInput.value!=='' ? parseFloat(lineInput.value) : undefined;
+      const betType = typeSel.value;
+      let label, thresholdToHit, statKey, player, side;
+      if(betType==='moneyline'){
+        label = `${team} Moneyline`; side='team';
+      } else if(betType==='spread'){
+        label = `${team} ${line>0?'+':''}${line}`; side='team';
+      } else if(betType==='total'){
+        side = sideSel.value; label = `Game Total ${side==='over'?'Over':'Under'} ${line}`;
+      } else if(betType==='team_total'){
+        side = sideSel.value; label = `${team} Team Total ${side==='over'?'Over':'Under'} ${line}`;
+      } else {
+        side = sideSel.value; player = playerSel.value; statKey = statSel.value;
+        const marketLabel = {pts:'Points',reb:'Rebounds',ast:'Assists',tpm:'Threes',pra:'Pts+Reb+Ast'}[statKey];
+        label = `${player} ${side==='over'?'Over':'Under'} ${line} ${marketLabel}`;
+        thresholdToHit = Number.isInteger(line) ? line+1 : Math.ceil(line);
+      }
+      return { gameLabel: g.label, gameDate: g.date, betType, team, opponent, player, statKey, line, side, thresholdToHit, label };
+    }
+
+    addLegBtn.addEventListener('click', ()=>{
+      parlayLegs.push(buildLegFromFields());
+      renderLegsList();
+    });
+
+    if(existingBet){
+      const gid = Object.keys(DATA.games).find(gid => {
+        const refBet = existingBet.isParlay ? existingBet.legs[0] : existingBet;
+        return DATA.games[gid] === findHistoricalGame(refBet.team, refBet.opponent, refBet.gameDate);
+      });
+      if(gid) gameSel.value = gid;
+      const refForFields = existingBet.isParlay ? (existingBet.legs[0]||{}) : existingBet;
+      typeSel.value = refForFields.betType || 'moneyline'; updateVisibility();
+      populateTeams();
+      if(refForFields.team) teamSel.value = refForFields.team;
+      populatePlayers();
+      if(refForFields.player) playerSel.value = refForFields.player;
+      if(refForFields.statKey) statSel.value = refForFields.statKey;
+      if(refForFields.side) sideSel.value = refForFields.side;
+      if(refForFields.line!==undefined) lineInput.value = refForFields.line;
+      if(existingBet.price!==undefined) priceInput.value = existingBet.price;
+      if(existingBet.stake!==undefined) stakeInput.value = existingBet.stake;
+      if(existingBet.notes) notesInput.value = existingBet.notes;
+      if(existingBet.timing) timingSel.value = existingBet.timing;
+    }
+
+    const btnRow = document.createElement('div'); btnRow.style.cssText='display:flex;gap:10px;';
+    const saveBtn = document.createElement('button'); saveBtn.className='addbtn';
+    saveBtn.textContent = existingBet ? 'Save Changes' : 'Add Bet';
+    const cancelBtn = document.createElement('button'); cancelBtn.textContent='Cancel';
+    cancelBtn.style.cssText='padding:8px 16px;border-radius:6px;border:1px solid var(--line);background:#fff;font-size:13px;cursor:pointer;font-family:var(--sans);';
+    cancelBtn.addEventListener('click', ()=>{ formDiv.style.display='none'; formDiv.innerHTML=''; });
+    btnRow.appendChild(saveBtn); btnRow.appendChild(cancelBtn);
+    card.appendChild(btnRow);
+    formDiv.appendChild(card);
+
+    saveBtn.addEventListener('click', async ()=>{
+      const price = parseFloat(priceInput.value);
+      if(isNaN(price)){ alert('Enter the price (combined price for a parlay, or the single price for a straight bet).'); return; }
+      const isParlay = structSel.value === 'parlay';
+
+      let bet;
+      if(isParlay){
+        if(parlayLegs.length < 2){ alert('Add at least 2 legs to make this a parlay (or switch to Straight Bet).'); return; }
+        bet = {
+          isParlay: true, legs: parlayLegs,
+          gameLabel: `${parlayLegs.length}-Leg Parlay`, gameDate: parlayLegs[0].gameDate,
+          label: `${parlayLegs.length}-Leg Parlay: ` + parlayLegs.map(l=>l.label).join(' + '),
+          price, stake: parseFloat(stakeInput.value)||10, notes: notesInput.value || '',
+          result: existingBet ? existingBet.result : 'pending',
+          timing: timingSel.value, trackedFrom: 'manual',
+        };
+      } else {
+        const leg = buildLegFromFields();
+        bet = Object.assign({}, leg, {
+          isParlay: false,
+          price, stake: parseFloat(stakeInput.value)||10, notes: notesInput.value || '',
+          result: existingBet ? existingBet.result : 'pending',
+          timing: timingSel.value, trackedFrom: 'manual',
+        });
+      }
+
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
+      try{
+        if(existingBet){ await trackerUpdate(existingBet.id, bet); }
+        else { await trackerAdd(bet); }
+        formDiv.style.display='none'; formDiv.innerHTML='';
+        await refresh();
+      }catch(e){
+        alert('Failed to save: '+e.message);
+        saveBtn.disabled = false; saveBtn.textContent = existingBet ? 'Save Changes' : 'Add Bet';
+      }
+    });
+  }
+  function labeled(labelText, el){
+    const w = document.createElement('div'); w.style.cssText='display:flex;flex-direction:column;gap:2px;';
+    const l = document.createElement('label'); l.textContent = labelText; l.style.cssText='font-size:10px;color:var(--sub);font-weight:700;text-transform:uppercase;';
+    w.appendChild(l); w.appendChild(el);
+    return w;
+  }
+  function openEditForm(bet){ importDiv.style.display='none'; buildAddForm(bet); }
+  addFormBtn.addEventListener('click', ()=>{ importDiv.style.display='none'; buildAddForm(null); });
+
+  // ---- Import from Odds History ----
+  importBtn.addEventListener('click', async ()=>{
+    formDiv.style.display='none'; formDiv.innerHTML='';
+    importDiv.style.display = 'block';
+    importDiv.innerHTML = '<div class="footnote">Loading captured odds history from your Worker\u2026</div>';
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    let history;
+    try{
+      history = await fetchJson(`${workerBase}/history/export`);
+    }catch(e){
+      importDiv.innerHTML = `<div class="footnote">Couldn\u2019t load odds history: ${e.message}</div>`;
+      return;
+    }
+    if(!Array.isArray(history) || history.length===0){
+      importDiv.innerHTML = '<div class="footnote">No odds snapshots found yet. Snapshots are only saved automatically while the Odds/Home pages are actually being used and fetched pre-tip-off \u2014 if you weren\u2019t actively using the app during those games, there\u2019s nothing captured to import. Use "+ Add Bet Manually" instead.</div>';
+      return;
+    }
+    // merge all snapshots per event, keeping the union of markets seen (latest wins per market key)
+    const byEvent = {};
+    history.forEach(snap=>{
+      if(!byEvent[snap.eventId]) byEvent[snap.eventId] = { meta: snap, markets: {} };
+      byEvent[snap.eventId].meta = snap;
+      const dk = (snap.data.bookmakers||[]).find(b=>b.key==='draftkings');
+      if(dk){ (dk.markets||[]).forEach(m=>{ byEvent[snap.eventId].markets[m.key] = m; }); }
+    });
+
+    importDiv.innerHTML = '';
+    const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
+    note.textContent = `Found ${Object.keys(byEvent).length} game(s) with captured lines. Check the ones you actually bet, adjust price/stake if needed, then add them.`;
+    importDiv.appendChild(note);
+
+    Object.values(byEvent).forEach(entry=>{
+      const ev = entry.meta.data;
+      const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+      const gameDate = (ev.commence_time||'').slice(0,10);
+      const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+      const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+      const card = document.createElement('div'); card.className='table-wrap'; card.style.cssText='padding:12px;margin-bottom:12px;';
+      const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:13.5px;margin-bottom:4px;'; title.textContent = `${gameLabel} \u2014 ${gameDate}`;
+      card.appendChild(title);
+      const timingRow = document.createElement('div'); timingRow.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:var(--sub);';
+      const timingLbl = document.createElement('span'); timingLbl.textContent = 'These were placed:';
+      const timingSel = document.createElement('select'); timingSel.style.cssText='padding:3px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;';
+      [['pregame','Pregame'],['live','Live/In-Game']].forEach(([v,l])=>{ const op=document.createElement('option'); op.value=v; op.textContent=l; timingSel.appendChild(op); });
+      timingRow.appendChild(timingLbl); timingRow.appendChild(timingSel);
+      card.appendChild(timingRow);
+
+      const legs = gatherAllCapturedLegs(entry.markets, ev, homeShort, awayShort, gameLabel, gameDate);
+      if(legs.length===0){
+        const na = document.createElement('div'); na.style.cssText='font-size:12px;color:var(--sub);'; na.textContent='No usable market data captured for this game.';
+        card.appendChild(na);
+      } else {
+        legs.forEach(leg=>{
+          const row = document.createElement('div'); row.style.cssText='display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;';
+          const cb = document.createElement('input'); cb.type='checkbox';
+          const lbl = document.createElement('span'); lbl.style.flex='1'; lbl.textContent = leg.label;
+          const priceIn = document.createElement('input'); priceIn.type='number'; priceIn.value=leg.price;
+          priceIn.style.cssText='width:80px;padding:3px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;';
+          row.appendChild(cb); row.appendChild(lbl); row.appendChild(document.createTextNode('@')); row.appendChild(priceIn);
+          card.appendChild(row);
+          row._leg = leg; row._cb = cb; row._priceIn = priceIn;
+        });
+        const addBtn = document.createElement('button'); addBtn.className='addbtn'; addBtn.style.marginTop='8px';
+        addBtn.textContent = 'Add Checked Bets';
+        addBtn.addEventListener('click', async ()=>{
+          addBtn.disabled = true; addBtn.textContent='Saving\u2026';
+          const rows = [...card.querySelectorAll('div')].filter(r=>r._leg);
+          let count = 0;
+          for(const row of rows){
+            if(!row._cb.checked) continue;
+            const leg = Object.assign({}, row._leg, {price: parseFloat(row._priceIn.value), stake:10, result:'pending', trackedFrom:'history-import', timing:timingSel.value, isParlay:false});
+            await trackerAdd(leg);
+            count++;
+          }
+          addBtn.disabled = false; addBtn.textContent = `Added ${count}`;
+          await refresh();
+        });
+        card.appendChild(addBtn);
+      }
+      importDiv.appendChild(card);
+    });
+  });
+
+  await refresh();
+}
+
+// Extracts every priced outcome from a merged captured-market set (used only for History Import,
+// where we want ALL available lines, not just ones clearing a confidence bar).
+function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gameDate){
+  const legs = [];
+  const h2h = markets['h2h'];
+  if(h2h){
+    [{short:awayShort,full:ev.away_team,opp:homeShort},{short:homeShort,full:ev.home_team,opp:awayShort}].forEach(side=>{
+      const o = dkOutcome(h2h, side.full);
+      if(o) legs.push({label:`${side.full} Moneyline`, price:o.price, betType:'moneyline', team:side.short, opponent:side.opp, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time});
+    });
+  }
+  const spreads = markets['spreads'];
+  if(spreads){
+    [{short:awayShort,full:ev.away_team,opp:homeShort},{short:homeShort,full:ev.home_team,opp:awayShort}].forEach(side=>{
+      const o = dkOutcome(spreads, side.full);
+      if(o) legs.push({label:`${side.full} ${o.point>0?'+':''}${o.point}`, price:o.price, betType:'spread', team:side.short, opponent:side.opp, line:o.point, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time});
+    });
+  }
+  const totals = markets['totals'];
+  if(totals){
+    const over = dkOutcome(totals,'Over'), under = dkOutcome(totals,'Under');
+    if(over) legs.push({label:`Game Total Over ${over.point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time});
+    if(under) legs.push({label:`Game Total Under ${under.point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:under.point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time});
+  }
+  const teamTotals = markets['team_totals'];
+  if(teamTotals){
+    [{short:awayShort,full:ev.away_team,opp:homeShort},{short:homeShort,full:ev.home_team,opp:awayShort}].forEach(side=>{
+      const over = teamTotals.outcomes.find(o=>o.name==='Over'&&o.description===side.full);
+      const under = teamTotals.outcomes.find(o=>o.name==='Under'&&o.description===side.full);
+      if(over) legs.push({label:`${side.full} Team Total Over ${over.point}`, price:over.price, betType:'team_total', team:side.short, opponent:side.opp, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time});
+      if(under) legs.push({label:`${side.full} Team Total Under ${under.point}`, price:under.price, betType:'team_total', team:side.short, opponent:side.opp, line:under.point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time});
+    });
+  }
+  ['player_points','player_rebounds','player_assists','player_threes'].forEach(mkey=>{
+    const market = markets[mkey]; if(!market) return;
+    const statKey = PROP_MARKET_TO_STAT[mkey];
+    const players = [...new Set(market.outcomes.map(o=>o.description))];
+    players.forEach(pname=>{
+      const over = market.outcomes.find(o=>o.description===pname&&o.name==='Over');
+      const under = market.outcomes.find(o=>o.description===pname&&o.name==='Under');
+      const line = (over||under||{}).point;
+      if(line===undefined) return;
+      const team = findPlayerTeam(pname, homeShort, awayShort);
+      const threshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
+      if(over) legs.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:over.price, betType:'player_prop', team, player:pname, statKey, line, side:'over', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time});
+      if(under) legs.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:under.price, betType:'player_prop', team, player:pname, statKey, line, side:'under', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time});
+    });
+  });
+  return legs;
 }
 
 function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL){
