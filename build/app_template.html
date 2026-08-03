@@ -1371,7 +1371,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
   const todayStr = new Date().toDateString();
   const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr);
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
-  sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 By Game`;
+  sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Ranked`;
   container.appendChild(sec);
 
   if(todaysGames.length === 0){
@@ -1407,7 +1407,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
   const topBets = pool.slice(0, topN);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = 'Only includes games scheduled for today, and only bets priced -250 or better. Ranked by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.';
+  note.textContent = 'Only includes games scheduled for today, and only bets priced -250 or better. Ranked 1 (most likely) to '+topN+' by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.';
   container.appendChild(note);
 
   if(topBets.length === 0){
@@ -1417,55 +1417,34 @@ function renderTopBetsTable(container, cachedFetch, topN){
     return;
   }
 
-  // group by game, preserving each game's bets in their already-ranked order
-  const byGame = {};
-  const gameOrder = [];
-  topBets.forEach(bet=>{
-    if(!byGame[bet.game]){ byGame[bet.game] = []; gameOrder.push(bet.game); }
-    byGame[bet.game].push(bet);
-  });
-  const maxBetsPerGame = Math.max(...gameOrder.map(g=>byGame[g].length));
-
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
-  let headHtml = '<tr><th class="left">Game</th>';
-  for(let i=1; i<=maxBetsPerGame; i++){
-    headHtml += `<th class="left">Bet ${i}</th><th>Price</th><th>L10%</th><th>L15%</th><th></th>`;
-  }
-  headHtml += '</tr>';
-  thead.innerHTML = headHtml;
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th></th></tr>';
   table.appendChild(thead);
   const tbody = document.createElement('tbody'); table.appendChild(tbody);
 
-  gameOrder.forEach(game=>{
+  topBets.forEach((bet, idx)=>{
     const tr = document.createElement('tr');
+    const cellStyle = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;text-align:center;';
+    const tdRank = document.createElement('td'); tdRank.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
+    tdRank.textContent = idx+1;
+    const tdLabel = document.createElement('td'); tdLabel.className='left';
+    tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
+    tdLabel.textContent = bet.label;
     const tdGame = document.createElement('td'); tdGame.className='left';
-    tdGame.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;font-weight:700;vertical-align:top;';
-    tdGame.textContent = game;
-    tr.appendChild(tdGame);
-
-    const bets = byGame[game];
-    for(let i=0; i<maxBetsPerGame; i++){
-      const bet = bets[i];
-      const cellStyle = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12px;text-align:center;vertical-align:top;';
-      const tdLabel = document.createElement('td'); tdLabel.className='left';
-      tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
-      const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
-      const tdL10 = document.createElement('td'); tdL10.style.cssText = cellStyle;
-      const tdL15 = document.createElement('td'); tdL15.style.cssText = cellStyle;
-      const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
-      if(bet){
-        tdLabel.textContent = bet.label;
-        tdPrice.textContent = fmtAmerican(bet.price);
-        tdL10.textContent = Math.round(bet.rate10*100)+'%';
-        tdL15.textContent = Math.round(bet.rate15*100)+'%';
-        tdTrack.appendChild(makeTrackButton(bet, 10));
-      } else {
-        tdLabel.textContent = tdPrice.textContent = tdL10.textContent = tdL15.textContent = '\u2014';
-      }
-      tr.appendChild(tdLabel); tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdTrack);
-    }
+    tdGame.style.cssText = cellStyle.replace('text-align:center;','') + 'color:var(--sub);';
+    tdGame.textContent = bet.game;
+    const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
+    tdPrice.textContent = fmtAmerican(bet.price);
+    const tdL10 = document.createElement('td'); tdL10.style.cssText = cellStyle;
+    tdL10.textContent = Math.round(bet.rate10*100)+'%';
+    const tdL15 = document.createElement('td'); tdL15.style.cssText = cellStyle;
+    tdL15.textContent = Math.round(bet.rate15*100)+'%';
+    const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
+    tdTrack.appendChild(makeTrackButton(bet, 10));
+    tr.appendChild(tdRank); tr.appendChild(tdLabel); tr.appendChild(tdGame);
+    tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdTrack);
     tbody.appendChild(tr);
   });
   wrap.appendChild(table);
