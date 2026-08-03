@@ -1101,7 +1101,7 @@ async function renderHomePage(){
   lastRender = () => renderHomePage();
   main.innerHTML = '';
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>\ud83c\udfe0 Today\u2019s Top 10 Bets</h2><div class="meta">Pulled live from DraftKings via your Worker, ranked by historical hit rate over the last 10 and 15 games \u2014 same method as the DraftKings Odds page.</div>`;
+  head.innerHTML = `<h2>\ud83c\udfe0 Today\u2019s Top 30 Bets</h2><div class="meta">Pulled live from DraftKings via your Worker, ranked by historical hit rate over the last 10 and 15 games \u2014 same method as the DraftKings Odds page.</div>`;
   main.appendChild(head);
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
@@ -1145,7 +1145,7 @@ async function renderHomePage(){
       }catch(e){ console.warn('Detail fetch failed for', ev.id, e); }
       cachedForToday.push({ev, detail});
     }
-    renderTopBets(contentDiv, cachedForToday, 10);
+    renderTopBetsTable(contentDiv, cachedForToday, 30);
     statusDiv.textContent = `Showing today\u2019s top bets across ${todaysGames.length} game(s). Tap Refresh to pull the latest lines again.`;
   }catch(e){
     statusDiv.textContent = `Couldn\u2019t load today\u2019s bets: ${e.message}. Double-check your Worker URL is reachable, or visit the DraftKings Odds page directly.`;
@@ -1358,6 +1358,118 @@ function marketsByKey(bookmaker){
   const m = {};
   if(bookmaker && bookmaker.markets) bookmaker.markets.forEach(mk=>{ m[mk.key]=mk; });
   return m;
+}
+
+// Home page version: same candidate-gathering as renderTopBets, but pivoted into a table
+// where each ROW is one game and that game's qualifying bets run across the columns —
+// rather than one card per bet, ranked without regard to which game it's from.
+function renderTopBetsTable(container, cachedFetch, topN){
+  topN = topN || 30;
+  container.innerHTML = '';
+  if(!cachedFetch.length) return;
+
+  const todayStr = new Date().toDateString();
+  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr);
+  const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
+  sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 By Game`;
+  container.appendChild(sec);
+
+  if(todaysGames.length === 0){
+    const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
+    msg0.textContent = 'None of the games currently fetched are scheduled for today \u2014 nothing to rank here yet.';
+    container.appendChild(msg0);
+    return;
+  }
+
+  const MIN_PRICE = -250;
+  function candidatesForGame(ev, detail, QUAL){
+    const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+    const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+    const dk = (ev.bookmakers||[]).find(b=>b.key==='draftkings');
+    const dkDetail = detail ? (detail.bookmakers||[]).find(b=>b.key==='draftkings') : null;
+    const gameMarkets = marketsByKey(dk);
+    const detailMarkets = marketsByKey(dkDetail);
+    const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL)
+      .filter(l => l.price >= MIN_PRICE);
+    const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+    return legs.map(l => Object.assign({}, l, {game: gameLabel}));
+  }
+
+  let pool = [];
+  todaysGames.forEach(({ev, detail}) => { pool = pool.concat(candidatesForGame(ev, detail, 0.75)); });
+  if(pool.length < topN){
+    let widerPool = [];
+    todaysGames.forEach(({ev, detail}) => { widerPool = widerPool.concat(candidatesForGame(ev, detail, 0.70)); });
+    const seen = new Set(pool.map(c=>c.game+'|'+c.label));
+    widerPool.forEach(c=>{ const key = c.game+'|'+c.label; if(!seen.has(key)){ pool.push(c); seen.add(key); } });
+  }
+  pool.sort((a,b)=> Math.min(b.rate10,b.rate15) - Math.min(a.rate10,a.rate15));
+  const topBets = pool.slice(0, topN);
+
+  const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
+  note.textContent = 'Only includes games scheduled for today, and only bets priced -250 or better. Ranked by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.';
+  container.appendChild(note);
+
+  if(topBets.length === 0){
+    const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
+    msg.textContent = 'Nothing in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -250 or better.';
+    container.appendChild(msg);
+    return;
+  }
+
+  // group by game, preserving each game's bets in their already-ranked order
+  const byGame = {};
+  const gameOrder = [];
+  topBets.forEach(bet=>{
+    if(!byGame[bet.game]){ byGame[bet.game] = []; gameOrder.push(bet.game); }
+    byGame[bet.game].push(bet);
+  });
+  const maxBetsPerGame = Math.max(...gameOrder.map(g=>byGame[g].length));
+
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  const table = document.createElement('table'); table.style.width='100%';
+  const thead = document.createElement('thead');
+  let headHtml = '<tr><th class="left">Game</th>';
+  for(let i=1; i<=maxBetsPerGame; i++){
+    headHtml += `<th class="left">Bet ${i}</th><th>Price</th><th>L10%</th><th>L15%</th><th></th>`;
+  }
+  headHtml += '</tr>';
+  thead.innerHTML = headHtml;
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody'); table.appendChild(tbody);
+
+  gameOrder.forEach(game=>{
+    const tr = document.createElement('tr');
+    const tdGame = document.createElement('td'); tdGame.className='left';
+    tdGame.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;font-weight:700;vertical-align:top;';
+    tdGame.textContent = game;
+    tr.appendChild(tdGame);
+
+    const bets = byGame[game];
+    for(let i=0; i<maxBetsPerGame; i++){
+      const bet = bets[i];
+      const cellStyle = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12px;text-align:center;vertical-align:top;';
+      const tdLabel = document.createElement('td'); tdLabel.className='left';
+      tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
+      const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
+      const tdL10 = document.createElement('td'); tdL10.style.cssText = cellStyle;
+      const tdL15 = document.createElement('td'); tdL15.style.cssText = cellStyle;
+      const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
+      if(bet){
+        tdLabel.textContent = bet.label;
+        tdPrice.textContent = fmtAmerican(bet.price);
+        tdL10.textContent = Math.round(bet.rate10*100)+'%';
+        tdL15.textContent = Math.round(bet.rate15*100)+'%';
+        tdTrack.appendChild(makeTrackButton(bet, 10));
+      } else {
+        tdLabel.textContent = tdPrice.textContent = tdL10.textContent = tdL15.textContent = '\u2014';
+      }
+      tr.appendChild(tdLabel); tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdTrack);
+    }
+    tbody.appendChild(tr);
+  });
+  wrap.appendChild(table);
+  container.appendChild(wrap);
 }
 
 function renderTopBets(container, cachedFetch, topN){
@@ -1976,11 +2088,15 @@ function makeTrackButton(legLikeObject, defaultStake){
       isParlay: false,
     });
     try{
-      await trackerAdd(bet);
+      const result = await trackerAdd(bet);
+      if(result && result.error){ throw new Error(result.error); }
       btn.textContent = '\u2713 Tracked';
       btn.style.background = 'var(--greenbg)'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)';
     }catch(e){
-      btn.textContent = 'Failed'; btn.disabled = false;
+      btn.textContent = '\u26a0 Failed (hover for why)';
+      btn.title = `${e.message}\n\nMost common cause: the BET_TRACKER KV namespace hasn't been created and bound to your Worker yet, or the Worker wasn't redeployed after adding it. Check Cloudflare: Workers & Pages > KV > BET_TRACKER exists > your Worker's Settings > Bindings includes it > Worker redeployed.`;
+      btn.style.borderColor = 'var(--red)'; btn.style.color = 'var(--red)';
+      btn.disabled = false;
       console.warn('Track failed', e);
     }
   });
@@ -2020,13 +2136,20 @@ async function renderBetTrackerPage(){
   const gradeBtn = document.createElement('button'); gradeBtn.className='addbtn'; gradeBtn.textContent = '\u2705 Auto-Grade Pending Bets';
   const addFormBtn = document.createElement('button'); addFormBtn.className='addbtn'; addFormBtn.textContent = '+ Add Bet Manually';
   const importBtn = document.createElement('button'); importBtn.className='addbtn'; importBtn.textContent = '\u2b07 Import From Odds History';
+  const screenshotBtn = document.createElement('button'); screenshotBtn.className='addbtn'; screenshotBtn.textContent = '\ud83d\udcf7 Upload Bet Screenshot(s)';
+  const bulkJsonBtn = document.createElement('button'); bulkJsonBtn.className='addbtn'; bulkJsonBtn.textContent = '\ud83d\udcc4 Bulk Import JSON';
   actionsRow.appendChild(gradeBtn); actionsRow.appendChild(addFormBtn); actionsRow.appendChild(importBtn);
+  actionsRow.appendChild(screenshotBtn); actionsRow.appendChild(bulkJsonBtn);
   main.appendChild(actionsRow);
 
   const formDiv = document.createElement('div'); formDiv.style.display = 'none';
   main.appendChild(formDiv);
   const importDiv = document.createElement('div'); importDiv.style.display = 'none';
   main.appendChild(importDiv);
+  const screenshotDiv = document.createElement('div'); screenshotDiv.style.display = 'none';
+  main.appendChild(screenshotDiv);
+  const bulkJsonDiv = document.createElement('div'); bulkJsonDiv.style.display = 'none';
+  main.appendChild(bulkJsonDiv);
 
   const tableDiv = document.createElement('div');
   main.appendChild(tableDiv);
@@ -2575,11 +2698,12 @@ async function renderBetTrackerPage(){
     return w;
   }
   function openEditForm(bet){ importDiv.style.display='none'; buildAddForm(bet); }
-  addFormBtn.addEventListener('click', ()=>{ importDiv.style.display='none'; buildAddForm(null); });
+  addFormBtn.addEventListener('click', ()=>{ importDiv.style.display='none'; screenshotDiv.style.display='none'; bulkJsonDiv.style.display='none'; buildAddForm(null); });
 
   // ---- Import from Odds History ----
   importBtn.addEventListener('click', async ()=>{
     formDiv.style.display='none'; formDiv.innerHTML='';
+    screenshotDiv.style.display='none'; bulkJsonDiv.style.display='none';
     importDiv.style.display = 'block';
     importDiv.innerHTML = '<div class="footnote">Loading captured odds history from your Worker\u2026</div>';
     const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
@@ -2657,6 +2781,169 @@ async function renderBetTrackerPage(){
         card.appendChild(addBtn);
       }
       importDiv.appendChild(card);
+    });
+  });
+
+  // ---- Shared helper: POST a list of bet objects to the tracker, one by one ----
+  async function addBetsToTracker(betList, statusEl){
+    let ok = 0, fail = 0;
+    for(const bet of betList){
+      try{
+        const cleaned = Object.assign({result:'pending', stake: bet.stake||10}, bet);
+        const res = await trackerAdd(cleaned);
+        if(res && res.error) throw new Error(res.error);
+        ok++;
+      }catch(e){
+        fail++;
+        console.warn('Bulk add failed for', bet, e);
+      }
+      if(statusEl) statusEl.textContent = `Adding\u2026 ${ok+fail}/${betList.length} (${ok} ok, ${fail} failed)`;
+    }
+    return {ok, fail};
+  }
+
+  // ---- Upload Bet Screenshot(s): sends the image to Claude directly (in-artifact API call,
+  // your key is never exposed) and asks it to extract structured bet data, matching this
+  // app's own schema, ready to review before adding. ----
+  screenshotBtn.addEventListener('click', ()=>{
+    formDiv.style.display='none'; importDiv.style.display='none'; bulkJsonDiv.style.display='none';
+    screenshotDiv.style.display = 'block';
+    screenshotDiv.innerHTML = '';
+    const card = document.createElement('div'); card.className='table-wrap'; card.style.padding='16px';
+    const title = document.createElement('div'); title.className='section-title'; title.textContent = 'Upload Bet Slip Screenshot(s)';
+    card.appendChild(title);
+    const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
+    note.textContent = 'Upload one or more DraftKings bet-slip screenshots. Claude reads them directly and extracts structured bet data \u2014 review the results below before anything is added to your tracker.';
+    card.appendChild(note);
+
+    const fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='image/*'; fileInput.multiple = true;
+    card.appendChild(fileInput);
+    const goBtn = document.createElement('button'); goBtn.className='addbtn'; goBtn.textContent='Parse Screenshot(s)'; goBtn.style.marginLeft='10px';
+    card.appendChild(goBtn);
+    const parseStatus = document.createElement('div'); parseStatus.className='footnote'; parseStatus.style.margin='10px 0';
+    card.appendChild(parseStatus);
+    const reviewDiv = document.createElement('div');
+    card.appendChild(reviewDiv);
+    screenshotDiv.appendChild(card);
+
+    function fileToBase64(file){
+      return new Promise((resolve, reject)=>{
+        const reader = new FileReader();
+        reader.onload = ()=> resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    goBtn.addEventListener('click', async ()=>{
+      if(!fileInput.files.length){ parseStatus.textContent = 'Choose at least one image first.'; return; }
+      goBtn.disabled = true; parseStatus.textContent = 'Reading images\u2026';
+      const teamList = Object.entries(FULL_TEAM_NAME).map(([short,full])=>`${short} = ${full}`).join(', ');
+      const todayIso = new Date().toISOString().slice(0,10);
+      const promptText = `You are extracting structured sports-bet data from DraftKings bet-slip screenshot(s). `
+        + `For EACH bet slip shown (there may be several in one image, or one per image), return one JSON object. `
+        + `Return ONLY a JSON array, no markdown fences, no commentary.\n\n`
+        + `Each object shape:\n`
+        + `{"isParlay": bool, "gameLabel": "Away @ Home", "gameDate": "YYYY-MM-DD", "timing": "pregame"|"live", `
+        + `"price": americanOddsNumber, "stake": dollarNumberOrNull, "result": "won"|"lost"|"push"|"pending", `
+        + `"label": "short human description", `
+        + `"legs": [ {"betType":"moneyline"|"spread"|"total"|"team_total"|"player_prop", "team":"SHORT_CODE", `
+        + `"opponent":"SHORT_CODE_OR_NULL", "player":"Full Player Name or null", `
+        + `"statKey":"pts"|"reb"|"ast"|"tpm"|"pra"|null, "line": numberOrNull, "side":"over"|"under"|"team", `
+        + `"thresholdToHit": number, "label":"short description"} ] }\n\n`
+        + `If it's a single (non-parlay) bet, still put exactly one entry in "legs" and set isParlay:false. `
+        + `Use these EXACT team short codes (never full names) for "team"/"opponent": ${teamList}. `
+        + `For player props: statKey pts=Points, reb=Rebounds, ast=Assists, tpm=Threes, pra=Pts+Reb+Ast. `
+        + `thresholdToHit is the actual minimum stat value needed to win: for a standard Over/Under X.5 line, `
+        + `thresholdToHit = ceil(X.5); for a milestone "X+" line, thresholdToHit = X exactly (no rounding). `
+        + `If a bet slip shows "Won"/"Lost"/"Cashed Out", map to result won/lost/push. If it shows no settled `
+        + `result, use "pending". Infer gameDate from any date shown; if truly unknown, use ${todayIso}. `
+        + `If you cannot confidently determine a field, use null rather than guessing.`;
+
+      const content = [{type:'text', text: promptText}];
+      try{
+        for(const file of fileInput.files){
+          const b64 = await fileToBase64(file);
+          content.push({type:'image', source:{type:'base64', media_type: file.type || 'image/png', data: b64}});
+        }
+        parseStatus.textContent = 'Asking Claude to read the screenshot(s)\u2026';
+        const resp = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 4000,
+            messages: [{role:'user', content}],
+          }),
+        });
+        const data = await resp.json();
+        const text = (data.content||[]).map(b=>b.text||'').join('\n');
+        const cleaned = text.replace(/```json|```/g,'').trim();
+        let parsedBets;
+        try{ parsedBets = JSON.parse(cleaned); }
+        catch(e){ throw new Error('Claude\u2019s response wasn\u2019t valid JSON \u2014 raw response: ' + text.slice(0,300)); }
+        if(!Array.isArray(parsedBets) || parsedBets.length===0){ throw new Error('No bets recognized in the image(s).'); }
+
+        parseStatus.textContent = `Found ${parsedBets.length} bet(s). Review below, then confirm.`;
+        reviewDiv.innerHTML = '';
+        parsedBets.forEach(b=>{
+          const row = document.createElement('div'); row.style.cssText='display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px;';
+          const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = true; cb.style.marginTop='3px';
+          const txt = document.createElement('div'); txt.style.flex = '1';
+          const legsTxt = (b.legs||[]).map(l=>l.label).join(' + ');
+          txt.innerHTML = `<b>${b.label||legsTxt||'(unnamed bet)'}</b><br><span style="color:var(--sub);">${b.gameLabel||''} \u2014 ${b.gameDate||''} \u2014 ${b.timing||'pregame'} \u2014 ${fmtAmerican(b.price)} \u2014 ${b.result||'pending'}</span>`;
+          row.appendChild(cb); row.appendChild(txt);
+          row._bet = b; row._cb = cb;
+          reviewDiv.appendChild(row);
+        });
+        const confirmBtn = document.createElement('button'); confirmBtn.className='addbtn'; confirmBtn.style.marginTop='10px';
+        confirmBtn.textContent = 'Add Checked Bets to Tracker';
+        confirmBtn.addEventListener('click', async ()=>{
+          confirmBtn.disabled = true;
+          const toAdd = [...reviewDiv.querySelectorAll('div')].filter(r=>r._bet && r._cb && r._cb.checked).map(r=>r._bet);
+          const result = await addBetsToTracker(toAdd, parseStatus);
+          parseStatus.textContent = `Added ${result.ok}, failed ${result.fail}.`;
+          await refresh();
+        });
+        reviewDiv.appendChild(confirmBtn);
+      }catch(e){
+        parseStatus.textContent = `Couldn\u2019t parse screenshot(s): ${e.message}`;
+      }
+      goBtn.disabled = false;
+    });
+  });
+
+  // ---- Bulk Import JSON: paste an array of bet objects (e.g. exported from your own
+  // spreadsheet) matching the same schema, and add them all in one go. ----
+  bulkJsonBtn.addEventListener('click', ()=>{
+    formDiv.style.display='none'; importDiv.style.display='none'; screenshotDiv.style.display='none';
+    bulkJsonDiv.style.display = 'block';
+    bulkJsonDiv.innerHTML = '';
+    const card = document.createElement('div'); card.className='table-wrap'; card.style.padding='16px';
+    const title = document.createElement('div'); title.className='section-title'; title.textContent = 'Bulk Import JSON';
+    card.appendChild(title);
+    const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
+    note.textContent = 'Paste a JSON array of bet objects (same schema the tracker already uses) and add them all at once \u2014 useful for importing a batch that was prepared outside the app.';
+    card.appendChild(note);
+    const ta = document.createElement('textarea'); ta.placeholder = '[ { "isParlay": false, "legs": [...], "price": -115, ... }, ... ]';
+    ta.style.cssText = 'width:100%;min-height:160px;padding:8px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:monospace;margin-bottom:10px;';
+    card.appendChild(ta);
+    const goBtn = document.createElement('button'); goBtn.className='addbtn'; goBtn.textContent='Import';
+    card.appendChild(goBtn);
+    const status = document.createElement('div'); status.className='footnote'; status.style.marginTop='10px';
+    card.appendChild(status);
+    bulkJsonDiv.appendChild(card);
+
+    goBtn.addEventListener('click', async ()=>{
+      let parsed;
+      try{ parsed = JSON.parse(ta.value); }
+      catch(e){ status.textContent = 'Invalid JSON: ' + e.message; return; }
+      if(!Array.isArray(parsed)){ status.textContent = 'Expected a JSON array of bet objects.'; return; }
+      goBtn.disabled = true;
+      const result = await addBetsToTracker(parsed, status);
+      status.textContent = `Added ${result.ok}, failed ${result.fail}.`;
+      goBtn.disabled = false;
+      await refresh();
     });
   });
 
