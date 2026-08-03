@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>WNBA Box Score Explorer &amp; Prop Board</title>
 <link rel="manifest" href="/manifest.json">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="WNBA Explorer">
@@ -1113,8 +1114,39 @@ async function renderHomePage(){
   refreshBtn.addEventListener('click', ()=>renderHomePage());
   main.appendChild(refreshBtn);
 
+  const dl10Btn = document.createElement('button'); dl10Btn.className='addbtn'; dl10Btn.textContent = '\ud83d\udcf7 Download Top 10 Screenshot';
+  dl10Btn.style.cssText = 'margin-bottom:14px;margin-left:8px;';
+  const dl30Btn = document.createElement('button'); dl30Btn.className='addbtn'; dl30Btn.textContent = '\ud83d\udcf7 Download Top 30 Screenshot';
+  dl30Btn.style.cssText = 'margin-bottom:14px;margin-left:8px;';
+  main.appendChild(dl10Btn); main.appendChild(dl30Btn);
+
   const contentDiv = document.createElement('div');
   main.appendChild(contentDiv);
+
+  async function downloadTableScreenshot(rowLimit, btn){
+    if(typeof html2canvas === 'undefined'){ alert('Screenshot library didn\u2019t load \u2014 check your internet connection and try again.'); return; }
+    const wrap = contentDiv.querySelector('.table-wrap');
+    if(!wrap){ alert('Nothing to screenshot yet \u2014 wait for the table to load first.'); return; }
+    const origText = btn.textContent; btn.disabled = true; btn.textContent = 'Capturing\u2026';
+    try{
+      const clone = wrap.cloneNode(true);
+      const rows = clone.querySelectorAll('tbody tr');
+      rows.forEach((tr, idx)=>{ if(idx >= rowLimit) tr.remove(); });
+      clone.style.cssText = 'position:fixed;top:-99999px;left:0;background:#fff;padding:12px;width:900px;';
+      document.body.appendChild(clone);
+      const canvas = await html2canvas(clone, {backgroundColor:'#ffffff', scale:2});
+      document.body.removeChild(clone);
+      const link = document.createElement('a');
+      link.download = `wnba-top-${rowLimit}-bets-${new Date().toISOString().slice(0,10)}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }catch(e){
+      alert('Screenshot failed: ' + e.message);
+    }
+    btn.disabled = false; btn.textContent = origText;
+  }
+  dl10Btn.addEventListener('click', ()=>downloadTableScreenshot(10, dl10Btn));
+  dl30Btn.addEventListener('click', ()=>downloadTableScreenshot(30, dl30Btn));
 
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
 
@@ -1259,6 +1291,8 @@ function renderOddsPage(){
   main.appendChild(statusDiv);
   const topBetsDiv = document.createElement('div');
   main.appendChild(topBetsDiv);
+  const gameBoxesDiv = document.createElement('div');
+  main.appendChild(gameBoxesDiv);
   const resultsDiv = document.createElement('div');
   main.appendChild(resultsDiv);
 
@@ -1266,11 +1300,67 @@ function renderOddsPage(){
   let viewingSingleGame = null; // {ev, detail} when drilled into one game, else null
   let singleGameWindow = 10;
 
+  // At-a-glance boxes for every game today — team names, spread, total, moneyline, and
+  // tip-off time. Click one to jump straight to that game's full bet list. (Note: The Odds
+  // API doesn't provide venue/stadium/city data at all, so that's not something these boxes
+  // can show — there's simply no field for it in the data this app has access to.)
+  function renderGameBoxes(){
+    gameBoxesDiv.innerHTML = '';
+    if(!cachedFetch.length) return;
+    const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
+    sec.textContent = '\ud83c\udfc0 Today\u2019s Games';
+    gameBoxesDiv.appendChild(sec);
+
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:20px;';
+    cachedFetch.forEach(({ev, detail})=>{
+      const dk = (ev.bookmakers||[]).find(b=>b.key==='draftkings');
+      const gameMarkets = marketsByKey(dk);
+      const h2h = gameMarkets['h2h'], spreads = gameMarkets['spreads'], totals = gameMarkets['totals'];
+      const awayML = dkOutcome(h2h, ev.away_team), homeML = dkOutcome(h2h, ev.home_team);
+      const awaySpread = dkOutcome(spreads, ev.away_team), homeSpread = dkOutcome(spreads, ev.home_team);
+      const over = dkOutcome(totals, 'Over'), under = dkOutcome(totals, 'Under');
+      const dt = new Date(ev.commence_time);
+
+      const card = document.createElement('div');
+      card.style.cssText = 'border:1px solid var(--line);border-radius:8px;padding:12px;background:#fff;cursor:pointer;transition:box-shadow .15s;';
+      card.addEventListener('mouseenter', ()=>{ card.style.boxShadow='0 2px 8px rgba(0,0,0,.1)'; });
+      card.addEventListener('mouseleave', ()=>{ card.style.boxShadow='none'; });
+      card.addEventListener('click', ()=>{
+        viewingSingleGame = {ev, detail};
+        singleGameWindow = 10;
+        renderResultsArea();
+      });
+
+      const timeStr = dt.toLocaleString(undefined, {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+      card.innerHTML = `
+        <div style="font-size:11px;color:var(--sub);margin-bottom:6px;">${timeStr}</div>
+        <div style="font-weight:800;font-size:13.5px;margin-bottom:8px;">${ev.away_team} @ ${ev.home_team}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:11px;color:var(--sub);font-weight:700;text-transform:uppercase;margin-bottom:2px;">
+          <div>Spread</div><div>Total</div><div>ML</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:12px;margin-bottom:4px;">
+          <div>${awaySpread ? (awaySpread.point>0?'+':'')+awaySpread.point : '\u2014'}</div>
+          <div>${over ? 'O '+over.point : '\u2014'}</div>
+          <div>${awayML ? fmtAmerican(awayML.price) : '\u2014'}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:12px;color:var(--sub);">
+          <div>${homeSpread ? (homeSpread.point>0?'+':'')+homeSpread.point : '\u2014'}</div>
+          <div>${under ? 'U '+under.point : '\u2014'}</div>
+          <div>${homeML ? fmtAmerican(homeML.price) : '\u2014'}</div>
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+    gameBoxesDiv.appendChild(grid);
+  }
+
   function renderResultsArea(){
     resultsDiv.innerHTML = '';
     if(viewingSingleGame){
       windowRow.style.display = 'none';
       topBetsDiv.style.display = 'none';
+      gameBoxesDiv.style.display = 'none';
       const backBtn = document.createElement('button'); backBtn.className='backbtn'; backBtn.textContent='\u2190 Back to all games';
       backBtn.addEventListener('click', ()=>{ viewingSingleGame = null; renderResultsArea(); });
       resultsDiv.appendChild(backBtn);
@@ -1282,6 +1372,7 @@ function renderOddsPage(){
     } else {
       windowRow.style.display = '';
       topBetsDiv.style.display = '';
+      gameBoxesDiv.style.display = '';
       cachedFetch.forEach(({ev, detail}) => {
         renderGameOddsBlock(resultsDiv, ev, detail, currentWindow, ()=>{
           viewingSingleGame = {ev, detail};
@@ -1336,6 +1427,7 @@ function renderOddsPage(){
         renderResultsArea();
       }
       renderTopBets(topBetsDiv, cachedFetch);
+      renderGameBoxes();
       statusDiv.textContent = `Done. Showing DraftKings lines for ${events.length} game(s). Click a game's title to drill into just that matchup, or switch the hit-rate window above anytime \u2014 neither re-fetches from the API.`;
     }catch(e){
       statusDiv.textContent = `Error fetching odds: ${e.message}. Double-check your Worker URL is correct and that you deployed it with your ODDS_API_KEY secret set.`;
@@ -1442,7 +1534,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
     const tdL15 = document.createElement('td'); tdL15.style.cssText = cellStyle;
     tdL15.textContent = Math.round(bet.rate15*100)+'%';
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
-    tdTrack.appendChild(makeTrackButton(bet, 10));
+    tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
     tr.appendChild(tdRank); tr.appendChild(tdLabel); tr.appendChild(tdGame);
     tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdTrack);
     tbody.appendChild(tr);
@@ -1535,7 +1627,7 @@ function renderTopBets(container, cachedFetch, topN){
     detail.style.cssText = 'font-size:12px;';
     detail.innerHTML = `${fmtAmerican(c.price)} \u2014 L10: ${Math.round(c.rate10*100)}%, L15: ${Math.round(c.rate15*100)}%`;
     card.appendChild(rank); card.appendChild(label); card.appendChild(game); card.appendChild(detail);
-    card.appendChild(makeTrackButton(c, 10));
+    card.appendChild(makeTrackAndHistoryButtons(c, 10));
     grid.appendChild(card);
   });
   container.appendChild(grid);
@@ -1605,8 +1697,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
       const over = dkOutcome(market,'Over'); const under = dkOutcome(market,'Under');
       const point = over ? over.point : (under ? under.point : undefined);
       const hr = withHitRate ? (half ? teamTotalHitRateHalf(awayShort, half, point, windowSize) : teamTotalHitRate(awayShort, point, windowSize)) : null; // combined total, same for either team
-      const overTrack = (!half && over) ? makeTrackButton({label:`Game Total Over ${point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time}, 10) : null;
-      const underTrack = (!half && under) ? makeTrackButton({label:`Game Total Under ${point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time}, 10) : null;
+      const overTrack = (!half && over) ? makeTrackAndHistoryButtons({label:`Game Total Over ${point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time}, 10) : null;
+      const underTrack = (!half && under) ? makeTrackAndHistoryButtons({label:`Game Total Under ${point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time}, 10) : null;
       row.appendChild(cell(over ? `Over ${over.point} (${over.price>0?'+':''}${over.price})` : '\u2014', hr, overTrack));
       row.appendChild(cell(under ? `Under ${under.point} (${under.price>0?'+':''}${under.price})` : '\u2014', null, underTrack));
     } else {
@@ -1627,8 +1719,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         }
       }
       const betType = isSpread ? 'spread' : 'moneyline';
-      const awayTrack = (!half && away) ? makeTrackButton(Object.assign({label:`${ev.away_team}${isSpread?' '+(away.point>0?'+':'')+away.point:' Moneyline'}`, price:away.price, betType, team:awayShort, opponent:homeShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time}, isSpread?{line:away.point}:{}), 10) : null;
-      const homeTrack = (!half && home) ? makeTrackButton(Object.assign({label:`${ev.home_team}${isSpread?' '+(home.point>0?'+':'')+home.point:' Moneyline'}`, price:home.price, betType, team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time}, isSpread?{line:home.point}:{}), 10) : null;
+      const awayTrack = (!half && away) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.away_team}${isSpread?' '+(away.point>0?'+':'')+away.point:' Moneyline'}`, price:away.price, betType, team:awayShort, opponent:homeShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time}, isSpread?{line:away.point}:{}), 10) : null;
+      const homeTrack = (!half && home) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.home_team}${isSpread?' '+(home.point>0?'+':'')+home.point:' Moneyline'}`, price:home.price, betType, team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time}, isSpread?{line:home.point}:{}), 10) : null;
       row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr, awayTrack));
       row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr, homeTrack));
     }
@@ -1665,7 +1757,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         c.appendChild(resultBadge(hr));
       }
       if(!half && over){
-        c.appendChild(makeTrackButton({label:`${teamFullName} Team Total Over ${over.point}`, price:over.price, betType:'team_total', team:shortName, opponent:oppShort, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time}, 10));
+        c.appendChild(makeTrackAndHistoryButtons({label:`${teamFullName} Team Total Over ${over.point}`, price:over.price, betType:'team_total', team:shortName, opponent:oppShort, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time}, 10));
       }
       row.appendChild(c);
     });
@@ -1730,7 +1822,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
       const overThreshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
       const trackCell = document.createElement('div'); trackCell.style.cssText='display:flex;gap:4px;justify-content:center;';
       if(overO && team){
-        const overBtn = makeTrackButton({
+        const overBtn = makeTrackAndHistoryButtons({
           label:`${pname} Over ${line} ${marketLabel}`, price:overO.price, betType:'player_prop',
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'over',
           thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10),
@@ -1739,7 +1831,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
         trackCell.appendChild(overBtn);
       }
       if(underO && team){
-        const underBtn = makeTrackButton({
+        const underBtn = makeTrackAndHistoryButtons({
           label:`${pname} Under ${line} ${marketLabel}`, price:underO.price, betType:'player_prop',
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'under',
           thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10),
@@ -1809,7 +1901,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick){
           nameCell = link;
         } else { nameCell = pname; }
 
-        const trackBtn = team ? makeTrackButton({
+        const trackBtn = team ? makeTrackAndHistoryButtons({
           label:`${pname} Over ${lvl.point} ${marketLabel}`, price:lvl.price, betType:'player_prop_alt',
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line:lvl.point, side:'over',
           thresholdToHit: lvl.point, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10),
@@ -1861,7 +1953,7 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
     const r10 = teamMoneylineHitRate(side.short, 10), r15 = teamMoneylineHitRate(side.short, 15);
     if(r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
       candidates.push({label:`${side.full} Moneyline`, price:side.outcome.price, rate10:r10.rate, rate15:r15.rate,
-        betType:'moneyline', team:side.short, opponent:side.opp, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time});
+        betType:'moneyline', team:side.short, opponent:side.opp, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     }
   });
 
@@ -1873,7 +1965,7 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
     const r10 = teamSpreadHitRate(side.short, pt, 10), r15 = teamSpreadHitRate(side.short, pt, 15);
     if(r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
       candidates.push({label:`${side.full} ${pt>0?'+':''}${pt}`, price:side.outcome.price, rate10:r10.rate, rate15:r15.rate,
-        betType:'spread', team:side.short, opponent:side.opp, line:pt, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time});
+        betType:'spread', team:side.short, opponent:side.opp, line:pt, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     }
   });
 
@@ -1886,11 +1978,11 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
     const r10 = teamTotalHitRate(awayShort, point, 10), r15 = teamTotalHitRate(awayShort, point, 15);
     if(over && r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
       candidates.push({label:`Game Total Over ${point}`, price:over.price, rate10:r10.rate, rate15:r15.rate,
-        betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time});
+        betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     }
     if(under && r10.gp>0 && r15.gp>0 && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
       candidates.push({label:`Game Total Under ${point}`, price:under.price, rate10:1-r10.rate, rate15:1-r15.rate,
-        betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time});
+        betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     }
   })();
 
@@ -1905,11 +1997,11 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
       const r10 = teamOwnTotalHitRate(side.short, point, 10), r15 = teamOwnTotalHitRate(side.short, point, 15);
       if(over && r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
         candidates.push({label:`${side.full} Team Total Over ${point}`, price:over.price, rate10:r10.rate, rate15:r15.rate,
-          betType:'team_total', team:side.short, opponent:side.opp, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time});
+          betType:'team_total', team:side.short, opponent:side.opp, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
       if(under && r10.gp>0 && r15.gp>0 && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
         candidates.push({label:`${side.full} Team Total Under ${point}`, price:under.price, rate10:1-r10.rate, rate15:1-r15.rate,
-          betType:'team_total', team:side.short, opponent:side.opp, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time});
+          betType:'team_total', team:side.short, opponent:side.opp, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
     });
   })();
@@ -1937,11 +2029,11 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
       if(r10.gp < MIN_GP_10 || r15.gp < MIN_GP_15) return;
       if(overO && r10.rate>=QUAL && r15.rate>=QUAL){
         candidates.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:overO.price, rate10:r10.rate, rate15:r15.rate, gp10:r10.gp, gp15:r15.gp,
-          betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'over', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time});
+          betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'over', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
       if(underO && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
         candidates.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:underO.price, rate10:1-r10.rate, rate15:1-r15.rate, gp10:r10.gp, gp15:r15.gp,
-          betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'under', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time});
+          betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'under', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
     });
   });
@@ -2082,6 +2174,154 @@ function makeTrackButton(legLikeObject, defaultStake){
     }
   });
   return btn;
+}
+
+// Small "📈" button that opens the line-movement history page for this specific bet,
+// using the odds snapshots your Worker has already been quietly collecting.
+function makeHistoryButton(legLikeObject){
+  const btn = document.createElement('button');
+  btn.textContent = '\ud83d\udcc8';
+  btn.title = 'See how this line has moved';
+  btn.style.cssText = 'padding:3px 7px;border-radius:4px;border:1px solid var(--line);background:#fff;color:var(--ink);font-size:11px;cursor:pointer;font-family:var(--sans);margin-left:4px;';
+  btn.addEventListener('click', ()=>{
+    const returnTo = lastRender;
+    renderLineHistoryPage(legLikeObject, returnTo);
+  });
+  return btn;
+}
+
+// Bundles Track + History into one wrapper, for the common case both are wanted together.
+function makeTrackAndHistoryButtons(legLikeObject, defaultStake){
+  const wrap = document.createElement('span'); wrap.style.cssText = 'display:inline-flex;align-items:center;';
+  wrap.appendChild(makeTrackButton(legLikeObject, defaultStake));
+  wrap.appendChild(makeHistoryButton(legLikeObject));
+  return wrap;
+}
+
+// Extracts this specific leg's price (and point, if relevant) out of one historical snapshot's
+// merged DraftKings markets. Returns null if that market/outcome wasn't captured in this snapshot.
+function extractLegFromSnapshotMarkets(leg, markets, homeShort, awayShort){
+  if(leg.betType === 'moneyline'){
+    const m = markets['h2h']; if(!m) return null;
+    const fullName = leg.team===homeShort ? FULL_TEAM_NAME[homeShort] : FULL_TEAM_NAME[awayShort];
+    const o = (m.outcomes||[]).find(x=>x.name===fullName);
+    return o ? {price:o.price} : null;
+  }
+  if(leg.betType === 'spread'){
+    const m = markets['spreads']; if(!m) return null;
+    const fullName = leg.team===homeShort ? FULL_TEAM_NAME[homeShort] : FULL_TEAM_NAME[awayShort];
+    const o = (m.outcomes||[]).find(x=>x.name===fullName);
+    return o ? {price:o.price, line:o.point} : null;
+  }
+  if(leg.betType === 'total'){
+    const m = markets['totals']; if(!m) return null;
+    const o = (m.outcomes||[]).find(x=>x.name===(leg.side==='over'?'Over':'Under'));
+    return o ? {price:o.price, line:o.point} : null;
+  }
+  if(leg.betType === 'team_total'){
+    const m = markets['team_totals']; if(!m) return null;
+    const fullName = leg.team===homeShort ? FULL_TEAM_NAME[homeShort] : FULL_TEAM_NAME[awayShort];
+    const o = (m.outcomes||[]).find(x=>x.name===(leg.side==='over'?'Over':'Under') && x.description===fullName);
+    return o ? {price:o.price, line:o.point} : null;
+  }
+  if(leg.betType === 'player_prop' || leg.betType === 'player_prop_alt'){
+    const mkey = Object.keys(PROP_MARKET_TO_STAT).find(k=>PROP_MARKET_TO_STAT[k]===leg.statKey && !k.endsWith('_alternate'));
+    const m = markets[mkey]; if(!m) return null;
+    const o = (m.outcomes||[]).find(x=>x.name===(leg.side==='over'?'Over':'Under') && x.description===leg.player);
+    return o ? {price:o.price, line:o.point} : null;
+  }
+  return null;
+}
+
+async function renderLineHistoryPage(leg, returnTo){
+  lastRender = () => renderLineHistoryPage(leg, returnTo);
+  main.innerHTML = '';
+  const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
+  back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderHomePage(); });
+  main.appendChild(back);
+
+  const head = document.createElement('div'); head.className='pagehead';
+  head.innerHTML = `<h2>\ud83d\udcc8 Line History</h2><div class="meta"><b>${leg.label}</b><br>${leg.gameLabel||''}</div>`;
+  main.appendChild(head);
+
+  const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.margin='10px 0';
+  statusDiv.textContent = 'Loading historical snapshots from your Worker\u2026';
+  main.appendChild(statusDiv);
+  const contentDiv = document.createElement('div');
+  main.appendChild(contentDiv);
+
+  if(!leg.eventId){
+    statusDiv.textContent = 'This bet doesn\u2019t have enough information to look up its history (no event id attached).';
+    return;
+  }
+
+  try{
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    const history = await fetchJson(`${workerBase}/history/export`);
+    const matches = (history||[]).filter(snap => snap.eventId === leg.eventId);
+    if(matches.length === 0){
+      statusDiv.textContent = 'No historical snapshots found yet for this game. Snapshots are only saved automatically while the Odds/Home pages are actively fetched before tip-off \u2014 as you keep using the app day to day, history will build up here on its own. Nothing to show yet for this one.';
+      return;
+    }
+
+    const homeShort = SHORT_TEAM_NAME[matches[0].homeTeam] || matches[0].homeTeam;
+    const awayShort = SHORT_TEAM_NAME[matches[0].awayTeam] || matches[0].awayTeam;
+
+    // merge markets seen at each distinct fetch timestamp (a single fetch can span two
+    // requests — game lines + event-detail — that land as separate snapshot records)
+    const byTime = {};
+    matches.forEach(snap=>{
+      const t = snap.fetchedAt;
+      if(!byTime[t]) byTime[t] = {};
+      const dk = (snap.data.bookmakers||[]).find(b=>b.key==='draftkings');
+      if(dk) (dk.markets||[]).forEach(m=>{ byTime[t][m.key] = m; });
+    });
+
+    const points = [];
+    Object.keys(byTime).sort().forEach(t=>{
+      const found = extractLegFromSnapshotMarkets(leg, byTime[t], homeShort, awayShort);
+      if(found) points.push({time:t, ...found});
+    });
+
+    if(points.length === 0){
+      statusDiv.textContent = `Found ${matches.length} snapshot(s) for this game, but none captured this specific market yet.`;
+      return;
+    }
+
+    statusDiv.textContent = `${points.length} data point(s) captured for this bet, as far back as your Worker has been collecting.`;
+
+    const wrap = document.createElement('div'); wrap.className='table-wrap';
+    const table = document.createElement('table'); table.style.width='100%';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th class="left">Captured At</th><th>Line</th><th>Price</th><th>Change</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody'); table.appendChild(tbody);
+    points.forEach((p, idx)=>{
+      const tr = document.createElement('tr');
+      const prev = idx>0 ? points[idx-1] : null;
+      let change = '\u2014';
+      if(prev){
+        const priceDelta = p.price - prev.price;
+        change = priceDelta===0 ? 'no change' : (priceDelta>0?'+':'')+priceDelta+' price';
+        if(p.line!==undefined && prev.line!==undefined && p.line!==prev.line){
+          change += `, line ${prev.line}\u2192${p.line}`;
+        }
+      }
+      const cells = [new Date(p.time).toLocaleString(), p.line!==undefined?p.line:'\u2014', fmtAmerican(p.price), change];
+      cells.forEach((c,i)=>{
+        const td = document.createElement('td');
+        if(i===0) td.classList.add('left');
+        td.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;'+(i>0?'text-align:center;':'');
+        td.textContent = c;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    wrap.appendChild(table);
+    contentDiv.appendChild(wrap);
+  }catch(e){
+    statusDiv.textContent = `Couldn\u2019t load line history: ${e.message}`;
+  }
 }
 
 // ================= Bet Tracker page =================
@@ -2940,29 +3180,29 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
   if(h2h){
     [{short:awayShort,full:ev.away_team,opp:homeShort},{short:homeShort,full:ev.home_team,opp:awayShort}].forEach(side=>{
       const o = dkOutcome(h2h, side.full);
-      if(o) legs.push({label:`${side.full} Moneyline`, price:o.price, betType:'moneyline', team:side.short, opponent:side.opp, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time});
+      if(o) legs.push({label:`${side.full} Moneyline`, price:o.price, betType:'moneyline', team:side.short, opponent:side.opp, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     });
   }
   const spreads = markets['spreads'];
   if(spreads){
     [{short:awayShort,full:ev.away_team,opp:homeShort},{short:homeShort,full:ev.home_team,opp:awayShort}].forEach(side=>{
       const o = dkOutcome(spreads, side.full);
-      if(o) legs.push({label:`${side.full} ${o.point>0?'+':''}${o.point}`, price:o.price, betType:'spread', team:side.short, opponent:side.opp, line:o.point, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time});
+      if(o) legs.push({label:`${side.full} ${o.point>0?'+':''}${o.point}`, price:o.price, betType:'spread', team:side.short, opponent:side.opp, line:o.point, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     });
   }
   const totals = markets['totals'];
   if(totals){
     const over = dkOutcome(totals,'Over'), under = dkOutcome(totals,'Under');
-    if(over) legs.push({label:`Game Total Over ${over.point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time});
-    if(under) legs.push({label:`Game Total Under ${under.point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:under.point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time});
+    if(over) legs.push({label:`Game Total Over ${over.point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
+    if(under) legs.push({label:`Game Total Under ${under.point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:under.point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
   }
   const teamTotals = markets['team_totals'];
   if(teamTotals){
     [{short:awayShort,full:ev.away_team,opp:homeShort},{short:homeShort,full:ev.home_team,opp:awayShort}].forEach(side=>{
       const over = teamTotals.outcomes.find(o=>o.name==='Over'&&o.description===side.full);
       const under = teamTotals.outcomes.find(o=>o.name==='Under'&&o.description===side.full);
-      if(over) legs.push({label:`${side.full} Team Total Over ${over.point}`, price:over.price, betType:'team_total', team:side.short, opponent:side.opp, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time});
-      if(under) legs.push({label:`${side.full} Team Total Under ${under.point}`, price:under.price, betType:'team_total', team:side.short, opponent:side.opp, line:under.point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time});
+      if(over) legs.push({label:`${side.full} Team Total Over ${over.point}`, price:over.price, betType:'team_total', team:side.short, opponent:side.opp, line:over.point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
+      if(under) legs.push({label:`${side.full} Team Total Under ${under.point}`, price:under.price, betType:'team_total', team:side.short, opponent:side.opp, line:under.point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     });
   }
   ['player_points','player_rebounds','player_assists','player_threes'].forEach(mkey=>{
@@ -2976,8 +3216,8 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
       if(line===undefined) return;
       const team = findPlayerTeam(pname, homeShort, awayShort);
       const threshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
-      if(over) legs.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:over.price, betType:'player_prop', team, player:pname, statKey, line, side:'over', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time});
-      if(under) legs.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:under.price, betType:'player_prop', team, player:pname, statKey, line, side:'under', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time});
+      if(over) legs.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:over.price, betType:'player_prop', team, player:pname, statKey, line, side:'over', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
+      if(under) legs.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:under.price, betType:'player_prop', team, player:pname, statKey, line, side:'under', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     });
   });
   return legs;
