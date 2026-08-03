@@ -2072,10 +2072,12 @@ function makeTrackButton(legLikeObject, defaultStake){
       btn.textContent = '\u2713 Tracked';
       btn.style.background = 'var(--greenbg)'; btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--green)';
     }catch(e){
-      btn.textContent = '\u26a0 Failed (hover for why)';
-      btn.title = `${e.message}\n\nMost common cause: the BET_TRACKER KV namespace hasn't been created and bound to your Worker yet, or the Worker wasn't redeployed after adding it. Check Cloudflare: Workers & Pages > KV > BET_TRACKER exists > your Worker's Settings > Bindings includes it > Worker redeployed.`;
+      btn.textContent = '\u26a0 Failed (tap for why)';
+      const fullMessage = `${e.message}\n\nMost common cause: the BET_TRACKER KV namespace hasn't been created and bound to your Worker yet, or the Worker wasn't redeployed after adding it. Check Cloudflare: Workers & Pages > KV > BET_TRACKER exists > your Worker's Settings > Bindings includes it > Worker redeployed.`;
+      btn.title = fullMessage;
       btn.style.borderColor = 'var(--red)'; btn.style.color = 'var(--red)';
       btn.disabled = false;
+      btn.onclick = (ev)=>{ ev.stopPropagation(); alert(fullMessage); };
       console.warn('Track failed', e);
     }
   });
@@ -2765,7 +2767,7 @@ async function renderBetTrackerPage(){
 
   // ---- Shared helper: POST a list of bet objects to the tracker, one by one ----
   async function addBetsToTracker(betList, statusEl){
-    let ok = 0, fail = 0;
+    let ok = 0, fail = 0, firstError = null;
     for(const bet of betList){
       try{
         const cleaned = Object.assign({result:'pending', stake: bet.stake||10}, bet);
@@ -2774,11 +2776,12 @@ async function renderBetTrackerPage(){
         ok++;
       }catch(e){
         fail++;
+        if(!firstError) firstError = e.message;
         console.warn('Bulk add failed for', bet, e);
       }
       if(statusEl) statusEl.textContent = `Adding\u2026 ${ok+fail}/${betList.length} (${ok} ok, ${fail} failed)`;
     }
-    return {ok, fail};
+    return {ok, fail, firstError};
   }
 
   // ---- Upload Bet Screenshot(s): sends the image to Claude directly (in-artifact API call,
@@ -2881,7 +2884,7 @@ async function renderBetTrackerPage(){
           confirmBtn.disabled = true;
           const toAdd = [...reviewDiv.querySelectorAll('div')].filter(r=>r._bet && r._cb && r._cb.checked).map(r=>r._bet);
           const result = await addBetsToTracker(toAdd, parseStatus);
-          parseStatus.textContent = `Added ${result.ok}, failed ${result.fail}.`;
+          parseStatus.textContent = `Added ${result.ok}, failed ${result.fail}.` + (result.fail ? ` First error: ${result.firstError}` : '');
           await refresh();
         });
         reviewDiv.appendChild(confirmBtn);
@@ -2920,7 +2923,7 @@ async function renderBetTrackerPage(){
       if(!Array.isArray(parsed)){ status.textContent = 'Expected a JSON array of bet objects.'; return; }
       goBtn.disabled = true;
       const result = await addBetsToTracker(parsed, status);
-      status.textContent = `Added ${result.ok}, failed ${result.fail}.`;
+      status.textContent = `Added ${result.ok}, failed ${result.fail}.` + (result.fail ? ` First error: ${result.firstError}` : '');
       goBtn.disabled = false;
       await refresh();
     });
