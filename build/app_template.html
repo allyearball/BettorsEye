@@ -388,6 +388,45 @@ function renderTeamPage(team, year, month){
   const t1 = document.createElement('div'); t1.className='section-title'; t1.textContent='Player Totals'; main.appendChild(t1);
   makeTable(main, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team});
 
+  // ---- Tracked prop-line history, per player (points/rebounds/assists/threes/PRA are
+  // player stats, so this is a player-select + chart rather than one team-wide graph) ----
+  const lineTrendTitle = document.createElement('div'); lineTrendTitle.className='section-title';
+  lineTrendTitle.textContent = 'Tracked DraftKings Prop Line History (Season)';
+  main.appendChild(lineTrendTitle);
+  const rosterSorted = summary.totals.slice().sort((a,b)=> b.gp - a.gp);
+  if(rosterSorted.length){
+    const lineTrendControls = document.createElement('div'); lineTrendControls.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:8px;';
+    const playerSelectLabel = document.createElement('div'); playerSelectLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;'; playerSelectLabel.textContent='Player:';
+    const playerSelect = document.createElement('select'); playerSelect.style.cssText='padding:5px 8px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;font-family:var(--sans);';
+    rosterSorted.forEach(p=>{
+      const opt = document.createElement('option'); opt.value = p.player; opt.textContent = `${p.player} (${p.gp} GP)`;
+      playerSelect.appendChild(opt);
+    });
+    lineTrendControls.appendChild(playerSelectLabel); lineTrendControls.appendChild(playerSelect);
+    main.appendChild(lineTrendControls);
+
+    const lineTrendContainer = document.createElement('div');
+    lineTrendContainer.style.cssText = 'background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
+    lineTrendContainer.textContent = 'Loading tracked line history\u2026';
+    main.appendChild(lineTrendContainer);
+
+    async function loadTeamPlayerTrend(pname){
+      lineTrendContainer.textContent = 'Loading tracked line history\u2026';
+      try{
+        const history = await fetchOddsHistoryCached();
+        renderLineTrendChart(lineTrendContainer, buildPlayerLineSeries(pname, team, history));
+      }catch(e){
+        lineTrendContainer.textContent = `Couldn\u2019t load line history: ${e.message}`;
+      }
+    }
+    playerSelect.addEventListener('change', ()=>loadTeamPlayerTrend(playerSelect.value));
+    loadTeamPlayerTrend(rosterSorted[0].player);
+  } else {
+    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;';
+    na.textContent = 'No players found for this team/range.';
+    main.appendChild(na);
+  }
+
   const t2 = document.createElement('div'); t2.className='section-title'; t2.textContent='Player Averages (Per Game Played)'; main.appendChild(t2);
   makeTable(main, AVG_COLS, summary.averages, {defaultSort:'pts', teamFor:()=>team});
 
@@ -553,6 +592,22 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     `;
     main.appendChild(bioDiv);
   }
+
+  const lineTrendTitle = document.createElement('div'); lineTrendTitle.className='section-title';
+  lineTrendTitle.textContent = 'Tracked DraftKings Prop Line History (Season)';
+  main.appendChild(lineTrendTitle);
+  const lineTrendContainer = document.createElement('div');
+  lineTrendContainer.style.cssText = 'background:#fff;border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
+  lineTrendContainer.textContent = 'Loading tracked line history\u2026';
+  main.appendChild(lineTrendContainer);
+  (async ()=>{
+    try{
+      const history = await fetchOddsHistoryCached();
+      renderLineTrendChart(lineTrendContainer, buildPlayerLineSeries(playerName, team, history));
+    }catch(e){
+      lineTrendContainer.textContent = `Couldn\u2019t load line history: ${e.message}`;
+    }
+  })();
 
   // Year/Month filter — narrows the calendar range; the rolling-window buttons below then
   // apply within whatever that range contains (e.g. "Last 10" within June 2026 specifically).
@@ -721,6 +776,142 @@ const PROP_MARKET_LABEL = {
   player_points_alternate: 'Points', player_rebounds_alternate: 'Rebounds', player_assists_alternate: 'Assists', player_threes_alternate: 'Threes',
   player_points_rebounds_assists: 'Pts+Reb+Ast', player_points_rebounds_assists_alternate: 'Pts+Reb+Ast',
 };
+
+// ================= Season prop-line trend charts (player + team pages) =================
+// Reuses the same ODDS_HISTORY snapshot archive that already powers the per-bet "Line
+// History" page. A snapshot is only ever saved pre-tipoff (see the Worker's saveSnapshots),
+// so for each game we just take whichever saved snapshot is closest to that game's tip-off
+// and read the line off it \u2014 that's "the pregame line" for that game.
+//
+// Coverage caveat (real, not hypothetical): a snapshot only exists for a game/market if the
+// app was actually browsed to a page that fetched that market before that game tipped off.
+// There's no background job forcing a fetch for every upcoming game \u2014 it happens as a
+// byproduct of normal use. So the chart below will have gaps for games nobody happened to
+// check via the Odds page before they started, and will fill in more completely for whoever
+// (or whatever automation) is opening the app regularly.
+const LINE_TREND_MARKETS = [
+  {mkey:'player_points', statKey:'pts', label:'Points', color:'#1c4b82'},
+  {mkey:'player_rebounds', statKey:'reb', label:'Rebounds', color:'#1f9d55'},
+  {mkey:'player_assists', statKey:'ast', label:'Assists', color:'#b3261e'},
+  {mkey:'player_threes', statKey:'tpm', label:'Threes', color:'#a5760a'},
+  {mkey:'player_points_rebounds_assists', statKey:'pra', label:'Pts+Reb+Ast', color:'#6a3fa0'},
+];
+
+let _oddsHistoryCache = null;
+async function fetchOddsHistoryCached(){
+  if(_oddsHistoryCache) return _oddsHistoryCache;
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  _oddsHistoryCache = await fetchJson(`${workerBase}/history/export`);
+  return _oddsHistoryCache;
+}
+
+// Builds {pts:[{date,value}], reb:[...], ast:[...], tpm:[...], pra:[...]} for one player,
+// one point per game (the DraftKings line at her last pre-tipoff snapshot for that game).
+function buildPlayerLineSeries(playerName, team, history){
+  const fullName = FULL_TEAM_NAME[team];
+  const relevant = (history||[]).filter(snap => snap.homeTeam===fullName || snap.awayTeam===fullName);
+
+  const latestByEvent = {};
+  relevant.forEach(snap=>{
+    const existing = latestByEvent[snap.eventId];
+    if(!existing || snap.fetchedAt > existing.fetchedAt) latestByEvent[snap.eventId] = snap;
+  });
+
+  const series = {};
+  LINE_TREND_MARKETS.forEach(m=>{ series[m.statKey] = []; });
+
+  Object.values(latestByEvent).forEach(snap=>{
+    const dk = (snap.data.bookmakers||[]).find(b=>b.key==='draftkings');
+    if(!dk) return;
+    const date = (snap.commenceTime||'').slice(0,10);
+    if(!date) return;
+    LINE_TREND_MARKETS.forEach(m=>{
+      const market = (dk.markets||[]).find(mk=>mk.key===m.mkey);
+      if(!market) return;
+      const outcome = (market.outcomes||[]).find(o=>o.description===playerName);
+      if(!outcome || outcome.point===undefined || outcome.point===null) return;
+      series[m.statKey].push({date, value: outcome.point});
+    });
+  });
+
+  LINE_TREND_MARKETS.forEach(m=>{ series[m.statKey].sort((a,b)=>a.date.localeCompare(b.date)); });
+  return series;
+}
+
+// Renders a toggleable multi-series line chart into `container` for the given series map
+// (see buildPlayerLineSeries). Stats with zero data points are omitted from the legend
+// entirely rather than shown as an empty/misleading toggle.
+function renderLineTrendChart(container, series){
+  container.innerHTML = '';
+  const activeMarkets = LINE_TREND_MARKETS.filter(m => (series[m.statKey]||[]).length > 0);
+  if(activeMarkets.length===0){
+    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;';
+    na.textContent = 'No tracked prop-line history yet for this player \u2014 lines are captured automatically as the DraftKings Odds page is browsed before each game tips off, so this fills in on its own as the season goes on.';
+    container.appendChild(na);
+    return;
+  }
+
+  const checkboxState = {};
+  activeMarkets.forEach(m=>{ checkboxState[m.statKey] = true; });
+
+  const legend = document.createElement('div'); legend.style.cssText='display:flex;flex-wrap:wrap;gap:14px;margin-bottom:10px;';
+  const svgHolder = document.createElement('div');
+
+  function buildSvg(){
+    const W = 700, H = 280, padL = 40, padR = 16, padT = 16, padB = 28;
+    const visibleMarkets = activeMarkets.filter(m=>checkboxState[m.statKey]);
+    if(visibleMarkets.length===0) return '<div style="color:var(--sub);font-size:12px;padding:12px 0;">No stats selected.</div>';
+
+    const allDates = Array.from(new Set(visibleMarkets.flatMap(m=>series[m.statKey].map(p=>p.date)))).sort();
+    const allValues = visibleMarkets.flatMap(m=>series[m.statKey].map(p=>p.value));
+    const minV = Math.min(...allValues), maxV = Math.max(...allValues);
+    const vRange = (maxV - minV) || 1;
+    const yFor = v => padT + (H-padT-padB) * (1 - (v-minV)/vRange);
+    const xFor = d => {
+      const idx = allDates.indexOf(d);
+      return padL + (allDates.length<=1 ? (W-padL-padR)/2 : (W-padL-padR) * idx/(allDates.length-1));
+    };
+
+    let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;font-family:inherit;">`;
+    for(let i=0;i<=4;i++){
+      const v = minV + (vRange*i/4);
+      const y = yFor(v);
+      svg += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}" stroke="#e5e7eb" stroke-width="1"/>`;
+      svg += `<text x="${padL-6}" y="${(y+4).toFixed(1)}" font-size="10" text-anchor="end" fill="#6b7280">${Math.round(v*10)/10}</text>`;
+    }
+    const labelStep = Math.max(1, Math.ceil(allDates.length/6));
+    allDates.forEach((d,i)=>{
+      if(i%labelStep!==0 && i!==allDates.length-1) return;
+      const x = xFor(d);
+      svg += `<text x="${x.toFixed(1)}" y="${H-padB+16}" font-size="9" text-anchor="middle" fill="#6b7280">${d.slice(5)}</text>`;
+    });
+
+    visibleMarkets.forEach(m=>{
+      const pts = series[m.statKey];
+      if(pts.length===0) return;
+      const path = pts.map((p,i)=> `${i===0?'M':'L'} ${xFor(p.date).toFixed(1)} ${yFor(p.value).toFixed(1)}`).join(' ');
+      svg += `<path d="${path}" fill="none" stroke="${m.color}" stroke-width="2"/>`;
+      pts.forEach(p=>{
+        svg += `<circle cx="${xFor(p.date).toFixed(1)}" cy="${yFor(p.value).toFixed(1)}" r="3" fill="${m.color}"><title>${p.date}: ${p.value}</title></circle>`;
+      });
+    });
+    svg += '</svg>';
+    return svg;
+  }
+  function draw(){ svgHolder.innerHTML = buildSvg(); }
+
+  activeMarkets.forEach(m=>{
+    const lbl = document.createElement('label'); lbl.style.cssText=`display:flex;align-items:center;gap:5px;font-size:12px;color:${m.color};font-weight:700;cursor:pointer;`;
+    const cb = document.createElement('input'); cb.type='checkbox'; cb.checked=true;
+    cb.addEventListener('change', ()=>{ checkboxState[m.statKey]=cb.checked; draw(); });
+    lbl.appendChild(cb); lbl.appendChild(document.createTextNode(`${m.label} (${series[m.statKey].length})`));
+    legend.appendChild(lbl);
+  });
+
+  container.appendChild(legend);
+  container.appendChild(svgHolder);
+  draw();
+}
 
 // 'pra' isn't a stored field on a game-log entry — it's derived on the fly from pts+reb+ast.
 function statValue(g, statKey){
