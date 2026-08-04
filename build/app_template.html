@@ -117,6 +117,79 @@ function fmtVal(v, col, row){
   if(col.bool) return v?'Y':'N';
   return v;
 }
+// ================= Tap-to-define system (for stat column headers) =================
+// Hover tooltips (title="...") don't work at all on iPhone/touch devices \u2014 there's no
+// hover state. This gives every advanced-stat column header a small \u24d8 icon that toggles
+// a definition popover on tap (works identically with mouse click on desktop). One popover
+// open at a time; tapping elsewhere on the page closes it.
+let _activeDefIcon = null, _activeDefPopover = null;
+function hideDefPopover(){
+  if(_activeDefPopover){ _activeDefPopover.remove(); _activeDefPopover = null; }
+  _activeDefIcon = null;
+}
+function showDefPopover(anchorEl, text){
+  const pop = document.createElement('div');
+  pop.style.cssText = 'position:fixed;z-index:9999;max-width:260px;background:#1c2b3a;color:#fff;font-size:12px;line-height:1.45;padding:10px 12px;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.3);';
+  pop.textContent = text;
+  document.body.appendChild(pop);
+  const rect = anchorEl.getBoundingClientRect();
+  let left = rect.left;
+  const maxLeft = window.innerWidth - 276;
+  if(left > maxLeft) left = Math.max(8, maxLeft);
+  let top = rect.bottom + 6;
+  // flip above the icon if there isn't room below (common near the bottom of a long table on mobile)
+  if(top + 90 > window.innerHeight) top = Math.max(8, rect.top - 96);
+  pop.style.left = left+'px'; pop.style.top = top+'px';
+  _activeDefPopover = pop;
+}
+function toggleDefPopover(icon, text){
+  if(_activeDefIcon === icon){ hideDefPopover(); return; }
+  hideDefPopover();
+  showDefPopover(icon, text);
+  _activeDefIcon = icon;
+}
+document.addEventListener('click', (e)=>{
+  if(_activeDefPopover && !_activeDefPopover.contains(e.target)) hideDefPopover();
+}, true);
+// Appends a tappable \u24d8 definition icon to a header element if defText is provided.
+// stopPropagation keeps it from also triggering the column's sort-on-click handler.
+function appendDefIcon(th, defText){
+  if(!defText) return;
+  const icon = document.createElement('span');
+  icon.textContent = '\u24d8';
+  icon.style.cssText = 'font-size:12px;color:var(--navy2);cursor:pointer;margin-left:4px;opacity:.75;';
+  icon.addEventListener('click', (e)=>{ e.stopPropagation(); e.preventDefault(); toggleDefPopover(icon, defText); });
+  th.appendChild(icon);
+}
+
+const STAT_DEFINITIONS = {
+  usgPct: 'Usage Rate (USG%) \u2014 the standard Basketball-Reference formula. Estimated share of her team\u2019s offensive possessions (shot attempts, free throw trips, turnovers) she was directly involved in while on the floor.',
+  ptsEma: 'Points EMA \u2014 exponential moving average of points scored, weighting recent games more heavily than older ones (span of up to 10 games). Reacts faster to a role/rotation change than a plain average.',
+  ptsStd: 'Points StdDev (L10) \u2014 standard deviation of points over her last 10 games played. Higher = more game-to-game volatility, meaning the average is a less reliable predictor of any single game.',
+  ptsIqr: 'Points IQR (L10) \u2014 interquartile range (75th percentile minus 25th) of points over her last 10 games. Strips out single-game outliers (blowouts, OT games) better than standard deviation does.',
+  rebEma: 'Rebounds EMA \u2014 exponential moving average of rebounds, weighting recent games more heavily (span up to 10 games).',
+  rebStd: 'Rebounds StdDev (L10) \u2014 standard deviation of rebounds over her last 10 games. Higher = less consistent.',
+  rebIqr: 'Rebounds IQR (L10) \u2014 interquartile range of rebounds over her last 10 games, with outlier games stripped out.',
+  astEma: 'Assists EMA \u2014 exponential moving average of assists, weighting recent games more heavily (span up to 10 games).',
+  astStd: 'Assists StdDev (L10) \u2014 standard deviation of assists over her last 10 games. Higher = less consistent.',
+  astIqr: 'Assists IQR (L10) \u2014 interquartile range of assists over her last 10 games, with outlier games stripped out.',
+  dvpPts: 'DvP Index (Points) \u2014 this opponent\u2019s points allowed per game to her position, divided by the league-average points allowed to that position. Above 1.05 = plus matchup (favors the Over); below 0.95 = tougher matchup.',
+  dvpReb: 'DvP Index (Rebounds) \u2014 same idea as DvP-PTS, for rebounds allowed to her position.',
+  dvpAst: 'DvP Index (Assists) \u2014 same idea as DvP-PTS, for assists allowed to her position.',
+  ptsAllowed: 'Points allowed per game to this position, season-long.',
+  ptsDvp: 'DvP Index (Points) \u2014 this team\u2019s points allowed to this position vs. the league average. Above 1.05 = generous defense against this position; below 0.95 = stingy.',
+  rebAllowed: 'Rebounds allowed per game to this position, season-long.',
+  rebDvp: 'DvP Index (Rebounds) \u2014 this team\u2019s rebounds allowed to this position vs. the league average.',
+  astAllowed: 'Assists allowed per game to this position, season-long.',
+  astDvp: 'DvP Index (Assists) \u2014 this team\u2019s assists allowed to this position vs. the league average.',
+  tpmAllowed: '3-pointers made allowed per game to this position, season-long.',
+  tpmDvp: 'DvP Index (Threes) \u2014 this team\u2019s 3PM allowed to this position vs. the league average.',
+  praAllowed: 'Points+Rebounds+Assists allowed per game to this position, season-long.',
+  praDvp: 'DvP Index (PRA) \u2014 this team\u2019s Pts+Reb+Ast allowed to this position vs. the league average.',
+  defRank: 'Opponent Defense Rank \u2014 where this opponent ranks among all WNBA teams in [stat] allowed per game to her position, season-long. 1 = stingiest defense (fewest allowed); last place = most generous (most allowed).',
+  defAllowed: 'The raw "[stat] allowed per game to her position, season-long" number behind the Opp Def Rank column.',
+};
+
 function makeTable(container, columns, rows, opts){
   opts = opts||{};
   const state = {sortKey: opts.defaultSort||(columns[0]&&columns[0].key), sortDir: opts.defaultDir||'desc'};
@@ -138,6 +211,7 @@ function makeTable(container, columns, rows, opts){
   columns.forEach(col=>{
     const th = document.createElement('th'); th.textContent = col.label;
     if(col.left) th.classList.add('left');
+    appendDefIcon(th, col.def || STAT_DEFINITIONS[col.key]);
     const arrow = document.createElement('span'); arrow.className='arrow'; th.appendChild(arrow);
     th.addEventListener('click', ()=>{
       if(state.sortKey===col.key){ state.sortDir = state.sortDir==='asc'?'desc':'asc'; }
@@ -1875,7 +1949,7 @@ function buildFilterableTable(container, columns, dataRows){
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
   const trh = document.createElement('tr');
-  columns.forEach(col=>{ const th=document.createElement('th'); th.textContent=col.label; if(col.align==='left') th.classList.add('left'); trh.appendChild(th); });
+  columns.forEach(col=>{ const th=document.createElement('th'); th.textContent=col.label; if(col.align==='left') th.classList.add('left'); appendDefIcon(th, col.def || STAT_DEFINITIONS[col.key]); trh.appendChild(th); });
   thead.appendChild(trh); table.appendChild(thead);
   const tbody = document.createElement('tbody'); table.appendChild(tbody);
   const countDiv = document.createElement('div'); countDiv.style.cssText='font-size:11.5px;color:var(--sub);margin:2px 0 6px;';
@@ -2402,7 +2476,9 @@ function renderTopBetsTable(container, cachedFetch, topN){
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th>Opp Def Rank</th><th>Allowed/Gm</th><th></th></tr>';
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th class="th-defrank">Opp Def Rank</th><th class="th-defallowed">Allowed/Gm</th><th></th></tr>';
+  appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
+  appendDefIcon(thead.querySelector('.th-defallowed'), STAT_DEFINITIONS.defAllowed);
   table.appendChild(thead);
   const tbody = document.createElement('tbody'); table.appendChild(tbody);
 
