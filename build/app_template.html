@@ -2097,6 +2097,11 @@ async function renderHomePage(){
 
   const contentDiv = document.createElement('div');
   main.appendChild(contentDiv);
+  // Separate container (not the one the screenshot buttons target) for the second, advanced-
+  // analytics-ranked table below the original hit-rate-ranked one.
+  const contentDiv2 = document.createElement('div');
+  contentDiv2.style.marginTop = '24px';
+  main.appendChild(contentDiv2);
 
   async function downloadTableScreenshot(rowLimit, btn){
     if(typeof html2canvas === 'undefined'){ alert('Screenshot library didn\u2019t load \u2014 check your internet connection and try again.'); return; }
@@ -2153,6 +2158,7 @@ async function renderHomePage(){
       cachedForToday.push({ev, detail});
     }
     renderTopBetsTable(contentDiv, cachedForToday, 30);
+    renderAdvancedTopBetsTable(contentDiv2, cachedForToday, 30);
     statusDiv.textContent = `Showing today\u2019s top bets across ${todaysGames.length} game(s). Tap Refresh to pull the latest lines again.`;
   }catch(e){
     statusDiv.textContent = `Couldn\u2019t load today\u2019s bets: ${e.message}. Double-check your Worker URL is reachable, or visit the DraftKings Odds page directly.`;
@@ -2446,6 +2452,112 @@ function isEligibleForTopBets(ev, now){
   return minutesSinceTipoff < TOP_BETS_QUARTER_GRACE_MINUTES; // covers not-yet-started (negative) through end of an estimated Q1
 }
 
+// ================= Advanced Analytics Top Bets (second ranking, separate methodology) =================
+// Unlike the main Top Bets table (which ranks by simple historical hit rate), this ranks
+// player props by a composite "edge score" built from the advanced-stats system added earlier:
+// multi-window EMA consensus (L5/L10/L15/full season), volatility (IQR), Defense-vs-Position
+// Index, and injury status. Scoped to player props only \u2014 EMA/DvP don't have a built
+// equivalent for game lines (moneyline/spread/total) in this app yet.
+
+// A player's own game log, sliced into the 4 windows Gemini's framework calls out, each
+// reduced to an EMA (not a plain average \u2014 see the Team/Player Advanced Metrics tables for
+// why). Returns null if she has no log at all (e.g. name mismatch) rather than guessing.
+function multiWindowStats(playerName, team, statKey){
+  const rec = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!rec) return null;
+  const played = rec.log.filter(g=>!g.dnp).map(g => statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[statKey]||0));
+  if(played.length===0) return null;
+  function windowStat(n){
+    const arr = n==='full' ? played : played.slice(-n);
+    if(arr.length===0) return {ema:null, n:0};
+    return {ema: emaOf(arr, Math.max(1, Math.min(10, arr.length))), n: arr.length};
+  }
+  const l10arr = played.slice(-10);
+  return {
+    l5: windowStat(5), l10: windowStat(10), l15: windowStat(15), full: windowStat('full'),
+    stdL10: stdDevOf(l10arr), iqrL10: iqrOf(l10arr),
+  };
+}
+
+function playerInjuryStatus(playerName, team){
+  return teamInjuries(team).find(inj => inj.player === playerName) || null;
+}
+// Heuristic, not a measured effect: if a DIFFERENT key teammate (23+ min/game) is Out, usage
+// tends to redistribute toward the remaining rotation \u2014 a modest bonus for Over picks only,
+// since there's no way to quantify exactly how much volume shifts to THIS player specifically.
+function teammateKeyInjuryBoost(playerName, team, wantOver){
+  if(!wantOver) return 1.0;
+  const outs = teamInjuries(team).filter(inj => inj.player!==playerName && isKeyPlayer(inj.player, team) && injuryStatusSeverity(inj.status)==='out');
+  return outs.length ? 1.1 : 1.0;
+}
+
+// Composite edge score for one leg (a specific player/stat/line/side already posted by
+// DraftKings). Requires at least 3 of the 4 windows to agree with the leg's posted direction
+// before scoring it at all \u2014 a leg where the windows disagree with each other isn't a real
+// signal, however good any single window looks in isolation.
+function computeAdvancedEdgeForLeg(leg){
+  if(leg.betType !== 'player_prop') return null;
+  const mw = multiWindowStats(leg.player, leg.team, leg.statKey);
+  if(!mw) return null;
+  const windows = [mw.l5, mw.l10, mw.l15, mw.full].filter(w => w.ema!==null && w.n>=2);
+  if(windows.length < 3) return null;
+
+  const wantOver = leg.side==='over';
+  const agreement = windows.filter(w => wantOver ? w.ema>leg.line : w.ema<leg.line).length / windows.length;
+  if(agreement < 0.75) return null;
+
+  const avgEma = windows.reduce((a,w)=>a+w.ema,0)/windows.length;
+  const edgeMagnitude = Math.abs(avgEma - leg.line) / Math.max(leg.line, 1);
+  const volatilityDamp = mw.iqrL10!==null ? 1/(1 + mw.iqrL10/Math.max(leg.line,1)) : 0.85;
+
+  const bucket = positionBucket(getPlayerPosition(leg.player, leg.team));
+  const dvp = bucket ? dvpIndex(leg.opponent, leg.statKey, bucket) : null;
+  let dvpMultiplier = 1.0;
+  if(dvp!==null){
+    if(wantOver && dvp>1.05) dvpMultiplier = 1 + Math.min(dvp-1, 0.4);
+    else if(!wantOver && dvp<0.95) dvpMultiplier = 1 + Math.min(1-dvp, 0.4);
+    else if(wantOver && dvp<0.95) dvpMultiplier = 0.65;
+    else if(!wantOver && dvp>1.05) dvpMultiplier = 0.65;
+  }
+
+  return {
+    score: agreement * edgeMagnitude * volatilityDamp * dvpMultiplier,
+    agreement, avgEma, dvp,
+    l5: mw.l5.ema, l10: mw.l10.ema, l15: mw.l15.ema, full: mw.full.ema, iqrL10: mw.iqrL10,
+  };
+}
+
+// Builds the ranked pool across every still-eligible game today (reuses gatherCandidateLegs
+// with QUAL=0 \u2014 no hit-rate floor, since this ranking uses its own scoring instead).
+function buildAdvancedEdgeCandidates(todaysGames){
+  const MIN_PRICE = -250;
+  let pool = [];
+  todaysGames.forEach(({ev, detail})=>{
+    const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+    const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+    const dk = (ev.bookmakers||[]).find(b=>b.key==='draftkings');
+    const dkDetail = detail ? (detail.bookmakers||[]).find(b=>b.key==='draftkings') : null;
+    const gameMarkets = marketsByKey(dk);
+    const detailMarkets = marketsByKey(dkDetail);
+    const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0)
+      .filter(l => l.betType==='player_prop' && l.price >= MIN_PRICE);
+    const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+    legs.forEach(leg=>{
+      const inj = playerInjuryStatus(leg.player, leg.team);
+      // Out/Doubtful: exclude entirely \u2014 a great stat-driven pick is moot if she may not play.
+      if(inj && (injuryStatusSeverity(inj.status)==='out' || injuryStatusSeverity(inj.status)==='doubtful')) return;
+      const edge = computeAdvancedEdgeForLeg(leg);
+      if(!edge) return;
+      let finalScore = edge.score;
+      if(inj) finalScore *= 0.8; // Questionable/Day-to-Day: keep, but discount and flag rather than hide
+      finalScore *= teammateKeyInjuryBoost(leg.player, leg.team, leg.side==='over');
+      pool.push(Object.assign({}, leg, {game: gameLabel, edge, finalScore, injuryNote: inj ? inj.status : null}));
+    });
+  });
+  pool.sort((a,b)=> b.finalScore - a.finalScore);
+  return pool;
+}
+
 function renderTopBetsTable(container, cachedFetch, topN){
   topN = topN || 30;
   container.innerHTML = '';
@@ -2554,6 +2666,94 @@ function renderTopBetsTable(container, cachedFetch, topN){
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
     tr.appendChild(tdRank); tr.appendChild(tdLabel); tr.appendChild(tdGame);
     tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdDef); tr.appendChild(tdAllowed); tr.appendChild(tdTrack);
+    tbody.appendChild(tr);
+  });
+  wrap.appendChild(table);
+  container.appendChild(wrap);
+}
+
+// Second Top Bets table, ranked by the advanced-analytics edge score instead of simple hit
+// rate (see buildAdvancedEdgeCandidates above). Same today + Q1-grace eligibility window as
+// the main table, same -250 price floor, but player props only.
+function renderAdvancedTopBetsTable(container, cachedFetch, topN){
+  topN = topN || 30;
+  container.innerHTML = '';
+  if(!cachedFetch.length) return;
+
+  const todayStr = new Date().toDateString();
+  const now = new Date();
+  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
+
+  const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
+  sec.textContent = `\ud83e\udde0 Advanced Analytics \u2014 Top ${topN} Wagers`;
+  container.appendChild(sec);
+
+  const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
+  note.textContent = `Player props only, ranked by a composite edge score \u2014 not the same ranking as the hit-rate table above. A leg only qualifies if at least 3 of its 4 EMA windows (L5/L10/L15/full season) agree with the side DraftKings' line implies, then scored by how big that edge is, how volatile she's been (IQR over her last 10 games \u2014 high volatility discounts the score), and the opponent's Defense-vs-Position Index for her spot. Players listed Out or Doubtful are excluded outright; Questionable/Day-to-Day players are kept but flagged and discounted. Same pregame-through-Q1 window and -250 price floor as the table above. This is a second opinion from a different methodology, not a replacement \u2014 worth comparing where the two tables agree and where they don't.`;
+  container.appendChild(note);
+
+  if(todaysGames.length === 0){
+    const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
+    msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet.';
+    container.appendChild(msg0);
+    return;
+  }
+
+  const pool = buildAdvancedEdgeCandidates(todaysGames);
+  const topBets = pool.slice(0, topN);
+  if(topBets.length === 0){
+    const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
+    msg.textContent = 'Nothing in today\u2019s eligible games currently has at least 3 of 4 EMA windows agreeing with DraftKings\u2019 posted line at -250 or better.';
+    container.appendChild(msg);
+    return;
+  }
+
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  const table = document.createElement('table'); table.style.width='100%';
+  const thead = document.createElement('thead');
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
+    +'<th class="th-l5">L5</th><th class="th-l10b">L10</th><th class="th-l15b">L15</th><th class="th-full">Season</th>'
+    +'<th class="th-agree">Agree</th><th class="th-dvp">DvP Idx</th><th class="left">Injury</th><th></th></tr>';
+  appendDefIcon(thead.querySelector('.th-l5'), 'EMA (exponential moving average) of this stat over her last 5 games played.');
+  appendDefIcon(thead.querySelector('.th-l10b'), 'EMA over her last 10 games played.');
+  appendDefIcon(thead.querySelector('.th-l15b'), 'EMA over her last 15 games played.');
+  appendDefIcon(thead.querySelector('.th-full'), 'EMA over her full season.');
+  appendDefIcon(thead.querySelector('.th-agree'), 'How many of the 4 EMA windows (L5/L10/L15/season) agree with the direction (Over/Under) DraftKings\u2019 line implies. Only legs with 3/4 or 4/4 agreement are shown \u2014 anything less isn\u2019t a real signal.');
+  appendDefIcon(thead.querySelector('.th-dvp'), STAT_DEFINITIONS.dvpPts.replace('Points', 'this stat'));
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody'); table.appendChild(tbody);
+
+  topBets.forEach((bet, idx)=>{
+    const tr = document.createElement('tr');
+    const cellStyle = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;text-align:center;';
+    const tdRank = document.createElement('td'); tdRank.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
+    tdRank.textContent = idx+1;
+    const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
+    tdPos.textContent = getPlayerPosition(bet.player, bet.team) || '\u2014';
+    const tdLabel = document.createElement('td'); tdLabel.className='left'; tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
+    tdLabel.appendChild(buildLegLabelNode(bet));
+    const tdGame = document.createElement('td'); tdGame.className='left'; tdGame.style.cssText = cellStyle.replace('text-align:center;','') + 'color:var(--sub);';
+    const gameTeams = bet.game.split(' @ ');
+    if(gameTeams.length===2){
+      tdGame.appendChild(teamLinkEl(gameTeams[0], gameTeams[0]));
+      tdGame.appendChild(document.createTextNode(' @ '));
+      tdGame.appendChild(teamLinkEl(gameTeams[1], gameTeams[1]));
+    } else { tdGame.textContent = bet.game; }
+    const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
+    tdPrice.textContent = fmtAmerican(bet.price);
+    const mk = v => { const td=document.createElement('td'); td.style.cssText=cellStyle; td.textContent = v===null||v===undefined?'\u2014':Math.round(v*10)/10; return td; };
+    const tdL5 = mk(bet.edge.l5), tdL10 = mk(bet.edge.l10), tdL15 = mk(bet.edge.l15), tdFull = mk(bet.edge.full);
+    const tdAgree = document.createElement('td'); tdAgree.style.cssText = cellStyle + 'font-weight:700;';
+    tdAgree.textContent = `${Math.round(bet.edge.agreement*4)}/4`;
+    const tdDvp = document.createElement('td'); tdDvp.style.cssText = cellStyle;
+    tdDvp.textContent = bet.edge.dvp!==null ? bet.edge.dvp.toFixed(2) : '\u2014';
+    if(bet.edge.dvp!==null) tdDvp.style.color = (bet.side==='over' ? bet.edge.dvp>1.05 : bet.edge.dvp<0.95) ? 'var(--green)' : (bet.edge.dvp===1?'inherit':'var(--red)');
+    const tdInjury = document.createElement('td'); tdInjury.className='left'; tdInjury.style.cssText = cellStyle.replace('text-align:center;','');
+    if(bet.injuryNote){ tdInjury.textContent = bet.injuryNote; tdInjury.style.color = INJURY_SEVERITY_COLOR[injuryStatusSeverity(bet.injuryNote)] || 'var(--sub)'; tdInjury.style.fontWeight='700'; }
+    else tdInjury.textContent = '\u2014';
+    const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
+    tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
+    [tdRank,tdPos,tdLabel,tdGame,tdPrice,tdL5,tdL10,tdL15,tdFull,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
   });
   wrap.appendChild(table);
