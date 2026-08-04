@@ -2425,14 +2425,22 @@ function renderTopBetsTable(container, cachedFetch, topN){
   if(!cachedFetch.length) return;
 
   const todayStr = new Date().toDateString();
-  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr);
+  const now = new Date();
+  // Only games that haven't tipped off yet \u2014 once a game is live, DraftKings reprices it
+  // based on in-game reality (score, foul trouble, who's actually playing right now), but the
+  // hit rates here are computed against FULL-game historical distributions. Comparing a live,
+  // partway-through-the-game line against full-game history is comparing two different things,
+  // and it's exactly what makes live-game bets look artificially attractive in this ranking
+  // while tending not to hit. Excluding started games is the fix, not a smarter live model \u2014
+  // this app has no live in-game state (foul trouble, current minutes, score) to adjust for.
+  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && new Date(ev.commence_time) > now);
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
   sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Ranked`;
   container.appendChild(sec);
 
   if(todaysGames.length === 0){
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg0.textContent = 'None of the games currently fetched are scheduled for today \u2014 nothing to rank here yet.';
+    msg0.textContent = 'None of today\u2019s games have both a scheduled tip-off still ahead and lines currently fetched \u2014 nothing to rank here yet. (Games already in progress are intentionally excluded \u2014 see the note below.)';
     container.appendChild(msg0);
     return;
   }
@@ -2463,7 +2471,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
   const topBets = pool.slice(0, topN);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = 'Only includes games scheduled for today, and only bets priced -250 or better. Ranked 1 (most likely) to '+topN+' by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.';
+  note.textContent = 'Only includes games scheduled for today that haven\u2019t tipped off yet, and only bets priced -250 or better. Ranked 1 (most likely) to '+topN+' by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.';
   container.appendChild(note);
 
   if(topBets.length === 0){
@@ -2530,16 +2538,22 @@ function renderTopBets(container, cachedFetch, topN){
   container.innerHTML = '';
   if(!cachedFetch.length) return;
 
-  // Only games actually being played today (compared in the browser's local timezone) —
-  // DraftKings sometimes posts lines a day or two ahead, and those shouldn't count here.
+  // Only games actually being played today (compared in the browser's local timezone) AND
+  // that haven't tipped off yet. Once live, DraftKings reprices based on in-game reality, but
+  // the hit rates below are computed against FULL-game historical distributions \u2014 comparing
+  // a live, partway-through-the-game line against full-game history is apples-to-oranges, and
+  // it's exactly what makes live-game bets climb this ranking while tending not to hit. This
+  // app has no live in-game state (foul trouble, current minutes, score) to adjust for, so
+  // excluding started games is the correct fix rather than a smarter live model.
   const todayStr = new Date().toDateString();
-  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr);
+  const now = new Date();
+  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && new Date(ev.commence_time) > now);
   if(todaysGames.length === 0){
     const sec0 = document.createElement('div'); sec0.className='section-title'; sec0.style.fontSize='15px';
     sec0.textContent = `\u2b50 Today\u2019s Top ${topN} Bets (across all games)`;
     container.appendChild(sec0);
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg0.textContent = 'None of the games currently fetched are scheduled for today \u2014 nothing to rank here yet.';
+    msg0.textContent = 'None of today\u2019s games have both a scheduled tip-off still ahead and lines currently fetched \u2014 nothing to rank here yet. (Games already in progress are intentionally excluded \u2014 see the note below.)';
     container.appendChild(msg0);
     return;
   }
@@ -2579,7 +2593,7 @@ function renderTopBets(container, cachedFetch, topN){
   container.appendChild(sec);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = 'Only includes games scheduled for today, and only bets priced -250 or better. Ranked by worst-case hit rate across the last-10 and last-15-game windows (same 75%/70%-qualified pool used in each game\u2019s parlay sections). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.';
+  note.textContent = 'Only includes games scheduled for today that haven\u2019t tipped off yet, and only bets priced -250 or better. Ranked by worst-case hit rate across the last-10 and last-15-game windows (same 75%/70%-qualified pool used in each game\u2019s parlay sections). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.';
   container.appendChild(note);
 
   if(topBets.length === 0){
@@ -2643,6 +2657,13 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   title.appendChild(document.createTextNode('@'));
   title.appendChild(homeLink);
   title.appendChild(document.createTextNode(`\u2014 ${dt.toLocaleString()}`));
+  if(dt <= new Date()){
+    const liveBadge = document.createElement('span');
+    liveBadge.textContent = '\ud83d\udd34 LIVE / IN PROGRESS';
+    liveBadge.style.cssText = 'font-size:11px;font-weight:800;color:var(--red);border:1px solid var(--red);border-radius:4px;padding:2px 6px;cursor:help;';
+    liveBadge.title = 'This game has already tipped off. DraftKings\u2019 lines below now reflect in-game reality, but the hit rates are computed against full-game historical performance \u2014 that comparison gets less meaningful once a game is underway. This game is excluded from the Top Bets rankings for that reason.';
+    title.appendChild(liveBadge);
+  }
   if(onTitleClick){
     const drillIn = document.createElement('a');
     drillIn.href = 'javascript:void(0)';
@@ -2913,14 +2934,15 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const opponentTeam = team===homeShort?awayShort:homeShort;
       const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
       const defAllowed = team ? defAllowedCell(opponentTeam, statKey, pname, team) : document.createTextNode('\u2014');
+      const posText = team ? (getPlayerPosition(pname, team) || '\u2014') : '\u2014';
 
       propDataRows.push({
         filterValues: {
-          player: pname, market: marketLabel, line: line,
+          pos: posText, player: pname, market: marketLabel, line: line,
           over: overO ? overO.price : null, under: underO ? underO.price : null,
           hitRate: (hr && hr.found) ? Math.round(hr.rate*100) : null,
         },
-        cells: [nameCell, marketLabel, line!==undefined?line:'\u2014',
+        cells: [posText, nameCell, marketLabel, line!==undefined?line:'\u2014',
                 overO ? fmtAmerican(overO.price) : '\u2014', underO ? fmtAmerican(underO.price) : '\u2014',
                 resultBadge(hr), defCell, defAllowed, trackCell],
       });
@@ -2929,6 +2951,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
 
   if(propDataRows.length){
     buildFilterableTable(sec4Content, [
+      {key:'pos', label:'Pos', type:'select', options:[...new Set(propDataRows.map(r=>r.filterValues.pos))].filter(p=>p!=='\u2014'), align:'left'},
       {key:'player', label:'Player', type:'text', align:'left'},
       {key:'market', label:'Market', type:'select', options:[...propMarketsSeen], align:'left'},
       {key:'line', label:'Line', type:'numRange'},
@@ -2984,13 +3007,14 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         const opponentTeam = team===homeShort?awayShort:homeShort;
         const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
         const defAllowed = team ? defAllowedCell(opponentTeam, statKey, pname, team) : document.createTextNode('\u2014');
+        const posText = team ? (getPlayerPosition(pname, team) || '\u2014') : '\u2014';
 
         altDataRows.push({
           filterValues: {
-            player: pname, market: marketLabel, level: lvl.point, price: lvl.price,
+            pos: posText, player: pname, market: marketLabel, level: lvl.point, price: lvl.price,
             hitRate: (hr && hr.found) ? Math.round(hr.rate*100) : null,
           },
-          cells: [nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr), defCell, defAllowed, trackBtn || '\u2014'],
+          cells: [posText, nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr), defCell, defAllowed, trackBtn || '\u2014'],
         });
       });
     });
@@ -2998,6 +3022,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
 
   if(altDataRows.length){
     buildFilterableTable(sec5Content, [
+      {key:'pos', label:'Pos', type:'select', options:[...new Set(altDataRows.map(r=>r.filterValues.pos))].filter(p=>p!=='\u2014'), align:'left'},
       {key:'player', label:'Player', type:'text', align:'left'},
       {key:'market', label:'Market', type:'select', options:[...altMarketsSeen], align:'left'},
       {key:'level', label:'Level', type:'numRange'},
