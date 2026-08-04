@@ -1161,6 +1161,17 @@ function defRankCell(opponentTeam, statKey, pname, team, marketLabel){
   span.title = `${FULL_TEAM_NAME[opponentTeam]||opponentTeam} allows ${r.perGame} ${(marketLabel||'').toLowerCase()} per game to ${POSITION_LABEL[bucket]} this season \u2014 ranked ${r.rank} of ${r.of} (1 = stingiest defense, ${r.of} = most generous).`;
   return span;
 }
+// Companion to defRankCell \u2014 the raw "X per game allowed" number that's otherwise only
+// visible in defRankCell's hover tooltip, shown as its own column.
+function defAllowedCell(opponentTeam, statKey, pname, team){
+  const bucket = positionBucket(getPlayerPosition(pname, team));
+  const r = bucket ? getDefenseRank(opponentTeam, statKey, bucket) : null;
+  if(!r) return document.createTextNode('\u2014');
+  const span = document.createElement('span');
+  span.style.cssText = 'font-size:12px;color:var(--ink);';
+  span.textContent = r.perGame;
+  return span;
+}
 
 // ================= Injuries =================
 // Populated by the pipeline's ESPN injury-report fetch (see fetch_injuries.py), merged into
@@ -2089,7 +2100,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th>Opp Def Rank</th><th></th></tr>';
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th>Opp Def Rank</th><th>Allowed/Gm</th><th></th></tr>';
   table.appendChild(thead);
   const tbody = document.createElement('tbody'); table.appendChild(tbody);
 
@@ -2118,15 +2129,18 @@ function renderTopBetsTable(container, cachedFetch, topN){
     const tdL15 = document.createElement('td'); tdL15.style.cssText = cellStyle;
     tdL15.textContent = Math.round(bet.rate15*100)+'%';
     const tdDef = document.createElement('td'); tdDef.style.cssText = cellStyle;
+    const tdAllowed = document.createElement('td'); tdAllowed.style.cssText = cellStyle;
     if((bet.betType==='player_prop' || bet.betType==='player_prop_alt') && bet.opponent){
       tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
+      tdAllowed.appendChild(defAllowedCell(bet.opponent, bet.statKey, bet.player, bet.team));
     } else {
       tdDef.textContent = '\u2014';
+      tdAllowed.textContent = '\u2014';
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
     tr.appendChild(tdRank); tr.appendChild(tdLabel); tr.appendChild(tdGame);
-    tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdDef); tr.appendChild(tdTrack);
+    tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdDef); tr.appendChild(tdAllowed); tr.appendChild(tdTrack);
     tbody.appendChild(tr);
   });
   wrap.appendChild(table);
@@ -2520,6 +2534,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
 
       const opponentTeam = team===homeShort?awayShort:homeShort;
       const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
+      const defAllowed = team ? defAllowedCell(opponentTeam, statKey, pname, team) : document.createTextNode('\u2014');
 
       propDataRows.push({
         filterValues: {
@@ -2529,7 +2544,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         },
         cells: [nameCell, marketLabel, line!==undefined?line:'\u2014',
                 overO ? fmtAmerican(overO.price) : '\u2014', underO ? fmtAmerican(underO.price) : '\u2014',
-                resultBadge(hr), defCell, trackCell],
+                resultBadge(hr), defCell, defAllowed, trackCell],
       });
     });
   });
@@ -2543,6 +2558,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       {key:'under', label:'Under', type:'numRange'},
       {key:'hitRate', label:'Hit Rate %', type:'numRange'},
       {key:'defRank', label:'Opp Def Rank'},
+      {key:'defAllowed', label:'Allowed/Gm'},
       {key:'track', label:'Track'},
     ], propDataRows);
   } else {
@@ -2589,13 +2605,14 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
 
         const opponentTeam = team===homeShort?awayShort:homeShort;
         const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
+        const defAllowed = team ? defAllowedCell(opponentTeam, statKey, pname, team) : document.createTextNode('\u2014');
 
         altDataRows.push({
           filterValues: {
             player: pname, market: marketLabel, level: lvl.point, price: lvl.price,
             hitRate: (hr && hr.found) ? Math.round(hr.rate*100) : null,
           },
-          cells: [nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr), defCell, trackBtn || '\u2014'],
+          cells: [nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr), defCell, defAllowed, trackBtn || '\u2014'],
         });
       });
     });
@@ -2609,6 +2626,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       {key:'price', label:'Price', type:'numRange'},
       {key:'hitRate', label:'Hit Rate %', type:'numRange'},
       {key:'defRank', label:'Opp Def Rank'},
+      {key:'defAllowed', label:'Allowed/Gm'},
       {key:'track', label:'Track'},
     ], altDataRows);
   } else {
