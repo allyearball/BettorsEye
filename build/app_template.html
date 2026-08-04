@@ -110,6 +110,7 @@ function cmp(a,b){
 }
 function fmtVal(v, col, row){
   if(col && col.record) return `${row.wins}-${row.losses}`;
+  if(col && col.gb) return (v===null||v===undefined) ? '\u2014' : (v===0 ? '\u2014' : v.toFixed(1));
   if(v===null||v===undefined||v===''){ return '—'; }
   if(col.pct) return (v*100).toFixed(1)+'%';
   if(col.round2 && typeof v==='number') return v.toFixed(2);
@@ -365,6 +366,7 @@ function computeTeamSummaryClientSide(team, gameIds){
 
 const LEAGUE_TEAM_COLS = [
   {key:'team', label:'Team', left:true}, {key:'gp', label:'Games'}, {key:'wins', label:'W-L', left:true, record:true},
+  {key:'gbNum', label:'GB', gb:true},
   {key:'min', label:'Minutes'}, {key:'pts', label:'Points'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
   {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
@@ -502,6 +504,13 @@ function renderLeagueStatsPage(year, mode){
     const {gameIds, summary} = perTeam[team];
     return computeLeagueTeamRow(team, gameIds, summary.totals, mode);
   });
+  // Games Back \u2014 standard formula relative to the league leader (best win differential):
+  // GB = ((leaderWins - teamWins) + (teamLosses - leaderLosses)) / 2. Whole league, not split
+  // by conference/division, since the WNBA standings table this mirrors doesn't split either.
+  if(teamRows.length){
+    const leader = teamRows.reduce((best,r)=> (r.wins-r.losses) > (best.wins-best.losses) ? r : best, teamRows[0]);
+    teamRows.forEach(r=>{ r.gbNum = ((leader.wins-r.wins)+(r.losses-leader.losses))/2; });
+  }
   makeTable(main, LEAGUE_TEAM_COLS, teamRows, {defaultSort:'pts', defaultDir:'desc'});
 
   const t2 = document.createElement('div'); t2.className='section-title';
