@@ -362,6 +362,150 @@ function computeTeamSummaryClientSide(team, gameIds){
   return {totals, averages, opponents};
 }
 
+const LEAGUE_TEAM_COLS = [
+  {key:'team', label:'Team', left:true}, {key:'gp', label:'Games'}, {key:'min', label:'Minutes'}, {key:'pts', label:'Points'},
+  {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
+  {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
+  {key:'ftm', label:'FTM'}, {key:'fta', label:'FTA'}, {key:'ftPct', label:'FT%', pct:true},
+  {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB'},
+  {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
+  {key:'to', label:'TO'}, {key:'pf', label:'PF'},
+  {key:'avgHeight', label:'Avg Height (Wtd)', left:true, numeric:false},
+];
+const LEAGUE_PLAYER_COLS = [
+  {key:'team', label:'Team', left:true}, {key:'player', label:'Player', left:true},
+  {key:'gp', label:'GP'}, {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
+  {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
+  {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
+  {key:'ftm', label:'FTM'}, {key:'fta', label:'FTA'}, {key:'ftPct', label:'FT%', pct:true},
+  {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB'},
+  {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
+  {key:'to', label:'TO'}, {key:'pf', label:'PF'},
+];
+const LEAGUE_PLAYER_AVG_COLS = LEAGUE_PLAYER_COLS.map(c=>{
+  if(['min','pts','fgm','fga','tpm','tpa','ftm','fta','oreb','dreb','reb','ast','stl','blk','to','pf'].includes(c.key)) return Object.assign({},c,{round2:true});
+  return c;
+});
+
+function inchesToHeightStr(inches){
+  if(inches===null || inches===undefined || isNaN(inches)) return null;
+  const feet = Math.floor(inches/12);
+  const rem = Math.round((inches - feet*12)*10)/10;
+  return `${feet}' ${rem}"`;
+}
+
+// Aggregates a team's already-computed per-player totals (from computeTeamSummaryClientSide)
+// into one team-level row. Shooting percentages are always computed from the team's combined
+// makes/attempts (never averaged from individual players' percentages) since that's the only
+// mathematically correct way to roll them up. Height is a season-long weighted average by each
+// player's total minutes played, so rotation players count more than end-of-bench players.
+function computeLeagueTeamRow(team, teamGames, playerTotals, mode){
+  const sumKey = k => playerTotals.reduce((a,p)=> a + (p[k]||0), 0);
+  const fgm=sumKey('fgm'), fga=sumKey('fga'), tpm=sumKey('tpm'), tpa=sumKey('tpa'), ftm=sumKey('ftm'), fta=sumKey('fta');
+
+  let heightSum=0, heightWeight=0;
+  playerTotals.forEach(p=>{
+    if(p.heightIn!==null && p.heightIn!==undefined && p.min){ heightSum += p.heightIn*p.min; heightWeight += p.min; }
+  });
+  const avgHeightIn = heightWeight ? heightSum/heightWeight : null;
+
+  const row = {
+    team, gp: teamGames, min: sumKey('min'), pts: sumKey('pts'),
+    fgm, fga, fgPct: fga ? Math.round((fgm/fga)*10000)/10000 : null,
+    tpm, tpa, tpPct: tpa ? Math.round((tpm/tpa)*10000)/10000 : null,
+    ftm, fta, ftPct: fta ? Math.round((ftm/fta)*10000)/10000 : null,
+    oreb: sumKey('oreb'), dreb: sumKey('dreb'), reb: sumKey('reb'),
+    ast: sumKey('ast'), stl: sumKey('stl'), blk: sumKey('blk'), to: sumKey('to'), pf: sumKey('pf'),
+    avgHeight: inchesToHeightStr(avgHeightIn) || '\u2014',
+  };
+  if(mode==='averages' && teamGames){
+    ['min','pts','fgm','fga','tpm','tpa','ftm','fta','oreb','dreb','reb','ast','stl','blk','to','pf'].forEach(k=>{
+      row[k] = Math.round((row[k]/teamGames)*100)/100;
+    });
+  }
+  return row;
+}
+
+// League-wide landing page for Team Explorer \u2014 every team's season line, plus every
+// individual player's season line, side by side. Currently only the season(s) already loaded
+// client-side are selectable in the Season dropdown (that's whatever the pipeline has pulled in);
+// a full 2015-2025 historical backfill is a separate, larger pipeline project.
+function renderLeagueStatsPage(year, mode){
+  mode = mode || 'totals';
+  const allYears = [...new Set(TEAM_NAMES.flatMap(t=>availableYears(t)))].sort();
+  year = year || allYears[allYears.length-1];
+  lastRender = () => renderLeagueStatsPage(year, mode);
+  main.innerHTML = '';
+
+  const head = document.createElement('div'); head.className='pagehead';
+  head.innerHTML = `<h2>\ud83c\udfc0 League Stats \u2014 ${year}</h2><div class="meta">Every team's and every player's season line, side by side. Click a column header to sort, click a player's name to see her full game log.</div>`;
+  main.appendChild(head);
+
+  const controlsRow = document.createElement('div');
+  controlsRow.style.cssText = 'display:flex;align-items:center;gap:24px;margin-bottom:16px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 14px;';
+
+  const yearLabel = document.createElement('div'); yearLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;'; yearLabel.textContent='Season:';
+  const yearSel = document.createElement('select'); yearSel.style.cssText = 'padding:6px 10px;border:1px solid var(--line);border-radius:6px;font-size:12.5px;font-family:var(--sans);background:#fff;';
+  allYears.forEach(y=>{ const op=document.createElement('option'); op.value=y; op.textContent=y; yearSel.appendChild(op); });
+  yearSel.value = year;
+  yearSel.addEventListener('change', ()=>renderLeagueStatsPage(yearSel.value, mode));
+  const yearWrap = document.createElement('div'); yearWrap.style.cssText='display:flex;align-items:center;gap:8px;';
+  yearWrap.appendChild(yearLabel); yearWrap.appendChild(yearSel);
+
+  const modeWrap = document.createElement('div'); modeWrap.style.cssText='display:flex;align-items:center;gap:14px;';
+  const modeLabel = document.createElement('div'); modeLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;'; modeLabel.textContent='Show:';
+  modeWrap.appendChild(modeLabel);
+  [['totals','Season Totals'],['averages','Per-Game Averages']].forEach(([val,txt])=>{
+    const lbl = document.createElement('label'); lbl.style.cssText='display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer;';
+    const rb = document.createElement('input'); rb.type='radio'; rb.name='leagueStatsMode'; rb.value=val; rb.checked = mode===val;
+    rb.addEventListener('change', ()=>{ if(rb.checked) renderLeagueStatsPage(year, val); });
+    lbl.appendChild(rb); lbl.appendChild(document.createTextNode(txt));
+    modeWrap.appendChild(lbl);
+  });
+
+  controlsRow.appendChild(yearWrap); controlsRow.appendChild(modeWrap);
+  main.appendChild(controlsRow);
+
+  if(allYears.length===0 || !allYears.includes(year)){
+    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;';
+    na.textContent = `No data loaded for ${year}.`;
+    main.appendChild(na);
+    return;
+  }
+
+  // Compute each team's player-level summary once, reuse for both tables below.
+  const perTeam = {};
+  TEAM_NAMES.forEach(team=>{
+    const gameIds = filterGameIdsByYearMonth(team, year, 'full');
+    perTeam[team] = { gameIds, summary: computeTeamSummaryClientSide(team, gameIds) };
+  });
+
+  const t1 = document.createElement('div'); t1.className='section-title';
+  t1.textContent = `Team ${mode==='totals'?'Totals':'Averages'} \u2014 ${year}`;
+  main.appendChild(t1);
+  const teamRows = TEAM_NAMES.map(team=>{
+    const {gameIds, summary} = perTeam[team];
+    return computeLeagueTeamRow(team, gameIds.length, summary.totals, mode);
+  });
+  makeTable(main, LEAGUE_TEAM_COLS, teamRows, {defaultSort:'pts', defaultDir:'desc'});
+
+  const t2 = document.createElement('div'); t2.className='section-title';
+  t2.textContent = `Individual Player ${mode==='totals'?'Totals':'Averages'} \u2014 ${year}`;
+  main.appendChild(t2);
+  const playerRows = [];
+  TEAM_NAMES.forEach(team=>{
+    const {summary} = perTeam[team];
+    const rows = mode==='totals' ? summary.totals : summary.averages;
+    rows.forEach(r=> playerRows.push(Object.assign({}, r, {team})));
+  });
+  const playerCols = mode==='totals' ? LEAGUE_PLAYER_COLS : LEAGUE_PLAYER_AVG_COLS;
+  makeTable(main, playerCols, playerRows, {defaultSort:'pts', defaultDir:'desc', teamFor:r=>r.team, defaultHideDNP:true, hideLabel:'Hide players who didn\u2019t play any minutes this season'});
+
+  const fn = document.createElement('div'); fn.className='footnote';
+  fn.textContent = 'Team shooting percentages (FG%/3P%/FT%) are computed from the team\u2019s combined makes/attempts across the season, not averaged from individual players\u2019 percentages \u2014 that\u2019s the only mathematically correct way to roll them up. "Avg Height (Wtd)" weights each player\u2019s height by her total minutes played that season, so rotation players count more than bench players who barely played.';
+  main.appendChild(fn);
+}
+
 function renderTeamPage(team, year, month){
   const years = availableYears(team);
   year = year || years[years.length-1];
@@ -687,15 +831,18 @@ function setActiveNav(team){
 }
 function buildNav(){
   nav.innerHTML='';
+  const leagueLabel = document.createElement('div'); leagueLabel.className='group-label'; leagueLabel.textContent='League';
+  nav.appendChild(leagueLabel);
+  const leagueBtn = navBtn('League Stats', ()=>renderLeagueStatsPage());
+  nav.appendChild(leagueBtn);
+
   const gLabel = document.createElement('div'); gLabel.className='group-label'; gLabel.textContent='Teams (Last 10 Games)';
   nav.appendChild(gLabel);
-  let first = null;
   TEAM_NAMES.forEach(team=>{
     const btn = navBtn(team, ()=>renderTeamPage(team));
-    if(!first) first = btn;
     nav.appendChild(btn);
   });
-  first.click();
+  leagueBtn.click();
 }
 function buildTopLinks(){
   const tl = document.getElementById('toplinks');
