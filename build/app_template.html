@@ -1009,6 +1009,119 @@ const PROP_MARKET_LABEL = {
   player_points_rebounds_assists: 'Pts+Reb+Ast', player_points_rebounds_assists_alternate: 'Pts+Reb+Ast',
 };
 
+// ================= Defense vs. Position rankings (Points/Rebounds/Assists/Threes/PRA, by G/F/C) =================
+// Entirely derived from box scores already loaded client-side \u2014 no extra data source needed.
+// For every stat + position bucket, ranks all 15 teams by how much of that stat they've allowed
+// per game to opposing players of that position, season-long. Rank 1 = stingiest defense (fewest
+// allowed); last place = most generous defense (most allowed), matching the convention requested.
+
+// Buckets ESPN's position strings (G, F, C, and hybrids like "G-F") down to a single primary
+// position by taking whichever letter appears first \u2014 the simplification broadcasts use too.
+function positionBucket(pos){
+  if(!pos) return null;
+  const p = String(pos).toUpperCase();
+  if(p.indexOf('C')===0) return 'C';
+  if(p.indexOf('F')===0) return 'F';
+  if(p.indexOf('G')===0) return 'G';
+  return null;
+}
+
+// A player's position isn't stored on her season summary, only per-game box score rows \u2014
+// so this scans every game once (cached after first call) and takes each player's most
+// frequently listed position across the season as her "primary" position.
+let _playerPositionCache = null;
+function getPlayerPosition(playerName, team){
+  if(!_playerPositionCache){
+    _playerPositionCache = {};
+    Object.values(DATA.games).forEach(g=>{
+      g.rows.forEach(r=>{
+        if(!r.pos) return;
+        const key = r.player+'|'+r.team;
+        if(!_playerPositionCache[key]) _playerPositionCache[key] = {};
+        _playerPositionCache[key][r.pos] = (_playerPositionCache[key][r.pos]||0) + 1;
+      });
+    });
+  }
+  const counts = _playerPositionCache[playerName+'|'+team];
+  if(!counts) return null;
+  let best=null, bestCount=-1;
+  Object.entries(counts).forEach(([pos,c])=>{ if(c>bestCount){ best=pos; bestCount=c; } });
+  return best;
+}
+
+// Season-long (not tied to the Full Season/L15/L10/L5 hit-rate window \u2014 per-position splits
+// need the bigger sample), cached after first computation since it scans every game once.
+let _defenseVsPositionCache = null;
+function computeDefenseVsPosition(){
+  if(_defenseVsPositionCache) return _defenseVsPositionCache;
+  const STAT_KEYS = ['pts','reb','ast','tpm','pra'];
+  const BUCKETS = ['G','F','C'];
+  const allowed = {};
+  TEAM_NAMES.forEach(team=>{
+    allowed[team] = {};
+    BUCKETS.forEach(b=>{ allowed[team][b] = {pts:0,reb:0,ast:0,tpm:0,pra:0}; });
+  });
+  Object.values(DATA.games).forEach(g=>{
+    g.rows.forEach(r=>{
+      if(r.dnp) return;
+      const bucket = positionBucket(r.pos);
+      if(!bucket) return;
+      const defTeam = r.team===g.home ? g.away : g.home;
+      if(!allowed[defTeam]) return;
+      const acc = allowed[defTeam][bucket];
+      acc.pts += r.pts||0; acc.reb += r.reb||0; acc.ast += r.ast||0; acc.tpm += r.tpm||0;
+      acc.pra += (r.pts||0)+(r.reb||0)+(r.ast||0);
+    });
+  });
+
+  const perGame = {};
+  TEAM_NAMES.forEach(team=>{
+    const gp = DATA.teams[team] ? DATA.teams[team].gameIdsFull.length : 0;
+    perGame[team] = {};
+    BUCKETS.forEach(b=>{
+      perGame[team][b] = {};
+      STAT_KEYS.forEach(k=>{ perGame[team][b][k] = gp ? allowed[team][b][k]/gp : null; });
+    });
+  });
+
+  const ranks = {};
+  TEAM_NAMES.forEach(team=>{ ranks[team] = {G:{},F:{},C:{}}; });
+  BUCKETS.forEach(bucket=>{
+    STAT_KEYS.forEach(statKey=>{
+      const withData = TEAM_NAMES.filter(t=> perGame[t][bucket][statKey]!==null);
+      const sorted = withData.slice().sort((a,b)=> perGame[a][bucket][statKey]-perGame[b][bucket][statKey]);
+      sorted.forEach((team,i)=>{
+        ranks[team][bucket][statKey] = { rank: i+1, of: sorted.length, perGame: Math.round(perGame[team][bucket][statKey]*10)/10 };
+      });
+    });
+  });
+  _defenseVsPositionCache = ranks;
+  return ranks;
+}
+function getDefenseRank(opponentTeam, statKey, bucket){
+  if(!bucket) return null;
+  const ranks = computeDefenseVsPosition();
+  return (ranks[opponentTeam] && ranks[opponentTeam][bucket] && ranks[opponentTeam][bucket][statKey]) || null;
+}
+const POSITION_LABEL = {G:'Guards', F:'Forwards', C:'Centers'};
+
+// Builds the small colored "rank/of" cell used in the player props tables. Green = worse
+// defense for that stat+position (more favorable matchup for an Over bet); red = tougher
+// defense (more favorable for an Under bet). Returns a dash if position/data isn't available.
+function defRankCell(opponentTeam, statKey, pname, team, marketLabel){
+  const bucket = positionBucket(getPlayerPosition(pname, team));
+  const r = bucket ? getDefenseRank(opponentTeam, statKey, bucket) : null;
+  if(!r) return document.createTextNode('\u2014');
+  const span = document.createElement('span');
+  const favorableForOver = r.rank > (r.of/2);
+  span.style.cssText = `font-weight:700;font-size:12px;color:${favorableForOver?'var(--green)':'var(--red)'};cursor:help;`;
+  span.textContent = `${r.rank}/${r.of}`;
+  span.title = `${FULL_TEAM_NAME[opponentTeam]||opponentTeam} allows ${r.perGame} ${(marketLabel||'').toLowerCase()} per game to ${POSITION_LABEL[bucket]} this season \u2014 ranked ${r.rank} of ${r.of} (1 = stingiest defense, ${r.of} = most generous).`;
+  return span;
+}
+
+
+
 // ================= Season prop-line trend charts (player + team pages) =================
 // Reuses the same ODDS_HISTORY snapshot archive that already powers the per-bet "Line
 // History" page. A snapshot is only ever saved pre-tipoff (see the Worker's saveSnapshots),
@@ -2270,6 +2383,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         trackCell.appendChild(underBtn);
       }
 
+      const opponentTeam = team===homeShort?awayShort:homeShort;
+      const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
+
       propDataRows.push({
         filterValues: {
           player: pname, market: marketLabel, line: line,
@@ -2278,7 +2394,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         },
         cells: [nameCell, marketLabel, line!==undefined?line:'\u2014',
                 overO ? fmtAmerican(overO.price) : '\u2014', underO ? fmtAmerican(underO.price) : '\u2014',
-                resultBadge(hr), trackCell],
+                resultBadge(hr), defCell, trackCell],
       });
     });
   });
@@ -2291,6 +2407,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       {key:'over', label:'Over', type:'numRange'},
       {key:'under', label:'Under', type:'numRange'},
       {key:'hitRate', label:'Hit Rate %', type:'numRange'},
+      {key:'defRank', label:'Opp Def Rank'},
       {key:'track', label:'Track'},
     ], propDataRows);
   } else {
@@ -2335,12 +2452,15 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
           thresholdToHit: lvl.point, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10), eventId: ev.id,
         }, 10) : null;
 
+        const opponentTeam = team===homeShort?awayShort:homeShort;
+        const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
+
         altDataRows.push({
           filterValues: {
             player: pname, market: marketLabel, level: lvl.point, price: lvl.price,
             hitRate: (hr && hr.found) ? Math.round(hr.rate*100) : null,
           },
-          cells: [nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr), trackBtn || '\u2014'],
+          cells: [nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr), defCell, trackBtn || '\u2014'],
         });
       });
     });
@@ -2353,6 +2473,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       {key:'level', label:'Level', type:'numRange'},
       {key:'price', label:'Price', type:'numRange'},
       {key:'hitRate', label:'Hit Rate %', type:'numRange'},
+      {key:'defRank', label:'Opp Def Rank'},
       {key:'track', label:'Track'},
     ], altDataRows);
   } else {
