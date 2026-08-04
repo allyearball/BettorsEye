@@ -1111,7 +1111,7 @@ function renderOddsPage(){
   main.appendChild(head);
 
   const banner = document.createElement('div'); banner.className='banner';
-  banner.innerHTML = `<b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else, with <b style="color:var(--gold)">gold</b> instead of green whenever that rate is 96% or higher. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same rule, windowed the same way, and both prop tables can be filtered by any column. Click a game's title to drill into just that matchup with its own window toggle. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom.`;
+  banner.innerHTML = `<b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else, with <b style="color:var(--gold)">gold</b> instead of green whenever that rate is 96% or higher. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same rule, windowed the same way, and both prop tables can be filtered by any column. Click a game's title to drill into just that matchup with its own window toggle. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom. Full-game Moneyline, Spread, and Total lines also show a small "VSiN: X% handle / Y% bets" line \u2014 DraftKings betting splits pulled from VSiN Pro \u2014 showing "\u2014" wherever VSiN hasn't posted a split yet. VSiN doesn't publish splits for halves, team totals, player props, alt lines, or parlays, so those sections don't show this line at all.`;
   main.appendChild(banner);
 
   const controls = document.createElement('div'); controls.style.cssText='display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap;';
@@ -1613,6 +1613,23 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   const gameMarkets = marketsByKey(dk);
   const detailMarkets = marketsByKey(dkDetail);
 
+  // VSiN only publishes DraftKings Handle %/Bet % splits for full-game Moneyline, Spread,
+  // and Total \u2014 not for halves, team totals, player props, alt lines, or parlays. Looks
+  // up DATA.vsinSplits[shortTeam][market] (populated by the pipeline's VSiN scrape, if any)
+  // and returns {handle, bet} or null if unavailable.
+  function vsinSplitFor(shortTeam, market){
+    if(!DATA.vsinSplits || !shortTeam) return null;
+    const teamSplits = DATA.vsinSplits[shortTeam];
+    if(!teamSplits) return null;
+    const s = teamSplits[market];
+    if(!s || s.handle===undefined || s.bet===undefined) return null;
+    return s;
+  }
+  function vsinCellHtml(split){
+    if(!split) return '<span style="color:var(--sub);font-size:11px;">VSiN: \u2014</span>';
+    return `<span style="color:var(--navy2);font-size:11px;">VSiN: ${split.handle}% handle / ${split.bet}% bets</span>`;
+  }
+
   function lineRow(label, market, isSpread, isTotal, withHitRate, half){
     const row = document.createElement('div'); row.style.cssText='display:grid;grid-template-columns:110px 1fr 1fr;gap:10px;padding:5px 0;font-size:13px;align-items:center;';
     const l = document.createElement('div'); l.style.color='var(--sub)'; l.textContent = label;
@@ -1622,10 +1639,14 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       row.appendChild(na);
       return row;
     }
-    function cell(text, hr, trackBtn){
+    function cell(text, hr, trackBtn, vsinSplit){
       const c = document.createElement('div');
       const span = document.createElement('span'); span.textContent = text; c.appendChild(span);
       if(withHitRate && hr){ c.appendChild(document.createElement('br')); c.appendChild(resultBadge(hr)); }
+      if(!half){
+        c.appendChild(document.createElement('br'));
+        const vs = document.createElement('span'); vs.innerHTML = vsinCellHtml(vsinSplit); c.appendChild(vs);
+      }
       if(trackBtn){ c.appendChild(document.createElement('br')); c.appendChild(trackBtn); }
       return c;
     }
@@ -1637,8 +1658,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const hr = withHitRate ? (half ? teamTotalHitRateHalf(awayShort, half, point, windowSize) : teamTotalHitRate(awayShort, point, windowSize)) : null; // combined total, same for either team
       const overTrack = (!half && over) ? makeTrackAndHistoryButtons({label:`Game Total Over ${point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
       const underTrack = (!half && under) ? makeTrackAndHistoryButtons({label:`Game Total Under ${point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
-      row.appendChild(cell(over ? `Over ${over.point} (${over.price>0?'+':''}${over.price})` : '\u2014', hr, overTrack));
-      row.appendChild(cell(under ? `Under ${under.point} (${under.price>0?'+':''}${under.price})` : '\u2014', null, underTrack));
+      row.appendChild(cell(over ? `Over ${over.point} (${over.price>0?'+':''}${over.price})` : '\u2014', hr, overTrack, vsinSplitFor(awayShort, 'total')));
+      row.appendChild(cell(under ? `Under ${under.point} (${under.price>0?'+':''}${under.price})` : '\u2014', null, underTrack, vsinSplitFor(homeShort, 'total')));
     } else {
       const away = dkOutcome(market, ev.away_team); const home = dkOutcome(market, ev.home_team);
       function fmtSide(o){
@@ -1659,8 +1680,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const betType = isSpread ? 'spread' : 'moneyline';
       const awayTrack = (!half && away) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.away_team}${isSpread?' '+(away.point>0?'+':'')+away.point:' Moneyline'}`, price:away.price, betType, team:awayShort, opponent:homeShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, isSpread?{line:away.point}:{}), 10) : null;
       const homeTrack = (!half && home) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.home_team}${isSpread?' '+(home.point>0?'+':'')+home.point:' Moneyline'}`, price:home.price, betType, team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, isSpread?{line:home.point}:{}), 10) : null;
-      row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr, awayTrack));
-      row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr, homeTrack));
+      const vsinMarketKey = isSpread ? 'spread' : 'ml';
+      row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr, awayTrack, vsinSplitFor(awayShort, vsinMarketKey)));
+      row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr, homeTrack, vsinSplitFor(homeShort, vsinMarketKey)));
     }
     return row;
   }
@@ -2284,6 +2306,34 @@ async function renderLineHistoryPage(leg, returnTo){
 
 // ================= Bet Tracker page =================
 
+// Small circular indicator for an individual leg's result: hollow outline while pending,
+// solid green when won, a red \u2715 when lost (push shown as a gray dash, distinguishable
+// from pending which stays a hollow circle).
+function legResultIcon(result){
+  const span = document.createElement('span');
+  span.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle;flex-shrink:0;';
+  if(result==='won'){
+    span.style.background = 'var(--green)'; span.style.border = '1.5px solid var(--green)';
+  } else if(result==='lost'){
+    span.style.cssText = 'display:inline-block;width:10px;margin-right:5px;vertical-align:middle;flex-shrink:0;color:var(--red);font-weight:800;font-size:11px;line-height:10px;text-align:center;';
+    span.textContent = '\u2715';
+  } else if(result==='push'){
+    span.style.background = '#c7cbd4'; span.style.border = '1.5px solid #c7cbd4';
+  } else {
+    span.style.background = 'transparent'; span.style.border = '1.5px solid #333';
+  }
+  return span;
+}
+
+// Just the time-of-day portion of a game's commence_time, for a compact table column
+// (the Date column already carries the calendar date).
+function fmtGameTimeOnly(commenceTime){
+  if(!commenceTime) return '\u2014';
+  const dt = new Date(commenceTime);
+  if(isNaN(dt.getTime())) return '\u2014';
+  return dt.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit'});
+}
+
 function fmtResultBadge(result){
   const span = document.createElement('span');
   span.style.cssText = 'display:inline-block;padding:2px 8px;border-radius:4px;font-size:11.5px;font-weight:700;';
@@ -2555,9 +2605,23 @@ async function renderBetTrackerPage(){
     const wrap = document.createElement('div'); wrap.className='table-wrap';
     const table = document.createElement('table'); table.style.width='100%';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th class="left">Date</th><th class="left">Game</th><th class="left">Bet</th><th>Price</th><th>Stake</th><th>P/L</th><th>Result</th><th>Actions</th></tr>';
+    thead.innerHTML = '<tr><th class="left">Date</th><th>Time</th><th class="left">Game</th><th>Price</th><th>Stake</th><th>P/L</th><th>Result</th><th class="left">Bet</th><th>Actions</th></tr>';
     table.appendChild(thead);
     const tbody = document.createElement('tbody'); table.appendChild(tbody);
+
+    // Best-effort "away @ home" for a bet even if gameLabel wasn't stored in that exact
+    // shape (older tracked entries, or bulk-imported ones) \u2014 falls back to whatever
+    // gameLabel already has, then to team/opponent, then to a dash.
+    function gameMatchupText(bet){
+      if(bet.gameLabel && bet.gameLabel.includes('@')) return bet.gameLabel;
+      // No stored gameLabel in "away @ home" form (older or bulk-imported entries) \u2014
+      // legs only store {team, opponent}, not which is away/home, so fall back to
+      // whatever we do have rather than guess the order.
+      const refLeg = bet.isParlay && bet.legs && bet.legs[0] ? bet.legs[0] : bet;
+      if(bet.gameLabel) return bet.gameLabel;
+      if(refLeg.team && refLeg.opponent) return `${refLeg.team} vs ${refLeg.opponent}`;
+      return '\u2014';
+    }
 
     sorted.forEach(bet=>{
       const tr = document.createElement('tr');
@@ -2566,18 +2630,20 @@ async function renderBetTrackerPage(){
       if(bet.result==='won') pl = americanPayoutProfit(bet.price, stake);
       else if(bet.result==='lost') pl = -stake;
 
+      const refTime = bet.commenceTime || (bet.isParlay && bet.legs && bet.legs[0] ? bet.legs[0].commenceTime : null);
+
       const cells = [
         bet.gameDate || '\u2014',
-        bet.gameLabel || '\u2014',
-        bet.label || '\u2014',
+        fmtGameTimeOnly(refTime),
+        gameMatchupText(bet),
         fmtAmerican(bet.price),
         '$'+stake.toFixed(2),
         (bet.result==='won'||bet.result==='lost') ? (pl>=0?'+':'')+'$'+pl.toFixed(2) : '\u2014',
       ];
       cells.forEach((c,i)=>{
         const td = document.createElement('td');
-        if(i<=2) td.classList.add('left');
-        td.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;'+(i>2?'text-align:center;':'');
+        if(i===0 || i===2) td.classList.add('left');
+        td.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;'+(i!==0 && i!==2 ?'text-align:center;':'');
         td.textContent = c;
         tr.appendChild(td);
       });
@@ -2585,6 +2651,29 @@ async function renderBetTrackerPage(){
       const tdResult = document.createElement('td'); tdResult.style.cssText='padding:6px 8px;border-bottom:1px solid var(--line);text-align:center;';
       tdResult.appendChild(fmtResultBadge(bet.result));
       tr.appendChild(tdResult);
+
+      // Bet column \u2014 moved to the far right. A straight bet shows one result circle
+      // next to its label; a parlay shows every leg on its own line, each with its own
+      // circle so you can see at a glance which legs already won/lost vs. are still pending.
+      const tdBet = document.createElement('td'); tdBet.classList.add('left');
+      tdBet.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;';
+      if(bet.isParlay && Array.isArray(bet.legs)){
+        bet.legs.forEach((leg, idx)=>{
+          const legRow = document.createElement('div');
+          legRow.style.cssText = 'display:flex;align-items:center;'+(idx>0?'margin-top:3px;':'');
+          legRow.appendChild(legResultIcon(gradeLeg(leg)));
+          const txt = document.createElement('span'); txt.textContent = leg.label || '\u2014';
+          legRow.appendChild(txt);
+          tdBet.appendChild(legRow);
+        });
+      } else {
+        const legRow = document.createElement('div'); legRow.style.cssText = 'display:flex;align-items:center;';
+        legRow.appendChild(legResultIcon(bet.result));
+        const txt = document.createElement('span'); txt.textContent = bet.label || '\u2014';
+        legRow.appendChild(txt);
+        tdBet.appendChild(legRow);
+      }
+      tr.appendChild(tdBet);
 
       const tdActions = document.createElement('td'); tdActions.style.cssText='padding:6px 8px;border-bottom:1px solid var(--line);text-align:center;white-space:nowrap;';
       const editBtn = document.createElement('button'); editBtn.textContent='Edit';
