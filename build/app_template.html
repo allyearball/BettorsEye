@@ -1892,6 +1892,19 @@ function decimalToAmerican(dec){
   if(dec>=2) return Math.round((dec-1)*100);
   return Math.round(-100/(dec-1));
 }
+// Top Bets ranking cutoff: a game stays eligible from before tipoff through this many real-
+// world minutes after its scheduled commence_time, then drops out. This app has no live
+// in-game clock feed (only final box scores, refreshed every ~10 min after games end), so
+// this is a wall-clock approximation of "the first 5 minutes" \u2014 not the actual game clock.
+// Worth knowing: a WNBA quarter is 10 minutes of game clock but commonly takes 25-30+ real
+// minutes to play out once fouls/timeouts/reviews are included, so this grace window ends
+// well before 5:00 actually shows on the in-arena clock \u2014 it's deliberately conservative.
+const TOP_BETS_GRACE_MS = 5 * 60 * 1000;
+function withinTopBetsWindow(commenceTime, now){
+  const elapsedMs = now - new Date(commenceTime);
+  return elapsedMs <= TOP_BETS_GRACE_MS; // true if not yet started, or started within the last 5 min
+}
+
 function fmtAmerican(price){
   if(price===null||price===undefined) return '\u2014';
   return (price>0?'+':'')+price;
@@ -2419,6 +2432,20 @@ function marketsByKey(bookmaker){
 // Home page version: same candidate-gathering as renderTopBets, but pivoted into a table
 // where each ROW is one game and that game's qualifying bets run across the columns —
 // rather than one card per bet, ranked without regard to which game it's from.
+// Real-world elapsed-time estimate for "one quarter has passed" since tipoff. This app has no
+// live game-clock/play-by-play feed (only final box scores, refreshed every ~10 min after a
+// game ends) \u2014 so there's no way to know the actual, current in-game clock. This is a
+// heuristic based on typical WNBA pace: a 10-minute game-clock quarter including timeouts,
+// fouls, replay reviews, and the between-quarter break commonly runs ~20-30 minutes of real
+// time; 25 is the midpoint estimate. Tune this constant if it's letting bets sit too long or
+// dropping them too early relative to what you're actually seeing.
+const TOP_BETS_QUARTER_GRACE_MINUTES = 25;
+function isEligibleForTopBets(ev, now){
+  const commence = new Date(ev.commence_time);
+  const minutesSinceTipoff = (now - commence) / 60000;
+  return minutesSinceTipoff < TOP_BETS_QUARTER_GRACE_MINUTES; // covers not-yet-started (negative) through end of an estimated Q1
+}
+
 function renderTopBetsTable(container, cachedFetch, topN){
   topN = topN || 30;
   container.innerHTML = '';
@@ -2426,21 +2453,21 @@ function renderTopBetsTable(container, cachedFetch, topN){
 
   const todayStr = new Date().toDateString();
   const now = new Date();
-  // Only games that haven't tipped off yet \u2014 once a game is live, DraftKings reprices it
-  // based on in-game reality (score, foul trouble, who's actually playing right now), but the
-  // hit rates here are computed against FULL-game historical distributions. Comparing a live,
-  // partway-through-the-game line against full-game history is comparing two different things,
-  // and it's exactly what makes live-game bets look artificially attractive in this ranking
-  // while tending not to hit. Excluding started games is the fix, not a smarter live model \u2014
-  // this app has no live in-game state (foul trouble, current minutes, score) to adjust for.
-  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && new Date(ev.commence_time) > now);
+  // Once a game is live, DraftKings reprices based on in-game reality (score, who's actually
+  // playing, foul trouble), but the hit rates here are computed against FULL-game historical
+  // distributions \u2014 comparing a live line against full-game history is comparing two
+  // different things, and it's what makes live-game bets look artificially attractive here
+  // while tending not to hit. A bet stays eligible through an estimated end of the 1st
+  // quarter (see isEligibleForTopBets \u2014 this app has no live game clock, so that's a
+  // real-world-elapsed-time estimate, not the actual in-game clock), then drops out.
+  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
   sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Ranked`;
   container.appendChild(sec);
 
   if(todaysGames.length === 0){
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg0.textContent = 'None of today\u2019s games have both a scheduled tip-off still ahead and lines currently fetched \u2014 nothing to rank here yet. (Games already in progress are intentionally excluded \u2014 see the note below.)';
+    msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet. (Bets drop out after an estimated end of the 1st quarter \u2014 see the note below.)';
     container.appendChild(msg0);
     return;
   }
@@ -2471,7 +2498,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
   const topBets = pool.slice(0, topN);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = 'Only includes games scheduled for today that haven\u2019t tipped off yet, and only bets priced -250 or better. Ranked 1 (most likely) to '+topN+' by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.';
+  note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -250 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`;
   container.appendChild(note);
 
   if(topBets.length === 0){
@@ -2538,22 +2565,23 @@ function renderTopBets(container, cachedFetch, topN){
   container.innerHTML = '';
   if(!cachedFetch.length) return;
 
-  // Only games actually being played today (compared in the browser's local timezone) AND
-  // that haven't tipped off yet. Once live, DraftKings reprices based on in-game reality, but
-  // the hit rates below are computed against FULL-game historical distributions \u2014 comparing
-  // a live, partway-through-the-game line against full-game history is apples-to-oranges, and
-  // it's exactly what makes live-game bets climb this ranking while tending not to hit. This
-  // app has no live in-game state (foul trouble, current minutes, score) to adjust for, so
-  // excluding started games is the correct fix rather than a smarter live model.
+  // Only games actually being played today (compared in the browser's local timezone), kept
+  // eligible through an estimated end of the 1st quarter. Once live, DraftKings reprices
+  // based on in-game reality, but the hit rates below are computed against FULL-game
+  // historical distributions \u2014 comparing a live line against full-game history is
+  // apples-to-oranges, and it's what makes live-game bets climb this ranking while tending
+  // not to hit. This app has no live in-game state (foul trouble, current minutes, score) to
+  // adjust for, so a time-based cutoff is the fix rather than a smarter live model \u2014 see
+  // isEligibleForTopBets for the real-world-elapsed-time estimate this uses.
   const todayStr = new Date().toDateString();
   const now = new Date();
-  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && new Date(ev.commence_time) > now);
+  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
   if(todaysGames.length === 0){
     const sec0 = document.createElement('div'); sec0.className='section-title'; sec0.style.fontSize='15px';
     sec0.textContent = `\u2b50 Today\u2019s Top ${topN} Bets (across all games)`;
     container.appendChild(sec0);
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg0.textContent = 'None of today\u2019s games have both a scheduled tip-off still ahead and lines currently fetched \u2014 nothing to rank here yet. (Games already in progress are intentionally excluded \u2014 see the note below.)';
+    msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet. (Bets drop out after an estimated end of the 1st quarter \u2014 see the note below.)';
     container.appendChild(msg0);
     return;
   }
@@ -2593,7 +2621,7 @@ function renderTopBets(container, cachedFetch, topN){
   container.appendChild(sec);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = 'Only includes games scheduled for today that haven\u2019t tipped off yet, and only bets priced -250 or better. Ranked by worst-case hit rate across the last-10 and last-15-game windows (same 75%/70%-qualified pool used in each game\u2019s parlay sections). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.';
+  note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -250 or better. Ranked by worst-case hit rate across the last-10 and last-15-game windows (same 75%/70%-qualified pool used in each game\u2019s parlay sections). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.`;
   container.appendChild(note);
 
   if(topBets.length === 0){
@@ -2658,10 +2686,14 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   title.appendChild(homeLink);
   title.appendChild(document.createTextNode(`\u2014 ${dt.toLocaleString()}`));
   if(dt <= new Date()){
+    const stillEligible = isEligibleForTopBets(ev, new Date());
     const liveBadge = document.createElement('span');
-    liveBadge.textContent = '\ud83d\udd34 LIVE / IN PROGRESS';
-    liveBadge.style.cssText = 'font-size:11px;font-weight:800;color:var(--red);border:1px solid var(--red);border-radius:4px;padding:2px 6px;cursor:help;';
-    liveBadge.title = 'This game has already tipped off. DraftKings\u2019 lines below now reflect in-game reality, but the hit rates are computed against full-game historical performance \u2014 that comparison gets less meaningful once a game is underway. This game is excluded from the Top Bets rankings for that reason.';
+    liveBadge.textContent = stillEligible ? '\ud83d\udd34 LIVE \u2014 IN TOP BETS WINDOW' : '\ud83d\udd34 LIVE \u2014 PAST Q1';
+    liveBadge.style.cssText = 'font-size:11px;font-weight:800;color:var(--red);border:1px solid var(--red);border-radius:4px;padding:2px 6px;cursor:pointer;';
+    const liveBadgeText = stillEligible
+      ? `This game has tipped off but is still within the Top Bets eligibility window (within an estimated ${TOP_BETS_QUARTER_GRACE_MINUTES} minutes of tipoff, standing in for end of the 1st quarter \u2014 this app has no live game clock to know the actual time). It'll drop out of Top Bets after that.`
+      : `This game tipped off more than an estimated ${TOP_BETS_QUARTER_GRACE_MINUTES} minutes ago (standing in for past the 1st quarter) and has dropped out of the Top Bets rankings. DraftKings\u2019 lines below still reflect current in-game reality, but the hit rates here are computed against full-game historical performance \u2014 that comparison gets less meaningful the further into the game it is.`;
+    liveBadge.addEventListener('click', (e)=>{ e.stopPropagation(); toggleDefPopover(liveBadge, liveBadgeText); });
     title.appendChild(liveBadge);
   }
   if(onTitleClick){
