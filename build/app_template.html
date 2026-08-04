@@ -2491,46 +2491,115 @@ function teammateKeyInjuryBoost(playerName, team, wantOver){
   return outs.length ? 1.1 : 1.0;
 }
 
-// Composite edge score for one leg (a specific player/stat/line/side already posted by
-// DraftKings). Requires at least 3 of the 4 windows to agree with the leg's posted direction
-// before scoring it at all \u2014 a leg where the windows disagree with each other isn't a real
-// signal, however good any single window looks in isolation.
-function computeAdvancedEdgeForLeg(leg){
-  if(leg.betType !== 'player_prop') return null;
-  const mw = multiWindowStats(leg.player, leg.team, leg.statKey);
+// Core signal computation, direction-agnostic: given a player/stat/line, figures out which
+// side (Over/Under) the multi-window EMA consensus actually favors and scores it. Requires at
+// least 3 of the 4 windows to agree with each other before returning anything \u2014 windows that
+// disagree with each other isn't a real signal, however good any single window looks alone.
+// Shared by both the leg-based Top 30 ranking and the per-row Edge badge on the Odds page.
+function computeRowSignal(pname, team, opponent, statKey, line){
+  const mw = multiWindowStats(pname, team, statKey);
   if(!mw) return null;
   const windows = [mw.l5, mw.l10, mw.l15, mw.full].filter(w => w.ema!==null && w.n>=2);
   if(windows.length < 3) return null;
 
-  const wantOver = leg.side==='over';
-  const agreement = windows.filter(w => wantOver ? w.ema>leg.line : w.ema<leg.line).length / windows.length;
+  const avgEma = windows.reduce((a,w)=>a+w.ema,0)/windows.length;
+  if(avgEma === line) return null; // dead even, no direction to call
+  const direction = avgEma > line ? 'over' : 'under';
+  const agreement = windows.filter(w => direction==='over' ? w.ema>line : w.ema<line).length / windows.length;
   if(agreement < 0.75) return null;
 
-  const avgEma = windows.reduce((a,w)=>a+w.ema,0)/windows.length;
-  const edgeMagnitude = Math.abs(avgEma - leg.line) / Math.max(leg.line, 1);
-  const volatilityDamp = mw.iqrL10!==null ? 1/(1 + mw.iqrL10/Math.max(leg.line,1)) : 0.85;
+  const edgeMagnitude = Math.abs(avgEma - line) / Math.max(line, 1);
+  const volatilityDamp = mw.iqrL10!==null ? 1/(1 + mw.iqrL10/Math.max(line,1)) : 0.85;
 
-  const bucket = positionBucket(getPlayerPosition(leg.player, leg.team));
-  const dvp = bucket ? dvpIndex(leg.opponent, leg.statKey, bucket) : null;
+  const bucket = positionBucket(getPlayerPosition(pname, team));
+  const dvp = bucket ? dvpIndex(opponent, statKey, bucket) : null;
   let dvpMultiplier = 1.0;
   if(dvp!==null){
-    if(wantOver && dvp>1.05) dvpMultiplier = 1 + Math.min(dvp-1, 0.4);
-    else if(!wantOver && dvp<0.95) dvpMultiplier = 1 + Math.min(1-dvp, 0.4);
-    else if(wantOver && dvp<0.95) dvpMultiplier = 0.65;
-    else if(!wantOver && dvp>1.05) dvpMultiplier = 0.65;
+    if(direction==='over' && dvp>1.05) dvpMultiplier = 1 + Math.min(dvp-1, 0.4);
+    else if(direction==='under' && dvp<0.95) dvpMultiplier = 1 + Math.min(1-dvp, 0.4);
+    else if(direction==='over' && dvp<0.95) dvpMultiplier = 0.65;
+    else if(direction==='under' && dvp>1.05) dvpMultiplier = 0.65;
   }
 
   return {
-    score: agreement * edgeMagnitude * volatilityDamp * dvpMultiplier,
+    direction, score: agreement * edgeMagnitude * volatilityDamp * dvpMultiplier,
     agreement, avgEma, dvp,
     l5: mw.l5.ema, l10: mw.l10.ema, l15: mw.l15.ema, full: mw.full.ema, iqrL10: mw.iqrL10,
   };
 }
+// Leg-based wrapper for the Top 30 ranking: only keep the signal if it points the same
+// direction as this specific leg's posted side (Over legs and Under legs are separate
+// candidates from gatherCandidateLegs, so a leg pointing the "wrong" way per our own
+// consensus is correctly dropped rather than scored).
+function computeAdvancedEdgeForLeg(leg){
+  if(leg.betType !== 'player_prop') return null;
+  const sig = computeRowSignal(leg.player, leg.team, leg.opponent, leg.statKey, leg.line);
+  if(!sig) return null;
+  if((leg.side==='over') !== (sig.direction==='over')) return null;
+  return sig;
+}
+
+// Collapses a signal into one plain-language verdict \u2014 the point of this is being readable
+// in under a second, not precise. Thresholds on `score` are a heuristic starting point (score
+// combines agreement \u00d7 edge size \u00d7 volatility \u00d7 matchup, so it doesn't have natural units of
+// its own) \u2014 adjust STRONG_EDGE_THRESHOLD/LEAN_EDGE_THRESHOLD if these feel miscalibrated
+// once you've watched it against real results for a while.
+const STRONG_EDGE_THRESHOLD = 0.15, LEAN_EDGE_THRESHOLD = 0.05;
+function edgeVerdict(sig){
+  if(!sig) return {text:'Mixed / No Signal', color:'var(--sub)'};
+  const dirWord = sig.direction==='over' ? 'Over' : 'Under';
+  const dirColor = sig.direction==='over' ? 'var(--green)' : 'var(--red)';
+  if(sig.score >= STRONG_EDGE_THRESHOLD) return {text:`Strong ${dirWord}`, color: dirColor};
+  if(sig.score >= LEAN_EDGE_THRESHOLD) return {text:`Lean ${dirWord}`, color: dirColor};
+  return {text:'Mixed', color:'var(--sub)'};
+}
+function fmtEma(v){ return v===null||v===undefined ? 'n/a' : (Math.round(v*10)/10); }
+function edgeWhyText(pname, sig, line, marketLabel){
+  if(!sig){
+    return `${pname} \u2014 ${marketLabel} line ${line}: not enough agreement across the L5/L10/L15/season EMA windows to call a direction here (need at least 3 of 4 pointing the same way).`;
+  }
+  const dirWord = sig.direction==='over' ? 'Over' : 'Under';
+  return `${pname} \u2014 ${marketLabel} line ${line}. EMA: L5 ${fmtEma(sig.l5)}, L10 ${fmtEma(sig.l10)}, L15 ${fmtEma(sig.l15)}, Season ${fmtEma(sig.full)} \u2014 ${Math.round(sig.agreement*4)}/4 windows favor the ${dirWord}. DvP Index for her position: ${sig.dvp!==null?sig.dvp.toFixed(2):'n/a'} (>1.05 favors Over, <0.95 favors Under). L10 volatility (IQR): ${sig.iqrL10!==null?sig.iqrL10.toFixed(1):'n/a'} \u2014 higher means less consistent, so this signal is discounted accordingly.`;
+}
+
+// The reusable Edge cell for the Player Props / Alt Lines tables: a tap-for-why verdict badge,
+// plus an inline injury flag right underneath it if she's on the injury report \u2014 so you don't
+// have to scroll back up to the game-card banner to notice she's questionable while you're
+// deep in the props table.
+function buildEdgeCell(pname, team, opponent, statKey, line, marketLabel){
+  const wrap = document.createElement('div');
+  const sig = computeRowSignal(pname, team, opponent, statKey, line);
+  const verdict = edgeVerdict(sig);
+  const badge = document.createElement('span');
+  badge.textContent = verdict.text;
+  badge.style.cssText = `font-weight:700;font-size:11px;color:${verdict.color};cursor:pointer;border:1px solid ${verdict.color};border-radius:4px;padding:2px 6px;display:inline-block;white-space:nowrap;`;
+  badge.addEventListener('click', (e)=>{ e.stopPropagation(); toggleDefPopover(badge, edgeWhyText(pname, sig, line, marketLabel)); });
+  wrap.appendChild(badge);
+
+  const inj = playerInjuryStatus(pname, team);
+  if(inj){
+    const injLine = document.createElement('div');
+    const sev = injuryStatusSeverity(inj.status);
+    injLine.style.cssText = `font-size:10px;font-weight:700;color:${INJURY_SEVERITY_COLOR[sev]||'var(--sub)'};margin-top:2px;`;
+    injLine.textContent = `\u26a0 ${inj.status}`;
+    wrap.appendChild(injLine);
+  }
+  return wrap;
+}
 
 // Builds the ranked pool across every still-eligible game today (reuses gatherCandidateLegs
 // with QUAL=0 \u2014 no hit-rate floor, since this ranking uses its own scoring instead).
+// Actual hit count for a leg's specific side within a window, e.g. "4/5" \u2014 reuses the same
+// hitRateFor already powering the rest of the app, just formatted as counts instead of a rate.
+function hitCountFor(leg, windowSize){
+  const r = hitRateFor(leg.player, leg.team, leg.statKey, leg.line, windowSize);
+  if(!r || r.gp===0) return null;
+  const hits = leg.side==='over' ? r.hits : (r.gp - r.hits);
+  return {hits, gp:r.gp};
+}
+
 function buildAdvancedEdgeCandidates(todaysGames){
-  const MIN_PRICE = -250;
+  const MIN_PRICE = -165;
   let pool = [];
   todaysGames.forEach(({ev, detail})=>{
     const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
@@ -2584,7 +2653,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
     return;
   }
 
-  const MIN_PRICE = -250;
+  const MIN_PRICE = -165;
   function candidatesForGame(ev, detail, QUAL){
     const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
     const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
@@ -2610,12 +2679,12 @@ function renderTopBetsTable(container, cachedFetch, topN){
   const topBets = pool.slice(0, topN);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -250 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`;
+  note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`;
   container.appendChild(note);
 
   if(topBets.length === 0){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg.textContent = 'Nothing in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -250 or better.';
+    msg.textContent = 'Nothing in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -165 or better.';
     container.appendChild(msg);
     return;
   }
@@ -2689,7 +2758,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
   container.appendChild(sec);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = `Player props only, ranked by a composite edge score \u2014 not the same ranking as the hit-rate table above. A leg only qualifies if at least 3 of its 4 EMA windows (L5/L10/L15/full season) agree with the side DraftKings' line implies, then scored by how big that edge is, how volatile she's been (IQR over her last 10 games \u2014 high volatility discounts the score), and the opponent's Defense-vs-Position Index for her spot. Players listed Out or Doubtful are excluded outright; Questionable/Day-to-Day players are kept but flagged and discounted. Same pregame-through-Q1 window and -250 price floor as the table above. This is a second opinion from a different methodology, not a replacement \u2014 worth comparing where the two tables agree and where they don't.`;
+  note.textContent = `Player props only, ranked by a composite edge score \u2014 not the same ranking as the hit-rate table above. A leg only qualifies if at least 3 of its 4 EMA windows (L5/L10/L15/full season) agree with the side DraftKings' line implies, then scored by how big that edge is, how volatile she's been (IQR over her last 10 games \u2014 high volatility discounts the score), and the opponent's Defense-vs-Position Index for her spot. Players listed Out or Doubtful are excluded outright; Questionable/Day-to-Day players are kept but flagged and discounted. Same pregame-through-Q1 window and -165 price floor as the table above. This is a second opinion from a different methodology, not a replacement \u2014 worth comparing where the two tables agree and where they don't.`;
   container.appendChild(note);
 
   if(todaysGames.length === 0){
@@ -2703,7 +2772,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
   const topBets = pool.slice(0, topN);
   if(topBets.length === 0){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg.textContent = 'Nothing in today\u2019s eligible games currently has at least 3 of 4 EMA windows agreeing with DraftKings\u2019 posted line at -250 or better.';
+    msg.textContent = 'Nothing in today\u2019s eligible games currently has at least 3 of 4 EMA windows agreeing with DraftKings\u2019 posted line at -165 or better.';
     container.appendChild(msg);
     return;
   }
@@ -2714,10 +2783,10 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
   thead.innerHTML = '<tr><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
     +'<th class="th-l5">L5</th><th class="th-l10b">L10</th><th class="th-l15b">L15</th><th class="th-full">Season</th>'
     +'<th class="th-agree">Agree</th><th class="th-dvp">DvP Idx</th><th class="left">Injury</th><th></th></tr>';
-  appendDefIcon(thead.querySelector('.th-l5'), 'EMA (exponential moving average) of this stat over her last 5 games played.');
-  appendDefIcon(thead.querySelector('.th-l10b'), 'EMA over her last 10 games played.');
-  appendDefIcon(thead.querySelector('.th-l15b'), 'EMA over her last 15 games played.');
-  appendDefIcon(thead.querySelector('.th-full'), 'EMA over her full season.');
+  appendDefIcon(thead.querySelector('.th-l5'), 'EMA (exponential moving average) of this stat over her last 5 games played, plus how many of those 5 games actually cleared this specific line on this specific side (Over/Under) \u2014 e.g. "21.4 (4/5)" means an EMA of 21.4 and she hit this side in 4 of her last 5 games.');
+  appendDefIcon(thead.querySelector('.th-l10b'), 'EMA over her last 10 games played, plus how many of those 10 actually cleared this line on this side.');
+  appendDefIcon(thead.querySelector('.th-l15b'), 'EMA over her last 15 games played, plus how many of those 15 actually cleared this line on this side.');
+  appendDefIcon(thead.querySelector('.th-full'), 'EMA over her full season, plus how many games this season actually cleared this line on this side.');
   appendDefIcon(thead.querySelector('.th-agree'), 'How many of the 4 EMA windows (L5/L10/L15/season) agree with the direction (Over/Under) DraftKings\u2019 line implies. Only legs with 3/4 or 4/4 agreement are shown \u2014 anything less isn\u2019t a real signal.');
   appendDefIcon(thead.querySelector('.th-dvp'), STAT_DEFINITIONS.dvpPts.replace('Points', 'this stat'));
   table.appendChild(thead);
@@ -2741,8 +2810,14 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
     } else { tdGame.textContent = bet.game; }
     const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
     tdPrice.textContent = fmtAmerican(bet.price);
-    const mk = v => { const td=document.createElement('td'); td.style.cssText=cellStyle; td.textContent = v===null||v===undefined?'\u2014':Math.round(v*10)/10; return td; };
-    const tdL5 = mk(bet.edge.l5), tdL10 = mk(bet.edge.l10), tdL15 = mk(bet.edge.l15), tdFull = mk(bet.edge.full);
+    const mk = (v, hc) => {
+      const td=document.createElement('td'); td.style.cssText=cellStyle;
+      const emaText = v===null||v===undefined?'\u2014':(Math.round(v*10)/10);
+      td.textContent = hc ? `${emaText} (${hc.hits}/${hc.gp})` : emaText;
+      return td;
+    };
+    const tdL5 = mk(bet.edge.l5, hitCountFor(bet,5)), tdL10 = mk(bet.edge.l10, hitCountFor(bet,10)),
+          tdL15 = mk(bet.edge.l15, hitCountFor(bet,15)), tdFull = mk(bet.edge.full, hitCountFor(bet,'all'));
     const tdAgree = document.createElement('td'); tdAgree.style.cssText = cellStyle + 'font-weight:700;';
     tdAgree.textContent = `${Math.round(bet.edge.agreement*4)}/4`;
     const tdDvp = document.createElement('td'); tdDvp.style.cssText = cellStyle;
@@ -3167,6 +3242,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
       const defAllowed = team ? defAllowedCell(opponentTeam, statKey, pname, team) : document.createTextNode('\u2014');
       const posText = team ? (getPlayerPosition(pname, team) || '\u2014') : '\u2014';
+      const edgeCell = team ? buildEdgeCell(pname, team, opponentTeam, statKey, line, marketLabel) : document.createTextNode('\u2014');
 
       propDataRows.push({
         filterValues: {
@@ -3174,7 +3250,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
           over: overO ? overO.price : null, under: underO ? underO.price : null,
           hitRate: (hr && hr.found) ? Math.round(hr.rate*100) : null,
         },
-        cells: [posText, nameCell, marketLabel, line!==undefined?line:'\u2014',
+        cells: [posText, nameCell, edgeCell, marketLabel, line!==undefined?line:'\u2014',
                 overO ? fmtAmerican(overO.price) : '\u2014', underO ? fmtAmerican(underO.price) : '\u2014',
                 resultBadge(hr), defCell, defAllowed, trackCell],
       });
@@ -3185,6 +3261,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     buildFilterableTable(sec4Content, [
       {key:'pos', label:'Pos', type:'select', options:[...new Set(propDataRows.map(r=>r.filterValues.pos))].filter(p=>p!=='\u2014'), align:'left'},
       {key:'player', label:'Player', type:'text', align:'left'},
+      {key:'edge', label:'Edge', def:'A one-glance verdict combining the L5/L10/L15/season EMA consensus, matchup (DvP Index), and consistency (IQR) into a single read \u2014 Strong/Lean Over or Under, or Mixed if the signals don\u2019t agree. Tap the badge itself for the full breakdown behind it.', align:'left'},
       {key:'market', label:'Market', type:'select', options:[...propMarketsSeen], align:'left'},
       {key:'line', label:'Line', type:'numRange'},
       {key:'over', label:'Over', type:'numRange'},
@@ -3240,13 +3317,14 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
         const defAllowed = team ? defAllowedCell(opponentTeam, statKey, pname, team) : document.createTextNode('\u2014');
         const posText = team ? (getPlayerPosition(pname, team) || '\u2014') : '\u2014';
+        const edgeCell = team ? buildEdgeCell(pname, team, opponentTeam, statKey, lvl.point, marketLabel) : document.createTextNode('\u2014');
 
         altDataRows.push({
           filterValues: {
             pos: posText, player: pname, market: marketLabel, level: lvl.point, price: lvl.price,
             hitRate: (hr && hr.found) ? Math.round(hr.rate*100) : null,
           },
-          cells: [posText, nameCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr), defCell, defAllowed, trackBtn || '\u2014'],
+          cells: [posText, nameCell, edgeCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), resultBadge(hr), defCell, defAllowed, trackBtn || '\u2014'],
         });
       });
     });
@@ -3256,6 +3334,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     buildFilterableTable(sec5Content, [
       {key:'pos', label:'Pos', type:'select', options:[...new Set(altDataRows.map(r=>r.filterValues.pos))].filter(p=>p!=='\u2014'), align:'left'},
       {key:'player', label:'Player', type:'text', align:'left'},
+      {key:'edge', label:'Edge', def:'A one-glance verdict combining the L5/L10/L15/season EMA consensus, matchup (DvP Index), and consistency (IQR) into a single read \u2014 Strong/Lean Over or Under, or Mixed if the signals don\u2019t agree. Tap the badge itself for the full breakdown behind it.', align:'left'},
       {key:'market', label:'Market', type:'select', options:[...altMarketsSeen], align:'left'},
       {key:'level', label:'Level', type:'numRange'},
       {key:'price', label:'Price', type:'numRange'},
