@@ -413,7 +413,7 @@ function renderTeamPage(team, year, month){
     async function loadTeamPlayerTrend(pname){
       lineTrendContainer.textContent = 'Loading tracked line history\u2026';
       try{
-        const history = await fetchOddsHistoryCached();
+        const history = await fetchOddsHistoryCached(n => { lineTrendContainer.textContent = `Loading tracked line history\u2026 (${n} snapshots so far)`; });
         renderLineTrendChart(lineTrendContainer, buildPlayerLineSeries(pname, team, history));
       }catch(e){
         lineTrendContainer.textContent = `Couldn\u2019t load line history: ${e.message}`;
@@ -602,7 +602,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   main.appendChild(lineTrendContainer);
   (async ()=>{
     try{
-      const history = await fetchOddsHistoryCached();
+      const history = await fetchOddsHistoryCached(n => { lineTrendContainer.textContent = `Loading tracked line history\u2026 (${n} snapshots so far)`; });
       renderLineTrendChart(lineTrendContainer, buildPlayerLineSeries(playerName, team, history));
     }catch(e){
       lineTrendContainer.textContent = `Couldn\u2019t load line history: ${e.message}`;
@@ -802,7 +802,9 @@ let _oddsHistoryCache = null;
 // to stay under the Workers free-plan 50-subrequest-per-invocation limit), accumulating
 // every record across as many calls as it takes. Cached after the first full fetch so
 // switching between player/team pages in one session doesn't re-download it repeatedly.
-async function fetchOddsHistoryCached(){
+// onProgress(recordsSoFar), if given, is called after each page so callers can show a
+// live count instead of a static "Loading\u2026" that looks frozen on a large archive.
+async function fetchOddsHistoryCached(onProgress){
   if(_oddsHistoryCache) return _oddsHistoryCache;
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
   let all = [];
@@ -813,6 +815,7 @@ async function fetchOddsHistoryCached(){
     const page = await fetchJson(url);
     if(page && page.error) throw new Error(page.error);
     all = all.concat(page.records || []);
+    if(onProgress) onProgress(all.length);
     if(page.done || !page.cursor) break;
     cursor = page.cursor;
   }
