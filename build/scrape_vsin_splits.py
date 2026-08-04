@@ -128,6 +128,19 @@ def parse_splits(html):
     return out
 
 
+def fetch_vsin_splits():
+    """
+    Importable entry point for build.py: fetches + parses the splits and returns
+    just the {short_team: {...}} dict (no wrapper metadata), or raises on failure
+    so the caller can decide how to handle a bad scrape.
+    """
+    html = fetch_html()
+    splits = parse_splits(html)
+    if not splits:
+        raise RuntimeError("VSiN splits page returned no parseable rows")
+    return splits
+
+
 def main():
     html = fetch_html()
     splits = parse_splits(html)
