@@ -1001,6 +1001,31 @@ const FULL_TEAM_NAME = {
 };
 const SHORT_TEAM_NAME = Object.fromEntries(Object.entries(FULL_TEAM_NAME).map(([s,f])=>[f,s]));
 
+// Reusable clickable team-name link, used throughout the Odds page and Top Bets page so every
+// team mention navigates to that team's Team Explorer page. Accepts either a short code
+// ("Aces") or full name ("Las Vegas Aces") and resolves it either way.
+function teamLinkEl(teamNameOrShort, displayText){
+  const shortName = SHORT_TEAM_NAME[teamNameOrShort] || teamNameOrShort;
+  const a = document.createElement('a');
+  a.href = 'javascript:void(0)';
+  a.className = 'player-link';
+  a.textContent = displayText!==undefined ? displayText : teamNameOrShort;
+  a.addEventListener('click', (e)=>{
+    if(e && e.stopPropagation) e.stopPropagation();
+    // Coming from the Odds/Top Bets pages, the Team Explorer sidebar is hidden \u2014 bring it
+    // up and mark "Team Explorer" active so the click doesn't strand the user with no way
+    // back to the rest of Team Explorer, same as clicking it from the top nav would.
+    const explorerBtn = [...document.querySelectorAll('#toplinks button')].find(b=>b.textContent==='Team Explorer');
+    document.querySelectorAll('#toplinks button').forEach(b=>b.classList.remove('active'));
+    if(explorerBtn) explorerBtn.classList.add('active');
+    nav.style.display = '';
+    buildNav();
+    renderTeamPage(shortName);
+    setActiveNav(shortName);
+  });
+  return a;
+}
+
 // Public VAPID key for push notifications — safe to be public (it's the whole point of
 // public-key crypto); the matching private key lives only in the GitHub Actions secret
 // that actually sends notifications, never here.
@@ -2075,10 +2100,17 @@ function renderTopBetsTable(container, cachedFetch, topN){
     tdRank.textContent = idx+1;
     const tdLabel = document.createElement('td'); tdLabel.className='left';
     tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
-    tdLabel.textContent = bet.label;
+    tdLabel.appendChild(buildLegLabelNode(bet));
     const tdGame = document.createElement('td'); tdGame.className='left';
     tdGame.style.cssText = cellStyle.replace('text-align:center;','') + 'color:var(--sub);';
-    tdGame.textContent = bet.game;
+    const gameTeams = bet.game.split(' @ ');
+    if(gameTeams.length===2){
+      tdGame.appendChild(teamLinkEl(gameTeams[0], gameTeams[0]));
+      tdGame.appendChild(document.createTextNode(' @ '));
+      tdGame.appendChild(teamLinkEl(gameTeams[1], gameTeams[1]));
+    } else {
+      tdGame.textContent = bet.game;
+    }
     const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
     tdPrice.textContent = fmtAmerican(bet.price);
     const tdL10 = document.createElement('td'); tdL10.style.cssText = cellStyle;
@@ -2177,10 +2209,17 @@ function renderTopBets(container, cachedFetch, topN){
     rank.textContent = `#${idx+1}`;
     const label = document.createElement('div');
     label.style.cssText = 'font-weight:700;font-size:13.5px;margin-bottom:4px;';
-    label.textContent = c.label;
+    label.appendChild(buildLegLabelNode(c));
     const game = document.createElement('div');
     game.style.cssText = 'font-size:11.5px;color:var(--sub);margin-bottom:6px;';
-    game.textContent = c.game;
+    const gameTeams = c.game.split(' @ ');
+    if(gameTeams.length===2){
+      game.appendChild(teamLinkEl(gameTeams[0], gameTeams[0]));
+      game.appendChild(document.createTextNode(' @ '));
+      game.appendChild(teamLinkEl(gameTeams[1], gameTeams[1]));
+    } else {
+      game.textContent = c.game;
+    }
     const detail = document.createElement('div');
     detail.style.cssText = 'font-size:12px;';
     detail.innerHTML = `${fmtAmerican(c.price)} \u2014 L10: ${Math.round(c.rate10*100)}%, L15: ${Math.round(c.rate15*100)}%`;
@@ -2205,20 +2244,23 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   titleRow.appendChild(gameArrow);
 
   const dt = new Date(ev.commence_time);
-  const titleText = `${ev.away_team} @ ${ev.home_team} \u2014 ${dt.toLocaleString()}`;
+  const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+  const awayLink = teamLinkEl(awayShort, ev.away_team); awayLink.style.color='var(--navy2)';
+  const homeLink = teamLinkEl(homeShort, ev.home_team); homeLink.style.color='var(--navy2)';
+  title.appendChild(awayLink);
+  title.appendChild(document.createTextNode('@'));
+  title.appendChild(homeLink);
+  title.appendChild(document.createTextNode(`\u2014 ${dt.toLocaleString()}`));
   if(onTitleClick){
-    const title = document.createElement('a');
-    title.href = 'javascript:void(0)';
-    title.style.cssText='display:block;font-weight:800;font-size:15px;color:var(--navy2);text-decoration:none;border-bottom:1px dashed var(--navy2);width:fit-content;cursor:pointer;';
-    title.textContent = titleText + '  \u2192';
-    title.title = 'Click to view just this matchup';
-    title.addEventListener('click', onTitleClick);
-    titleRow.appendChild(title);
-  } else {
-    const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;';
-    title.textContent = titleText;
-    titleRow.appendChild(title);
+    const drillIn = document.createElement('a');
+    drillIn.href = 'javascript:void(0)';
+    drillIn.style.cssText='font-size:12.5px;font-weight:700;color:var(--navy2);text-decoration:none;border-bottom:1px dashed var(--navy2);cursor:pointer;';
+    drillIn.textContent = 'View this matchup \u2192';
+    drillIn.title = 'Click to view just this matchup';
+    drillIn.addEventListener('click', onTitleClick);
+    title.appendChild(drillIn);
   }
+  titleRow.appendChild(title);
   wrap.appendChild(titleRow);
 
   const injuryBanner = buildInjuryBanner(awayShort, homeShort);
@@ -2239,11 +2281,18 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   [ {short: awayShort, full: ev.away_team, isHome:false}, {short: homeShort, full: ev.home_team, isHome:true} ].forEach(t=>{
     const rec = DATA.teamRecords[t.short];
     const recBox = document.createElement('div');
-    if(!rec){ recBox.textContent = `${t.full}: record not available`; recordsDiv.appendChild(recBox); return; }
-    const h2h = rec.vsOpponent[t.isHome ? awayShort : homeShort];
+    if(!rec){ recBox.appendChild(teamLinkEl(t.short, t.full)); recBox.appendChild(document.createTextNode(': record not available')); recordsDiv.appendChild(recBox); return; }
+    const oppShort = t.isHome ? awayShort : homeShort;
+    const oppFull = t.isHome ? ev.away_team : ev.home_team;
+    const h2h = rec.vsOpponent[oppShort];
     const homeAwayLabel = t.isHome ? 'Home' : 'Away';
     const homeAwayRec = t.isHome ? rec.home : rec.away;
-    recBox.innerHTML = `<b style="color:var(--ink)">${t.full}</b> \u2014 Overall: ${recordText(rec.overall)} &nbsp;|&nbsp; ${homeAwayLabel}: ${recordText(homeAwayRec)} &nbsp;|&nbsp; vs ${t.isHome ? ev.away_team : ev.home_team}: ${recordText(h2h)}`;
+    const nameLink = teamLinkEl(t.short, t.full); nameLink.style.cssText = 'color:var(--ink);font-weight:700;';
+    recBox.appendChild(nameLink);
+    const oppLink = teamLinkEl(oppShort, oppFull); oppLink.style.fontSize='12.5px';
+    recBox.appendChild(document.createTextNode(` \u2014 Overall: ${recordText(rec.overall)} \u00a0|\u00a0 ${homeAwayLabel}: ${recordText(homeAwayRec)} \u00a0|\u00a0 vs `));
+    recBox.appendChild(oppLink);
+    recBox.appendChild(document.createTextNode(`: ${recordText(h2h)}`));
     recordsDiv.appendChild(recBox);
   });
   gameContentDiv.appendChild(recordsDiv);
@@ -2279,9 +2328,16 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       row.appendChild(na);
       return row;
     }
-    function cell(text, hr, trackBtn, vsinSplit){
+    function cell(text, hr, trackBtn, vsinSplit, linkTeam, linkText){
       const c = document.createElement('div');
-      const span = document.createElement('span'); span.textContent = text; c.appendChild(span);
+      const span = document.createElement('span');
+      if(linkTeam && linkText && text.indexOf(linkText)===0){
+        span.appendChild(teamLinkEl(linkTeam, linkText));
+        span.appendChild(document.createTextNode(text.slice(linkText.length)));
+      } else {
+        span.textContent = text;
+      }
+      c.appendChild(span);
       if(withHitRate && hr){ c.appendChild(document.createElement('br')); c.appendChild(resultBadge(hr)); }
       if(!half){
         c.appendChild(document.createElement('br'));
@@ -2321,8 +2377,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const awayTrack = (!half && away) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.away_team}${isSpread?' '+(away.point>0?'+':'')+away.point:' Moneyline'}`, price:away.price, betType, team:awayShort, opponent:homeShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, isSpread?{line:away.point}:{}), 10) : null;
       const homeTrack = (!half && home) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.home_team}${isSpread?' '+(home.point>0?'+':'')+home.point:' Moneyline'}`, price:home.price, betType, team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, isSpread?{line:home.point}:{}), 10) : null;
       const vsinMarketKey = isSpread ? 'spread' : 'ml';
-      row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr, awayTrack, vsinSplitFor(awayShort, vsinMarketKey)));
-      row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr, homeTrack, vsinSplitFor(homeShort, vsinMarketKey)));
+      row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr, awayTrack, vsinSplitFor(awayShort, vsinMarketKey), awayShort, ev.away_team));
+      row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr, homeTrack, vsinSplitFor(homeShort, vsinMarketKey), homeShort, ev.home_team));
     }
     return row;
   }
@@ -2345,7 +2401,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const under = market.outcomes.find(o=>o.name==='Under' && o.description===teamFullName);
       const c = document.createElement('div');
       const line1 = document.createElement('div');
-      line1.textContent = over ? `${teamFullName} Over ${over.point} (${over.price>0?'+':''}${over.price})` : `${teamFullName}: \u2014`;
+      line1.appendChild(teamLinkEl(shortName, teamFullName));
+      line1.appendChild(document.createTextNode(over ? ` Over ${over.point} (${over.price>0?'+':''}${over.price})` : ': \u2014'));
       c.appendChild(line1);
       if(under){
         const line2 = document.createElement('div'); line2.style.color='var(--sub)';
@@ -4002,6 +4059,33 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
   return legs;
 }
 
+// A leg's label (e.g. "New York Liberty Moneyline" or "Caitlin Clark Over 21.5 Points")
+// always starts with either a team's full name or a player's name, depending on betType \u2014
+// this splits that prefix out into a clickable link and returns the rest as plain text.
+function buildLegLabelNode(l){
+  const frag = document.createDocumentFragment();
+  if((l.betType==='moneyline' || l.betType==='spread' || l.betType==='team_total') && l.team){
+    const fullName = FULL_TEAM_NAME[l.team] || l.team;
+    if(l.label.indexOf(fullName)===0){
+      frag.appendChild(teamLinkEl(l.team, fullName));
+      frag.appendChild(document.createTextNode(l.label.slice(fullName.length)));
+      return frag;
+    }
+  }
+  if((l.betType==='player_prop' || l.betType==='player_prop_alt') && l.player && l.team){
+    if(l.label.indexOf(l.player)===0){
+      const a = document.createElement('a'); a.href='javascript:void(0)'; a.className='player-link';
+      a.textContent = l.player;
+      a.addEventListener('click', (e)=>{ if(e.stopPropagation) e.stopPropagation(); goToPlayer(l.player, l.team); });
+      frag.appendChild(a);
+      frag.appendChild(document.createTextNode(l.label.slice(l.player.length)));
+      return frag;
+    }
+  }
+  frag.appendChild(document.createTextNode(l.label));
+  return frag;
+}
+
 function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL){
   const qualPct = Math.round(QUAL*100);
   const candidates = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL);
@@ -4065,7 +4149,10 @@ function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailM
       const ul = document.createElement('ul'); ul.style.cssText='margin:0;padding-left:18px;font-size:12.5px;';
       legs.forEach(l=>{
         const li = document.createElement('li'); li.style.marginBottom='4px';
-        li.innerHTML = `${l.label} <span style="color:var(--sub)">(${fmtAmerican(l.price)} \u2014 L10: ${Math.round(l.rate10*100)}%, L15: ${Math.round(l.rate15*100)}%)</span>`;
+        li.appendChild(buildLegLabelNode(l));
+        const meta = document.createElement('span'); meta.style.color='var(--sub)';
+        meta.textContent = ` (${fmtAmerican(l.price)} \u2014 L10: ${Math.round(l.rate10*100)}%, L15: ${Math.round(l.rate15*100)}%)`;
+        li.appendChild(meta);
         ul.appendChild(li);
       });
       card.appendChild(ul);
