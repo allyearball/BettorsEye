@@ -797,7 +797,7 @@ function renderTeamPage(team, year, month, windowMode){
   const defPosFootnote = document.createElement('div'); defPosFootnote.className='footnote'; defPosFootnote.style.marginBottom='8px';
   defPosFootnote.textContent = 'Always season-long regardless of the Season/Game Window selected above \u2014 position splits need the bigger sample to mean anything. Same DvP Index used on the Odds page and player pages: above 1.05 means this team allows notably more than league average to that position (plus matchup for the Over); below 0.95 means notably less (tougher matchup). Directly comparable to any player\u2019s own PTS/REB/AST EMA above \u2014 e.g. a high-EMA guard facing a team with a high PTS DvP Index against guards is a stacked signal, not just one data point.';
   main.appendChild(defPosFootnote);
-  makeTable(main, TEAM_DEF_BY_POS_COLS, computeTeamDefenseByPosition(team), {defaultSort:'ptsAllowed', defaultDir:'desc'});
+  makeTable(main, TEAM_DEF_BY_POS_COLS, computeTeamDefenseByPosition(team), {defaultSort:'ptsAllowed', defaultDir:'desc', footerRows: [{label:'TEAM TOTAL (all positions)', values: computeTeamDefenseTotalRow(team)}]});
 
   const t3a = document.createElement('div'); t3a.className='section-title'; t3a.textContent='Team Totals by Game'; main.appendChild(t3a);
   const TEAM_GAME_NUMERIC_KEYS = TEAM_GAME_COLS.filter(c=>!c.left).map(c=>c.key);
@@ -1088,6 +1088,22 @@ function computeTeamDefenseByPosition(team){
     });
     return row;
   });
+}
+// Team-wide row summing the three position rows above \u2014 approximates this team's actual
+// total stats allowed per game (every player falls into one of G/F/C), with a matching
+// team-wide DvP Index: this team's summed allowed vs. the league-average summed allowed
+// across positions for that stat, same >1.05/<0.95 read as the position-level DvP above.
+function computeTeamDefenseTotalRow(team){
+  const posRows = computeTeamDefenseByPosition(team);
+  const baseline = computeDvpBaseline();
+  const row = {position: 'TEAM TOTAL (all positions)'};
+  ['pts','reb','ast','tpm','pra'].forEach(statKey=>{
+    const allowedSum = posRows.reduce((a,r)=> a + (r[statKey+'Allowed']||0), 0);
+    row[statKey+'Allowed'] = Math.round(allowedSum*10)/10;
+    const baseSum = ['G','F','C'].reduce((a,b)=> a + ((baseline[b] && baseline[b][statKey]) || 0), 0);
+    row[statKey+'Dvp'] = baseSum ? Math.round((allowedSum/baseSum)*1000)/1000 : null;
+  });
+  return row;
 }
 
 const PLAYER_ADV_COLS = [
@@ -2643,7 +2659,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
   // real-world-elapsed-time estimate, not the actual in-game clock), then drops out.
   const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
-  sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Ranked`;
+  sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Standard`;
   container.appendChild(sec);
 
   if(todaysGames.length === 0){
@@ -2692,7 +2708,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th class="th-defrank">Opp Def Rank</th><th class="th-defallowed">Allowed/Gm</th><th></th></tr>';
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th class="th-defrank">Opp Def Rank</th><th class="th-defallowed">Allowed/Gm</th><th></th></tr>';
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-defallowed'), STAT_DEFINITIONS.defAllowed);
   table.appendChild(thead);
@@ -2703,6 +2719,8 @@ function renderTopBetsTable(container, cachedFetch, topN){
     const cellStyle = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;text-align:center;';
     const tdRank = document.createElement('td'); tdRank.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
     tdRank.textContent = idx+1;
+    const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
+    tdPos.textContent = (bet.betType==='player_prop' || bet.betType==='player_prop_alt') ? (getPlayerPosition(bet.player, bet.team) || '\u2014') : '\u2014';
     const tdLabel = document.createElement('td'); tdLabel.className='left';
     tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
     tdLabel.appendChild(buildLegLabelNode(bet));
@@ -2733,7 +2751,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    tr.appendChild(tdRank); tr.appendChild(tdLabel); tr.appendChild(tdGame);
+    tr.appendChild(tdRank); tr.appendChild(tdPos); tr.appendChild(tdLabel); tr.appendChild(tdGame);
     tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdDef); tr.appendChild(tdAllowed); tr.appendChild(tdTrack);
     tbody.appendChild(tr);
   });
@@ -2754,7 +2772,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
   const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
 
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
-  sec.textContent = `\ud83e\udde0 Advanced Analytics \u2014 Top ${topN} Wagers`;
+  sec.textContent = `\ud83e\udde0 Today\u2019s Top ${topN} Bets \u2014 Advanced Analytics`;
   container.appendChild(sec);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
@@ -3803,9 +3821,25 @@ async function renderBetTrackerPage(){
   const importBtn = document.createElement('button'); importBtn.className='addbtn'; importBtn.textContent = '\u2b07 Import From Odds History';
   const screenshotBtn = document.createElement('button'); screenshotBtn.className='addbtn'; screenshotBtn.textContent = '\ud83d\udcf7 Upload Bet Screenshot(s)';
   const bulkJsonBtn = document.createElement('button'); bulkJsonBtn.className='addbtn'; bulkJsonBtn.textContent = '\ud83d\udcc4 Bulk Import JSON';
+  const deleteAllBtn = document.createElement('button'); deleteAllBtn.textContent = '\ud83d\uddd1\ufe0f Delete All Tracked Bets';
+  deleteAllBtn.style.cssText = 'padding:8px 14px;border-radius:6px;border:1px solid var(--red);background:#fff;color:var(--red);font-size:13px;cursor:pointer;font-family:var(--sans);font-weight:700;';
   actionsRow.appendChild(gradeBtn); actionsRow.appendChild(addFormBtn); actionsRow.appendChild(importBtn);
-  actionsRow.appendChild(screenshotBtn); actionsRow.appendChild(bulkJsonBtn);
+  actionsRow.appendChild(screenshotBtn); actionsRow.appendChild(bulkJsonBtn); actionsRow.appendChild(deleteAllBtn);
   main.appendChild(actionsRow);
+
+  deleteAllBtn.addEventListener('click', async ()=>{
+    if(!bets.length){ alert('Nothing to delete \u2014 the tracker is already empty.'); return; }
+    if(!confirm(`Delete all ${bets.length} tracked bet(s)? This can\u2019t be undone.`)) return;
+    deleteAllBtn.disabled = true; const orig = deleteAllBtn.textContent;
+    let done = 0;
+    for(const bet of bets.slice()){
+      try{ await trackerDelete(bet.id); done++; }catch(e){ console.warn('Delete failed for', bet.id, e); }
+      deleteAllBtn.textContent = `Deleting\u2026 ${done}/${bets.length}`;
+    }
+    deleteAllBtn.disabled = false; deleteAllBtn.textContent = orig;
+    statusDiv.textContent = `Deleted ${done} of ${bets.length} tracked bet(s).`;
+    await refresh();
+  });
 
   const formDiv = document.createElement('div'); formDiv.style.display = 'none';
   main.appendChild(formDiv);
@@ -4159,7 +4193,13 @@ async function renderBetTrackerPage(){
       });
 
       const tdResult = document.createElement('td'); tdResult.style.cssText='padding:6px 8px;border-bottom:1px solid var(--line);text-align:center;';
-      tdResult.appendChild(fmtResultBadge(bet.result));
+      // The circle here is authoritative for the WHOLE bet, driven directly by the stored
+      // bet.result \u2014 guaranteed to show red/green for every closed bet regardless of
+      // whether individual parlay legs can be resolved from box scores (see below).
+      const resultWrap = document.createElement('div'); resultWrap.style.cssText='display:flex;align-items:center;justify-content:center;gap:5px;';
+      resultWrap.appendChild(legResultIcon(bet.result));
+      resultWrap.appendChild(fmtResultBadge(bet.result));
+      tdResult.appendChild(resultWrap);
       tr.appendChild(tdResult);
 
       // Bet column \u2014 moved to the far right. A straight bet shows one result circle
@@ -4171,7 +4211,20 @@ async function renderBetTrackerPage(){
         bet.legs.forEach((leg, idx)=>{
           const legRow = document.createElement('div');
           legRow.style.cssText = 'display:flex;align-items:center;'+(idx>0?'margin-top:3px;':'');
-          legRow.appendChild(legResultIcon(gradeLeg(leg)));
+          // If the whole parlay is a confirmed WIN, every leg must have won too (a parlay
+          // only wins if all legs do) \u2014 safe to show green even for legs the live box-score
+          // matcher can't individually resolve (e.g. "Live" in-game-adjusted props that don't
+          // map cleanly onto a pregame-style threshold). If the parlay LOST, we genuinely don't
+          // know which specific leg(s) lost from a settled bet slip alone, so an unresolvable
+          // leg here stays a neutral marker rather than guessing red or green.
+          let legResult = gradeLeg(leg);
+          if(!legResult && bet.result==='won') legResult = 'won';
+          const icon = legResult ? legResultIcon(legResult) : legResultIcon(null);
+          if(!legResult && bet.result==='lost'){
+            icon.title = 'This specific leg couldn\u2019t be individually verified from this app\u2019s box score data (common for in-game/live-adjusted props) \u2014 the parlay as a whole is confirmed Lost, shown in the Result column, but which leg(s) caused it isn\u2019t knowable from a settled bet slip alone.';
+            icon.style.cursor = 'help';
+          }
+          legRow.appendChild(icon);
           const txt = document.createElement('span'); txt.textContent = leg.label || '\u2014';
           legRow.appendChild(txt);
           tdBet.appendChild(legRow);
