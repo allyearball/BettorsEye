@@ -591,6 +591,23 @@ function renderTeamPage(team, year, month, windowMode){
   head.innerHTML = `<h2>${team} \u2014 ${year}, ${monthLabel}, ${windowLabelText} (${gameIds.length} Games)</h2><div class="meta">Player totals, per-game averages, opponent output, and individual game box scores. Click any player's name to see her full recent game log.</div>`;
   main.appendChild(head);
 
+  const teamInjuryList = teamInjuries(team);
+  if(teamInjuryList.length){
+    const injBox = document.createElement('div');
+    injBox.style.cssText = 'background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:16px;';
+    const injTitle = document.createElement('div'); injTitle.style.cssText='font-weight:800;color:var(--navy2);font-size:13px;margin-bottom:6px;'; injTitle.textContent = '\ud83c\udfe5 Injury Report';
+    injBox.appendChild(injTitle);
+    teamInjuryList.slice().sort((a,b)=> (isKeyPlayer(b.player,team)?1:0) - (isKeyPlayer(a.player,team)?1:0)).forEach(inj=>{
+      const key = isKeyPlayer(inj.player, team);
+      const row = document.createElement('div');
+      row.style.cssText = `font-size:12.5px;padding:4px 0;${key?'':'color:var(--sub);'}`;
+      const color = INJURY_SEVERITY_COLOR[injuryStatusSeverity(inj.status)] || 'var(--sub)';
+      row.innerHTML = `<b style="color:${key?color:'var(--ink)'};">${inj.player}</b>${key?' <span style="font-size:10px;background:var(--navy2);color:#fff;padding:1px 5px;border-radius:3px;">KEY</span>':''}${inj.position?' ('+inj.position+')':''} \u2014 <span style="color:${color};font-weight:700;">${inj.status||'Status unclear'}</span>${inj.detail?': '+inj.detail:''}${inj.date?' <span style="color:var(--sub);">('+inj.date+')</span>':''}`;
+      injBox.appendChild(row);
+    });
+    main.appendChild(injBox);
+  }
+
   const selectorRow = document.createElement('div');
   selectorRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:16px;';
   const selectorLabel = document.createElement('div'); selectorLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;';
@@ -1118,6 +1135,58 @@ function defRankCell(opponentTeam, statKey, pname, team, marketLabel){
   span.textContent = `${r.rank}/${r.of}`;
   span.title = `${FULL_TEAM_NAME[opponentTeam]||opponentTeam} allows ${r.perGame} ${(marketLabel||'').toLowerCase()} per game to ${POSITION_LABEL[bucket]} this season \u2014 ranked ${r.rank} of ${r.of} (1 = stingiest defense, ${r.of} = most generous).`;
   return span;
+}
+
+// ================= Injuries =================
+// Populated by the pipeline's ESPN injury-report fetch (see fetch_injuries.py), merged into
+// DATA.injuries[shortTeam] = [{player, position, status, detail, date}, ...]. Missing/empty
+// is handled gracefully throughout \u2014 the pipeline step is best-effort and can come up empty.
+
+// "Key player" = averages 23+ minutes per game this season (current season only; averages
+// aren't tracked per-year yet). Uses the same summaryFull.averages data already loaded for
+// everything else on the Team Explorer pages.
+function isKeyPlayer(playerName, team){
+  const t = DATA.teams[team];
+  if(!t) return false;
+  const row = t.summaryFull.averages.find(r=>r.player===playerName);
+  return !!(row && row.min!==null && row.min!==undefined && row.min>=23);
+}
+
+function teamInjuries(team){
+  return (DATA.injuries && DATA.injuries[team]) || [];
+}
+
+// Buckets ESPN's free-text status into a rough severity so the UI can color-code it. Checks
+// substrings rather than an exact match since ESPN's exact wording has changed before.
+function injuryStatusSeverity(status){
+  if(!status) return 'unknown';
+  const s = String(status).toLowerCase();
+  if(s.includes('out') || s.includes('injured reserve') || s.includes('suspension')) return 'out';
+  if(s.includes('doubtful')) return 'doubtful';
+  if(s.includes('questionable') || s.includes('day-to-day') || s.includes('day to day') || s.includes('game-time')) return 'questionable';
+  return 'other';
+}
+const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', questionable:'#b8860b', other:'var(--sub)', unknown:'var(--sub)'};
+
+// Small always-visible banner (shown even while a game card is collapsed) listing any KEY
+// player on either team with a reported injury \u2014 the full team injury report (everyone,
+// not just key players) lives on each team's own page instead, to keep this one uncluttered.
+function buildInjuryBanner(awayShort, homeShort){
+  const relevant = [];
+  [awayShort, homeShort].forEach(team=>{
+    teamInjuries(team).forEach(inj=>{
+      if(isKeyPlayer(inj.player, team)) relevant.push(Object.assign({}, inj, {team}));
+    });
+  });
+  if(!relevant.length) return null;
+  const banner = document.createElement('div');
+  banner.style.cssText = 'background:#fff4e5;border:1px solid #f0b83c;border-radius:6px;padding:8px 12px;margin:8px 0 4px;font-size:12.5px;color:#7a5200;';
+  const parts = relevant.map(inj=>{
+    const color = INJURY_SEVERITY_COLOR[injuryStatusSeverity(inj.status)] || '#7a5200';
+    return `<b style="color:${color}">${inj.player}</b> (${inj.team}${inj.position?', '+inj.position:''}) \u2014 ${inj.status||'Status unclear'}`;
+  });
+  banner.innerHTML = `\u26a0\ufe0f <b>Key Player Injury Watch:</b> ${parts.join(' &nbsp;\u00b7&nbsp; ')}`;
+  return banner;
 }
 
 
@@ -2145,6 +2214,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     titleRow.appendChild(title);
   }
   wrap.appendChild(titleRow);
+
+  const injuryBanner = buildInjuryBanner(awayShort, homeShort);
+  if(injuryBanner) wrap.appendChild(injuryBanner);
 
   const gameContentDiv = document.createElement('div'); gameContentDiv.style.marginTop = '6px';
   if(startCollapsed) gameContentDiv.style.display = 'none';
