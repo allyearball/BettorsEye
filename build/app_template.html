@@ -2064,7 +2064,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th></th></tr>';
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th>Opp Def Rank</th><th></th></tr>';
   table.appendChild(thead);
   const tbody = document.createElement('tbody'); table.appendChild(tbody);
 
@@ -2085,10 +2085,16 @@ function renderTopBetsTable(container, cachedFetch, topN){
     tdL10.textContent = Math.round(bet.rate10*100)+'%';
     const tdL15 = document.createElement('td'); tdL15.style.cssText = cellStyle;
     tdL15.textContent = Math.round(bet.rate15*100)+'%';
+    const tdDef = document.createElement('td'); tdDef.style.cssText = cellStyle;
+    if((bet.betType==='player_prop' || bet.betType==='player_prop_alt') && bet.opponent){
+      tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
+    } else {
+      tdDef.textContent = '\u2014';
+    }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
     tr.appendChild(tdRank); tr.appendChild(tdLabel); tr.appendChild(tdGame);
-    tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdTrack);
+    tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdDef); tr.appendChild(tdTrack);
     tbody.appendChild(tr);
   });
   wrap.appendChild(table);
