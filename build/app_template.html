@@ -108,7 +108,8 @@ function cmp(a,b){
   if(typeof a==='string'&&typeof b==='string') return a.localeCompare(b);
   if(a<b) return -1; if(a>b) return 1; return 0;
 }
-function fmtVal(v, col){
+function fmtVal(v, col, row){
+  if(col && col.record) return `${row.wins}-${row.losses}`;
   if(v===null||v===undefined||v===''){ return '—'; }
   if(col.pct) return (v*100).toFixed(1)+'%';
   if(col.round2 && typeof v==='number') return v.toFixed(2);
@@ -169,11 +170,11 @@ function makeTable(container, columns, rows, opts){
           const link = document.createElement('a');
           link.href = 'javascript:void(0)';
           link.className = 'player-link';
-          link.textContent = fmtVal(r[col.key], col);
+          link.textContent = fmtVal(r[col.key], col, r);
           link.addEventListener('click', (e)=>{ e.stopPropagation(); goToPlayer(r.player, team); });
           td.appendChild(link);
         } else {
-          td.textContent = fmtVal(r[col.key], col);
+          td.textContent = fmtVal(r[col.key], col, r);
         }
         tr.appendChild(td);
       });
@@ -363,7 +364,8 @@ function computeTeamSummaryClientSide(team, gameIds){
 }
 
 const LEAGUE_TEAM_COLS = [
-  {key:'team', label:'Team', left:true}, {key:'gp', label:'Games'}, {key:'min', label:'Minutes'}, {key:'pts', label:'Points'},
+  {key:'team', label:'Team', left:true}, {key:'gp', label:'Games'}, {key:'wins', label:'W-L', left:true, record:true},
+  {key:'min', label:'Minutes'}, {key:'pts', label:'Points'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
   {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
   {key:'ftm', label:'FTM'}, {key:'fta', label:'FTA'}, {key:'ftPct', label:'FT%', pct:true},
@@ -399,9 +401,22 @@ function inchesToHeightStr(inches){
 // makes/attempts (never averaged from individual players' percentages) since that's the only
 // mathematically correct way to roll them up. Height is a season-long weighted average by each
 // player's total minutes played, so rotation players count more than end-of-bench players.
-function computeLeagueTeamRow(team, teamGames, playerTotals, mode){
+function computeLeagueTeamRow(team, gameIds, playerTotals, mode){
+  const teamGames = gameIds.length;
   const sumKey = k => playerTotals.reduce((a,p)=> a + (p[k]||0), 0);
   const fgm=sumKey('fgm'), fga=sumKey('fga'), tpm=sumKey('tpm'), tpa=sumKey('tpa'), ftm=sumKey('ftm'), fta=sumKey('fta');
+
+  // Win-loss record \u2014 computed from actual game results, independent of the totals/averages
+  // toggle (a record doesn't change shape between those two views the way counting stats do).
+  let wins=0, losses=0;
+  gameIds.forEach(gid=>{
+    const g = DATA.games[String(gid)];
+    if(!g || g.homeScore===null || g.awayScore===null) return;
+    const isHome = g.home===team;
+    const teamPts = isHome ? g.homeScore : g.awayScore;
+    const oppPts = isHome ? g.awayScore : g.homeScore;
+    if(teamPts>oppPts) wins++; else if(teamPts<oppPts) losses++;
+  });
 
   let heightSum=0, heightWeight=0;
   playerTotals.forEach(p=>{
@@ -410,7 +425,7 @@ function computeLeagueTeamRow(team, teamGames, playerTotals, mode){
   const avgHeightIn = heightWeight ? heightSum/heightWeight : null;
 
   const row = {
-    team, gp: teamGames, min: sumKey('min'), pts: sumKey('pts'),
+    team, gp: teamGames, wins, losses, min: sumKey('min'), pts: sumKey('pts'),
     fgm, fga, fgPct: fga ? Math.round((fgm/fga)*10000)/10000 : null,
     tpm, tpa, tpPct: tpa ? Math.round((tpm/tpa)*10000)/10000 : null,
     ftm, fta, ftPct: fta ? Math.round((ftm/fta)*10000)/10000 : null,
@@ -485,7 +500,7 @@ function renderLeagueStatsPage(year, mode){
   main.appendChild(t1);
   const teamRows = TEAM_NAMES.map(team=>{
     const {gameIds, summary} = perTeam[team];
-    return computeLeagueTeamRow(team, gameIds.length, summary.totals, mode);
+    return computeLeagueTeamRow(team, gameIds, summary.totals, mode);
   });
   makeTable(main, LEAGUE_TEAM_COLS, teamRows, {defaultSort:'pts', defaultDir:'desc'});
 
@@ -506,19 +521,22 @@ function renderLeagueStatsPage(year, mode){
   main.appendChild(fn);
 }
 
-function renderTeamPage(team, year, month){
+function renderTeamPage(team, year, month, windowMode){
   const years = availableYears(team);
   year = year || years[years.length-1];
   month = month || 'full';
-  lastRender = () => renderTeamPage(team, year, month);
+  windowMode = windowMode===undefined ? 10 : windowMode; // default matches the player page's default
+  lastRender = () => renderTeamPage(team, year, month, windowMode);
 
-  const gameIds = filterGameIdsByYearMonth(team, year, month);
+  const gameIdsInRange = filterGameIdsByYearMonth(team, year, month); // most-recent-first
+  const gameIds = windowSliceRecentFirst(gameIdsInRange, windowMode);
   const summary = computeTeamSummaryClientSide(team, gameIds);
   const monthLabel = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
+  const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
 
   main.innerHTML = '';
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>${team} \u2014 ${year}, ${monthLabel} (${gameIds.length} Games)</h2><div class="meta">Player totals, per-game averages, opponent output, and individual game box scores. Click any player's name to see her full recent game log.</div>`;
+  head.innerHTML = `<h2>${team} \u2014 ${year}, ${monthLabel}, ${windowLabelText} (${gameIds.length} Games)</h2><div class="meta">Player totals, per-game averages, opponent output, and individual game box scores. Click any player's name to see her full recent game log.</div>`;
   main.appendChild(head);
 
   const selectorRow = document.createElement('div');
@@ -526,8 +544,23 @@ function renderTeamPage(team, year, month){
   const selectorLabel = document.createElement('div'); selectorLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;';
   selectorLabel.textContent = 'Season:';
   selectorRow.appendChild(selectorLabel);
-  selectorRow.appendChild(buildYearMonthSelector(availableYears(team), (y)=>availableMonthsForYear(team,y), year, month, (y,m)=>renderTeamPage(team, y, m)));
+  selectorRow.appendChild(buildYearMonthSelector(availableYears(team), (y)=>availableMonthsForYear(team,y), year, month, (y,m)=>renderTeamPage(team, y, m, windowMode)));
   main.appendChild(selectorRow);
+
+  const windowRow = document.createElement('div');
+  windowRow.style.cssText = 'display:flex;align-items:center;gap:18px;margin:0 0 16px;font-size:13px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px 14px;';
+  const windowLabel = document.createElement('div'); windowLabel.style.cssText='font-weight:700;color:var(--navy2);'; windowLabel.textContent = 'Game window:';
+  windowRow.appendChild(windowLabel);
+  const TEAM_WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
+  TEAM_WINDOW_OPTIONS.forEach(opt=>{
+    const b = document.createElement('button');
+    b.textContent = opt.label;
+    const active = opt.value===windowMode;
+    b.style.cssText = `padding:5px 12px;border-radius:5px;border:1px solid ${active?'var(--navy2)':'var(--line)'};background:${active?'var(--navy2)':'#fff'};color:${active?'#fff':'var(--ink)'};font-size:12.5px;cursor:pointer;font-family:var(--sans);`;
+    b.addEventListener('click', ()=>{ if(opt.value!==windowMode) renderTeamPage(team, year, month, opt.value); });
+    windowRow.appendChild(b);
+  });
+  main.appendChild(windowRow);
 
   const t1 = document.createElement('div'); t1.className='section-title'; t1.textContent='Player Totals'; main.appendChild(t1);
   makeTable(main, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team});
@@ -836,7 +869,7 @@ function buildNav(){
   const leagueBtn = navBtn('League Stats', ()=>renderLeagueStatsPage());
   nav.appendChild(leagueBtn);
 
-  const gLabel = document.createElement('div'); gLabel.className='group-label'; gLabel.textContent='Teams (Last 10 Games)';
+  const gLabel = document.createElement('div'); gLabel.className='group-label'; gLabel.textContent='Teams';
   nav.appendChild(gLabel);
   TEAM_NAMES.forEach(team=>{
     const btn = navBtn(team, ()=>renderTeamPage(team));
@@ -1092,6 +1125,13 @@ function statValue(g, statKey){
 function windowSlice(arr, windowSize){
   if(windowSize==='all' || !windowSize) return arr;
   return arr.slice(Math.max(0, arr.length - windowSize));
+}
+// Team gameIds (from filterGameIdsByYearMonth) run most-recent-first (descending), unlike
+// a player's game log which runs oldest-first \u2014 so "last N games" here means the first N
+// entries, not the tail windowSlice takes for ascending-ordered arrays.
+function windowSliceRecentFirst(arr, windowSize){
+  if(windowSize==='all' || !windowSize) return arr;
+  return arr.slice(0, windowSize);
 }
 
 function hitRateFor(playerName, team, statKey, line, windowSize){
