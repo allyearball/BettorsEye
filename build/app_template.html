@@ -243,6 +243,16 @@ const OPP_COLS = [
   {key:'oppAst', label:'Opp AST'}, {key:'oppStl', label:'Opp STL'}, {key:'oppBlk', label:'Opp BLK'},
   {key:'oppTo', label:'Opp TO'}, {key:'oppPf', label:'Opp PF'},
 ];
+const TEAM_GAME_COLS = [
+  {key:'date', label:'Date', left:true}, {key:'opponent', label:'Opponent', left:true},
+  {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'}, {key:'min', label:'MIN'},
+  {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
+  {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
+  {key:'ftm', label:'FTM'}, {key:'fta', label:'FTA'}, {key:'ftPct', label:'FT%', pct:true},
+  {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB'},
+  {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
+  {key:'to', label:'TO'}, {key:'pf', label:'PF'},
+];
 
 let TEAM_NAMES = [];
 const main = document.getElementById('main');
@@ -361,7 +371,29 @@ function computeTeamSummaryClientSide(team, gameIds){
     };
   }).filter(Boolean).sort((a,b)=>a.date.localeCompare(b.date));
 
-  return {totals, averages, opponents};
+  // The team's own combined stat line per game \u2014 same shape/approach as `opponents` above,
+  // just summed from this team's own box score rows instead of the other team's.
+  const teamGames = gameIds.map(gid=>{
+    const g = DATA.games[String(gid)];
+    if(!g) return null;
+    const isHome = g.home === team;
+    const teamPts = isHome ? g.homeScore : g.awayScore;
+    const oppPts = isHome ? g.awayScore : g.homeScore;
+    const oppName = isHome ? g.away : g.home;
+    const ownRows = g.rows.filter(r=>r.team === team);
+    const sum = key => ownRows.reduce((a,r)=> a + (r[key]||0), 0);
+    const fgm = sum('fgm'), fga = sum('fga'), tpm = sum('tpm'), tpa = sum('tpa'), ftm = sum('ftm'), fta = sum('fta');
+    return {
+      date: g.date, opponent: oppName, teamPts, oppPts, min: sum('min'),
+      fgm, fga, fgPct: fga ? Math.round((fgm/fga)*10000)/10000 : null,
+      tpm, tpa, tpPct: tpa ? Math.round((tpm/tpa)*10000)/10000 : null,
+      ftm, fta, ftPct: fta ? Math.round((ftm/fta)*10000)/10000 : null,
+      oreb: sum('oreb'), dreb: sum('dreb'), reb: sum('reb'),
+      ast: sum('ast'), stl: sum('stl'), blk: sum('blk'), to: sum('to'), pf: sum('pf'),
+    };
+  }).filter(Boolean).sort((a,b)=>a.date.localeCompare(b.date));
+
+  return {totals, averages, opponents, teamGames};
 }
 
 const LEAGUE_TEAM_COLS = [
@@ -676,6 +708,41 @@ function renderTeamPage(team, year, month, windowMode){
   const t2 = document.createElement('div'); t2.className='section-title'; t2.textContent='Player Averages (Per Game Played)'; main.appendChild(t2);
   makeTable(main, AVG_COLS, summary.averages, {defaultSort:'pts', teamFor:()=>team});
 
+  const t2b = document.createElement('div'); t2b.className='section-title'; t2b.textContent='Advanced Metrics \u2014 Offense vs. Defense (Usage Rate, Volatility, Trend)'; main.appendChild(t2b);
+  const advFootnote = document.createElement('div'); advFootnote.className='footnote'; advFootnote.style.marginBottom='8px';
+  advFootnote.textContent = `Computed from the same ${gameIds.length}-game range selected above. USG% is the standard Basketball-Reference formula (share of team possessions used while on the floor). EMA is an exponential moving average (recent games weighted more heavily than older ones) using a span of up to 10 games. StdDev/IQR measure game-to-game volatility \u2014 a high value means the mean/average is a less reliable predictor of any single game than it looks. The two footer rows are directly comparable: "TEAM TOTAL" is this team's own scoring trend, "TEAM DEFENSE" is what opponents have scored against them, using the same PTS/REB/AST EMA-StdDev-IQR columns either way. Not shown: "Potential Assists" genuinely isn't computable from this app's data source (ESPN's free box scores don't log passer-to-shooter events, only completed assists) \u2014 that one would need a paid feed like Her Hoop Stats.`;
+  main.appendChild(advFootnote);
+  const advResult = computeAdvancedStatsForTeam(team, gameIds, summary.teamGames);
+  const defenseTrend = computeTeamDefenseTrend(summary.opponents);
+  const advFooterRows = [];
+  if(advResult.teamFooter) advFooterRows.push({label:'TEAM TOTAL (own scoring per game)', values: advResult.teamFooter});
+  if(defenseTrend) advFooterRows.push({label:'TEAM DEFENSE (opponent scoring per game)', values: defenseTrend});
+  makeTable(main, TEAM_ADV_COLS, advResult.rows, {defaultSort:'usgPct', teamFor:()=>team, footerRows: advFooterRows});
+
+  const t2c = document.createElement('div'); t2c.className='section-title'; t2c.textContent='Team Defense by Position (Season, Full-Season DvP)'; main.appendChild(t2c);
+  const defPosFootnote = document.createElement('div'); defPosFootnote.className='footnote'; defPosFootnote.style.marginBottom='8px';
+  defPosFootnote.textContent = 'Always season-long regardless of the Season/Game Window selected above \u2014 position splits need the bigger sample to mean anything. Same DvP Index used on the Odds page and player pages: above 1.05 means this team allows notably more than league average to that position (plus matchup for the Over); below 0.95 means notably less (tougher matchup). Directly comparable to any player\u2019s own PTS/REB/AST EMA above \u2014 e.g. a high-EMA guard facing a team with a high PTS DvP Index against guards is a stacked signal, not just one data point.';
+  main.appendChild(defPosFootnote);
+  makeTable(main, TEAM_DEF_BY_POS_COLS, computeTeamDefenseByPosition(team), {defaultSort:'ptsAllowed', defaultDir:'desc'});
+
+  const t3a = document.createElement('div'); t3a.className='section-title'; t3a.textContent='Team Totals by Game'; main.appendChild(t3a);
+  const TEAM_GAME_NUMERIC_KEYS = TEAM_GAME_COLS.filter(c=>!c.left).map(c=>c.key);
+  const teamGameFooterRows = [];
+  const teamGameLabels = [
+    {label:'TOTAL', fn: arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)*100)/100 : null},
+    {label:'MIN', fn: arr => arr.length ? Math.min(...arr) : null},
+    {label:'MAX', fn: arr => arr.length ? Math.max(...arr) : null},
+    {label:'AVERAGE', fn: arr => arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*100)/100 : null},
+    {label:'MEDIAN', fn: median},
+    {label:'MODE', fn: mode},
+  ];
+  teamGameLabels.forEach(({label, fn})=>{
+    const values = {};
+    TEAM_GAME_NUMERIC_KEYS.forEach(k=>{ values[k] = fn(summary.teamGames.map(r=>r[k]).filter(v=>v!==null && v!==undefined)); });
+    teamGameFooterRows.push({label, values});
+  });
+  makeTable(main, TEAM_GAME_COLS, summary.teamGames, {defaultSort:'date', defaultDir:'asc', footerRows: teamGameFooterRows});
+
   const t3 = document.createElement('div'); t3.className='section-title'; t3.textContent='Opponent Totals by Game'; main.appendChild(t3);
   const OPP_NUMERIC_KEYS = OPP_COLS.filter(c=>!c.left).map(c=>c.key);
   const oppFooterRows = [];
@@ -773,6 +840,234 @@ function mode(arr){
   return best;
 }
 function statValues(log, key){ return log.filter(g=>!g.dnp).map(g=>g[key]).filter(v=>v!==null && v!==undefined); }
+
+// ================= Advanced analytics (rolling-window forecasting metrics) =================
+// Standard deviation, IQR, EMA, Usage Rate, and Defense-vs-Position Index, computed entirely
+// from box scores already loaded client-side. NOTE on scope: "Potential Assists" (passes
+// leading to a teammate's shot, made or missed) genuinely can't be built from this pipeline's
+// data \u2014 ESPN's free box scores/play-by-play don't carry passer-to-shooter event linkage,
+// only the final made-assist count. That one specifically would need a source like Her Hoop
+// Stats' paid API. Everything below is left out of that limitation.
+
+function stdDevOf(arr){
+  if(!arr || arr.length===0) return null;
+  const mean = arr.reduce((a,b)=>a+b,0)/arr.length;
+  const variance = arr.reduce((a,b)=>a+(b-mean)*(b-mean),0)/arr.length;
+  return Math.sqrt(variance);
+}
+function percentileOf(sortedArr, p){
+  if(!sortedArr || sortedArr.length===0) return null;
+  const idx = (p/100)*(sortedArr.length-1);
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  if(lo===hi) return sortedArr[lo];
+  return sortedArr[lo] + (sortedArr[hi]-sortedArr[lo])*(idx-lo);
+}
+function iqrOf(arr){
+  if(!arr || arr.length===0) return null;
+  const sorted = arr.slice().sort((a,b)=>a-b);
+  const q75 = percentileOf(sorted,75), q25 = percentileOf(sorted,25);
+  return (q75===null||q25===null) ? null : q75-q25;
+}
+// arr must be chronological, oldest first. Standard EMA recurrence with smoothing factor
+// 2/(span+1) \u2014 seeded with the first value (equivalent to pandas' ewm(adjust=False)).
+function emaOf(arr, span){
+  if(!arr || arr.length===0) return null;
+  const alpha = 2/(span+1);
+  let e = arr[0];
+  for(let i=1;i<arr.length;i++){ e = arr[i]*alpha + e*(1-alpha); }
+  return Math.round(e*100)/100;
+}
+
+// Standard (Basketball-Reference) Usage Rate formula:
+//   USG% = 100 * ((FGA + 0.44*FTA + TOV) * (Team_MP/5)) / (MP * (Team_FGA + 0.44*Team_FTA + Team_TOV))
+// playerRow needs {min, fga, fta, to}; teamAgg needs {mp, fga, fta, to} (team totals for that
+// same game, all 5-on-court players combined).
+function usgPctForGame(playerRow, teamAgg){
+  if(!playerRow || !playerRow.min || !teamAgg || !teamAgg.mp) return null;
+  const playerNum = (playerRow.fga||0) + 0.44*(playerRow.fta||0) + (playerRow.to||0);
+  const teamDenom = (teamAgg.fga||0) + 0.44*(teamAgg.fta||0) + (teamAgg.to||0);
+  if(!teamDenom) return null;
+  return Math.round((100 * (playerNum * (teamAgg.mp/5)) / (playerRow.min * teamDenom)) * 10) / 10;
+}
+// Sums a team's box score rows for one game into the {mp, fga, fta, to} shape usgPctForGame needs.
+function teamGameAggFromRows(rows){
+  return {
+    mp: rows.reduce((a,r)=>a+(r.min||0),0),
+    fga: rows.reduce((a,r)=>a+(r.fga||0),0),
+    fta: rows.reduce((a,r)=>a+(r.fta||0),0),
+    to: rows.reduce((a,r)=>a+(r.to||0),0),
+  };
+}
+
+// League-average "allowed per game to position X" for each stat \u2014 the baseline DvP Index
+// is measured against. Reuses computeDefenseVsPosition()'s per-team numbers (see the
+// Defense-vs-Position system added earlier in this file).
+let _dvpBaselineCache = null;
+function computeDvpBaseline(){
+  if(_dvpBaselineCache) return _dvpBaselineCache;
+  const ranks = computeDefenseVsPosition();
+  const baseline = {};
+  ['G','F','C'].forEach(b=>{
+    baseline[b] = {};
+    ['pts','reb','ast','tpm','pra'].forEach(k=>{
+      const vals = TEAM_NAMES.map(t => ranks[t] && ranks[t][b] && ranks[t][b][k] ? ranks[t][b][k].perGame : null).filter(v=>v!==null);
+      baseline[b][k] = vals.length ? vals.reduce((a,b2)=>a+b2,0)/vals.length : null;
+    });
+  });
+  _dvpBaselineCache = baseline;
+  return baseline;
+}
+// DvP Index > 1.05 = plus matchup (opponent yields notably more than average to this position;
+// lean Over). < 0.95 = tougher matchup (lean Under/away). Returns null if data's unavailable.
+function dvpIndex(opponentTeam, statKey, bucket){
+  if(!bucket) return null;
+  const r = getDefenseRank(opponentTeam, statKey, bucket);
+  if(!r) return null;
+  const baseline = computeDvpBaseline();
+  const base = baseline[bucket] && baseline[bucket][statKey];
+  if(!base) return null;
+  return Math.round((r.perGame / base) * 1000) / 1000;
+}
+
+const TEAM_ADV_COLS = [
+  {key:'player', label:'Player', left:true}, {key:'gp', label:'GP'},
+  {key:'usgPct', label:'USG%', round2:true},
+  {key:'ptsEma', label:'PTS EMA', round2:true}, {key:'ptsStd', label:'PTS StdDev', round2:true}, {key:'ptsIqr', label:'PTS IQR', round2:true},
+  {key:'rebEma', label:'REB EMA', round2:true}, {key:'rebStd', label:'REB StdDev', round2:true}, {key:'rebIqr', label:'REB IQR', round2:true},
+  {key:'astEma', label:'AST EMA', round2:true}, {key:'astStd', label:'AST StdDev', round2:true}, {key:'astIqr', label:'AST IQR', round2:true},
+];
+
+// Builds one row per player (within whatever gameIds are currently in view \u2014 respects the
+// page's Season + Game Window filters, same as every other table on this page) plus a
+// TEAM TOTAL footer row using the team's own per-game combined stats.
+function computeAdvancedStatsForTeam(team, gameIds, teamGamesChrono){
+  const sortedGameIds = gameIds.slice().sort((a,b)=> DATA.games[String(a)].date.localeCompare(DATA.games[String(b)].date));
+  const playerLogs = {};
+  sortedGameIds.forEach(gid=>{
+    const g = DATA.games[String(gid)];
+    if(!g) return;
+    const teamRows = g.rows.filter(r=>r.team===team && !r.dnp);
+    const teamAgg = teamGameAggFromRows(teamRows);
+    teamRows.forEach(r=>{
+      if(!playerLogs[r.athleteId]) playerLogs[r.athleteId] = {player:r.player, games:[]};
+      playerLogs[r.athleteId].games.push({pts:r.pts||0, reb:r.reb||0, ast:r.ast||0, usg:usgPctForGame(r, teamAgg)});
+    });
+  });
+
+  const rows = Object.values(playerLogs).map(p=>{
+    const ptsArr = p.games.map(x=>x.pts), rebArr = p.games.map(x=>x.reb), astArr = p.games.map(x=>x.ast);
+    const usgArr = p.games.map(x=>x.usg).filter(v=>v!==null);
+    const span = Math.max(1, Math.min(10, ptsArr.length));
+    return {
+      player: p.player, gp: p.games.length,
+      usgPct: usgArr.length ? usgArr.reduce((a,b)=>a+b,0)/usgArr.length : null,
+      ptsEma: emaOf(ptsArr, span), ptsStd: stdDevOf(ptsArr), ptsIqr: iqrOf(ptsArr),
+      rebEma: emaOf(rebArr, span), rebStd: stdDevOf(rebArr), rebIqr: iqrOf(rebArr),
+      astEma: emaOf(astArr, span), astStd: stdDevOf(astArr), astIqr: iqrOf(astArr),
+    };
+  });
+
+  let teamFooter = null;
+  if(teamGamesChrono && teamGamesChrono.length){
+    const ptsArr = teamGamesChrono.map(g=>g.teamPts), rebArr = teamGamesChrono.map(g=>g.reb), astArr = teamGamesChrono.map(g=>g.ast);
+    const span = Math.max(1, Math.min(10, ptsArr.length));
+    teamFooter = {
+      ptsEma: emaOf(ptsArr, span), ptsStd: stdDevOf(ptsArr), ptsIqr: iqrOf(ptsArr),
+      rebEma: emaOf(rebArr, span), rebStd: stdDevOf(rebArr), rebIqr: iqrOf(rebArr),
+      astEma: emaOf(astArr, span), astStd: stdDevOf(astArr), astIqr: iqrOf(astArr),
+    };
+  }
+  return {rows, teamFooter};
+}
+
+// Defensive counterpart to the teamFooter above \u2014 EMA/StdDev/IQR of what OPPONENTS have
+// scored against this team, per game (from summary.opponents, already chronological). Same
+// column shape as the offense side so the two rows sit directly comparable in one table.
+function computeTeamDefenseTrend(opponentGamesChrono){
+  if(!opponentGamesChrono || !opponentGamesChrono.length) return null;
+  const ptsArr = opponentGamesChrono.map(g=>g.oppPts), rebArr = opponentGamesChrono.map(g=>g.oppReb), astArr = opponentGamesChrono.map(g=>g.oppAst);
+  const span = Math.max(1, Math.min(10, ptsArr.length));
+  return {
+    ptsEma: emaOf(ptsArr, span), ptsStd: stdDevOf(ptsArr), ptsIqr: iqrOf(ptsArr),
+    rebEma: emaOf(rebArr, span), rebStd: stdDevOf(rebArr), rebIqr: iqrOf(rebArr),
+    astEma: emaOf(astArr, span), astStd: stdDevOf(astArr), astIqr: iqrOf(astArr),
+  };
+}
+
+// Position-by-position defensive breakdown \u2014 season-long (see the Defense-vs-Position
+// system earlier in this file), covering the same stat set as the player table above.
+const TEAM_DEF_BY_POS_COLS = [
+  {key:'position', label:'Position Allowed To', left:true},
+  {key:'ptsAllowed', label:'PTS/Gm'}, {key:'ptsDvp', label:'PTS DvP Idx', round2:true},
+  {key:'rebAllowed', label:'REB/Gm'}, {key:'rebDvp', label:'REB DvP Idx', round2:true},
+  {key:'astAllowed', label:'AST/Gm'}, {key:'astDvp', label:'AST DvP Idx', round2:true},
+  {key:'tpmAllowed', label:'3PM/Gm'}, {key:'tpmDvp', label:'3PM DvP Idx', round2:true},
+  {key:'praAllowed', label:'PRA/Gm'}, {key:'praDvp', label:'PRA DvP Idx', round2:true},
+];
+function computeTeamDefenseByPosition(team){
+  return ['G','F','C'].map(bucket=>{
+    const row = {position: POSITION_LABEL[bucket]};
+    ['pts','reb','ast','tpm','pra'].forEach(statKey=>{
+      const r = getDefenseRank(team, statKey, bucket);
+      row[statKey+'Allowed'] = r ? r.perGame : null;
+      row[statKey+'Dvp'] = dvpIndex(team, statKey, bucket);
+    });
+    return row;
+  });
+}
+
+const PLAYER_ADV_COLS = [
+  {key:'date', label:'Date', left:true}, {key:'opp', label:'Opponent', left:true},
+  {key:'homeAway', label:'H/A', left:true}, {key:'dnp', label:'DNP', bool:true}, {key:'min', label:'MIN'},
+  {key:'usgPct', label:'USG%', round2:true},
+  {key:'ptsEma', label:'PTS EMA', round2:true}, {key:'ptsStd', label:'PTS StdDev(L10)', round2:true}, {key:'ptsIqr', label:'PTS IQR(L10)', round2:true},
+  {key:'rebEma', label:'REB EMA', round2:true}, {key:'rebStd', label:'REB StdDev(L10)', round2:true}, {key:'rebIqr', label:'REB IQR(L10)', round2:true},
+  {key:'astEma', label:'AST EMA', round2:true}, {key:'astStd', label:'AST StdDev(L10)', round2:true}, {key:'astIqr', label:'AST IQR(L10)', round2:true},
+  {key:'dvpPts', label:'DvP-PTS', round2:true}, {key:'dvpReb', label:'DvP-REB', round2:true}, {key:'dvpAst', label:'DvP-AST', round2:true},
+];
+
+function findGameByTeamDate(team, date){
+  return Object.values(DATA.games).find(g => (g.home===team || g.away===team) && g.date===date);
+}
+
+// One row per game in pl.log (same window as the box score table directly above it, and in
+// the same chronological order), building EMA/StdDev/IQR progressively game-by-game \u2014 each
+// row only ever uses that game and earlier ones, never future data, so this reflects what
+// would actually have been knowable going into that game.
+function computePlayerAdvancedLog(pl, team){
+  const rows = [];
+  const cumPts = [], cumReb = [], cumAst = [];
+  pl.log.forEach(g=>{
+    if(g.dnp){
+      rows.push({date:g.date, opp:g.opp, homeAway:g.homeAway, dnp:true, min:null, usgPct:null,
+        ptsEma:null, ptsStd:null, ptsIqr:null, rebEma:null, rebStd:null, rebIqr:null,
+        astEma:null, astStd:null, astIqr:null, dvpPts:null, dvpReb:null, dvpAst:null});
+      return;
+    }
+    cumPts.push(g.pts||0); cumReb.push(g.reb||0); cumAst.push(g.ast||0);
+    const trailPts = cumPts.slice(-10), trailReb = cumReb.slice(-10), trailAst = cumAst.slice(-10);
+
+    let usg = null;
+    const gameRecord = findGameByTeamDate(team, g.date);
+    if(gameRecord){
+      const teamRows = gameRecord.rows.filter(r=>r.team===team && !r.dnp);
+      const playerRow = teamRows.find(r=>r.player===pl.player);
+      if(playerRow) usg = usgPctForGame(playerRow, teamGameAggFromRows(teamRows));
+    }
+
+    const oppShort = SHORT_TEAM_NAME[g.opp] || g.opp;
+    const bucket = positionBucket(getPlayerPosition(pl.player, team));
+
+    rows.push({
+      date:g.date, opp:g.opp, homeAway:g.homeAway, dnp:false, min:g.min, usgPct: usg,
+      ptsEma: emaOf(cumPts, Math.min(10,cumPts.length)), ptsStd: stdDevOf(trailPts), ptsIqr: iqrOf(trailPts),
+      rebEma: emaOf(cumReb, Math.min(10,cumReb.length)), rebStd: stdDevOf(trailReb), rebIqr: iqrOf(trailReb),
+      astEma: emaOf(cumAst, Math.min(10,cumAst.length)), astStd: stdDevOf(trailAst), astIqr: iqrOf(trailAst),
+      dvpPts: dvpIndex(oppShort, 'pts', bucket), dvpReb: dvpIndex(oppShort, 'reb', bucket), dvpAst: dvpIndex(oppShort, 'ast', bucket),
+    });
+  });
+  return rows;
+}
 
 const PLAYER_LOG_COLS = [
   {key:'date', label:'Date', left:true}, {key:'opp', label:'Opponent', left:true},
@@ -918,6 +1213,13 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   const fn2 = document.createElement('div'); fn2.className='footnote';
   fn2.innerHTML = `Rows with <b>DNP</b> checked reflect games on the schedule she didn\u2019t play in \u2014 those games are excluded from the MIN/MAX/AVERAGE/MEDIAN/MODE rows at the bottom, which are based only on games actually played within the ${windowLabelText.toLowerCase()} window selected above. Shooting-percentage summary rows (FG%/3P%/FT%) are computed from each game\u2019s own percentage, not recalculated from total makes/attempts.`;
   main.appendChild(fn2);
+
+  const t5 = document.createElement('div'); t5.className='section-title'; t5.textContent='Advanced Metrics \u2014 Same Games, Forecasting View'; main.appendChild(t5);
+  const adv2Footnote = document.createElement('div'); adv2Footnote.className='footnote'; adv2Footnote.style.marginBottom='8px';
+  adv2Footnote.textContent = 'Same games as the box score table above, but built for forecasting against a sportsbook line instead of describing what already happened. USG% is the standard Basketball-Reference formula. EMA (exponential moving average) weights recent games more heavily and is computed using every game up to and including that row, oldest to newest. StdDev/IQR use a trailing window of up to the last 10 games played (not the calendar window above) \u2014 a high value means the average is a less reliable predictor of any single game than it looks. DvP Index compares that game\u2019s opponent to the league-average defense against her position for that stat: above 1.05 is a plus matchup (favors the Over), below 0.95 is a tougher one. "Potential Assists" isn\u2019t included \u2014 it genuinely can\u2019t be computed from this app\u2019s data source (see the Team page\u2019s Advanced Metrics section for the longer explanation).';
+  main.appendChild(adv2Footnote);
+  const advLogRows = computePlayerAdvancedLog(pl, team);
+  makeTable(main, PLAYER_ADV_COLS, advLogRows, {defaultSort:'date', defaultDir:'desc', hideLabel:'Hide games she didn\u2019t play (DNP)'});
 }
 
 /* ---------- nav ---------- */
