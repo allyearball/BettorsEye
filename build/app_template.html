@@ -376,6 +376,16 @@ const LEAGUE_TEAM_COLS = [
   {key:'to', label:'TO'}, {key:'pf', label:'PF'},
   {key:'avgHeight', label:'Avg Height (Wtd)', left:true, numeric:false},
 ];
+const LEAGUE_DEF_COLS = [
+  {key:'team', label:'Team', left:true}, {key:'gp', label:'Games'}, {key:'oppPts', label:'Opp Points'},
+  {key:'oppFgm', label:'Opp FGM'}, {key:'oppFga', label:'Opp FGA'}, {key:'oppFgPct', label:'Opp FG%', pct:true},
+  {key:'oppTpm', label:'Opp 3PM'}, {key:'oppTpa', label:'Opp 3PA'}, {key:'oppTpPct', label:'Opp 3P%', pct:true},
+  {key:'oppFtm', label:'Opp FTM'}, {key:'oppFta', label:'Opp FTA'}, {key:'oppFtPct', label:'Opp FT%', pct:true},
+  {key:'oppOreb', label:'Opp OREB'}, {key:'oppDreb', label:'Opp DREB'}, {key:'oppReb', label:'Opp REB'},
+  {key:'oppAst', label:'Opp AST'}, {key:'oppStl', label:'Opp STL'}, {key:'oppBlk', label:'Opp BLK'},
+  {key:'oppTo', label:'Opp TO'}, {key:'oppPf', label:'Opp PF'},
+];
+
 const LEAGUE_PLAYER_COLS = [
   {key:'team', label:'Team', left:true}, {key:'player', label:'Player', left:true},
   {key:'gp', label:'GP'}, {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
@@ -442,6 +452,30 @@ function computeLeagueTeamRow(team, gameIds, playerTotals, mode){
   }
   return row;
 }
+
+// Same idea as computeLeagueTeamRow, but summed from each game's opponent output (already
+// computed per-game by computeTeamSummaryClientSide's `opponents` array) instead of the
+// team's own players \u2014 i.e. what a team's opponents did against them, season-long.
+function computeLeagueDefenseRow(team, teamGames, opponents, mode){
+  const sumKey = k => opponents.reduce((a,o)=> a + (o[k]||0), 0);
+  const oppFgm=sumKey('oppFgm'), oppFga=sumKey('oppFga'), oppTpm=sumKey('oppTpm'), oppTpa=sumKey('oppTpa'), oppFtm=sumKey('oppFtm'), oppFta=sumKey('oppFta');
+
+  const row = {
+    team, gp: teamGames, oppPts: sumKey('oppPts'),
+    oppFgm, oppFga, oppFgPct: oppFga ? Math.round((oppFgm/oppFga)*10000)/10000 : null,
+    oppTpm, oppTpa, oppTpPct: oppTpa ? Math.round((oppTpm/oppTpa)*10000)/10000 : null,
+    oppFtm, oppFta, oppFtPct: oppFta ? Math.round((oppFtm/oppFta)*10000)/10000 : null,
+    oppOreb: sumKey('oppOreb'), oppDreb: sumKey('oppDreb'), oppReb: sumKey('oppReb'),
+    oppAst: sumKey('oppAst'), oppStl: sumKey('oppStl'), oppBlk: sumKey('oppBlk'), oppTo: sumKey('oppTo'), oppPf: sumKey('oppPf'),
+  };
+  if(mode==='averages' && teamGames){
+    ['oppPts','oppFgm','oppFga','oppTpm','oppTpa','oppFtm','oppFta','oppOreb','oppDreb','oppReb','oppAst','oppStl','oppBlk','oppTo','oppPf'].forEach(k=>{
+      row[k] = Math.round((row[k]/teamGames)*100)/100;
+    });
+  }
+  return row;
+}
+
 
 // League-wide landing page for Team Explorer \u2014 every team's season line, plus every
 // individual player's season line, side by side. Currently only the season(s) already loaded
@@ -512,6 +546,15 @@ function renderLeagueStatsPage(year, mode){
     teamRows.forEach(r=>{ r.gbNum = ((leader.wins-r.wins)+(r.losses-leader.losses))/2; });
   }
   makeTable(main, LEAGUE_TEAM_COLS, teamRows, {defaultSort:'pts', defaultDir:'desc'});
+
+  const t1b = document.createElement('div'); t1b.className='section-title';
+  t1b.textContent = `Defensive Team ${mode==='totals'?'Totals':'Averages'} (Opponent Output) \u2014 ${year}`;
+  main.appendChild(t1b);
+  const defRows = TEAM_NAMES.map(team=>{
+    const {gameIds, summary} = perTeam[team];
+    return computeLeagueDefenseRow(team, gameIds.length, summary.opponents, mode);
+  });
+  makeTable(main, LEAGUE_DEF_COLS, defRows, {defaultSort:'oppPts', defaultDir:'asc'});
 
   const t2 = document.createElement('div'); t2.className='section-title';
   t2.textContent = `Individual Player ${mode==='totals'?'Totals':'Averages'} \u2014 ${year}`;
