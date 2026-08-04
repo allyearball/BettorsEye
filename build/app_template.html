@@ -2385,6 +2385,74 @@ async function renderBetTrackerPage(){
 
   let bets = [];
 
+  // ---- Column filters for the tracked-bets table ----
+  const filters = { dateFrom:'', dateTo:'', game:'', result:'all', betText:'' };
+  const filterBar = document.createElement('div');
+  filterBar.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:10px 0;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:8px;';
+  function filterField(labelText, inputEl){
+    const box = document.createElement('div'); box.style.cssText='display:flex;flex-direction:column;gap:3px;';
+    const lbl = document.createElement('label'); lbl.textContent = labelText; lbl.style.cssText='font-size:10px;text-transform:uppercase;color:var(--sub);font-weight:700;';
+    box.appendChild(lbl); box.appendChild(inputEl);
+    return box;
+  }
+  const dateFromInput = document.createElement('input'); dateFromInput.type='date'; dateFromInput.style.cssText='padding:5px 6px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--sans);';
+  const dateToInput = document.createElement('input'); dateToInput.type='date'; dateToInput.style.cssText=dateFromInput.style.cssText;
+  const gameInput = document.createElement('input'); gameInput.type='text'; gameInput.placeholder='e.g. Liberty'; gameInput.style.cssText='padding:5px 6px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--sans);width:130px;';
+  const resultSelect = document.createElement('select'); resultSelect.style.cssText='padding:5px 6px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--sans);';
+  [['all','All'],['pending','Pending'],['won','Won'],['lost','Lost'],['push','Push']].forEach(([v,t])=>{
+    const opt = document.createElement('option'); opt.value=v; opt.textContent=t; resultSelect.appendChild(opt);
+  });
+  const betTextInput = document.createElement('input'); betTextInput.type='text'; betTextInput.placeholder='e.g. Clark, Over 22.5'; betTextInput.style.cssText='padding:5px 6px;border:1px solid var(--line);border-radius:5px;font-size:12px;font-family:var(--sans);width:170px;';
+  const clearFiltersBtn = document.createElement('button'); clearFiltersBtn.textContent = 'Clear filters';
+  clearFiltersBtn.style.cssText = 'padding:5px 10px;border-radius:5px;border:1px solid var(--line);background:#fff;font-size:12px;cursor:pointer;font-family:var(--sans);';
+
+  filterBar.appendChild(filterField('Date from', dateFromInput));
+  filterBar.appendChild(filterField('Date to', dateToInput));
+  filterBar.appendChild(filterField('Game', gameInput));
+  filterBar.appendChild(filterField('Result', resultSelect));
+  filterBar.appendChild(filterField('Bet contains', betTextInput));
+  filterBar.appendChild(clearFiltersBtn);
+  main.appendChild(filterBar);
+
+  [dateFromInput,dateToInput,gameInput,betTextInput].forEach(el=>{
+    el.addEventListener('input', ()=>{
+      filters.dateFrom = dateFromInput.value; filters.dateTo = dateToInput.value;
+      filters.game = gameInput.value; filters.betText = betTextInput.value;
+      renderTable();
+    });
+  });
+  resultSelect.addEventListener('change', ()=>{ filters.result = resultSelect.value; renderTable(); });
+  clearFiltersBtn.addEventListener('click', ()=>{
+    dateFromInput.value=''; dateToInput.value=''; gameInput.value=''; resultSelect.value='all'; betTextInput.value='';
+    filters.dateFrom=''; filters.dateTo=''; filters.game=''; filters.result='all'; filters.betText='';
+    renderTable();
+  });
+
+  // A bet (or any of its parlay legs) matches the free-text "Bet contains" filter if the
+  // text appears in any leg's label \u2014 so searching a player name still surfaces parlays
+  // that include her as one leg among several.
+  function betMatchesText(bet, needle){
+    if(!needle) return true;
+    const hay = needle.toLowerCase();
+    if(bet.isParlay && Array.isArray(bet.legs)){
+      return bet.legs.some(l => (l.label||'').toLowerCase().includes(hay));
+    }
+    return (bet.label||'').toLowerCase().includes(hay);
+  }
+  function applyFilters(list){
+    return list.filter(bet=>{
+      if(filters.dateFrom && bet.gameDate && bet.gameDate < filters.dateFrom) return false;
+      if(filters.dateTo && bet.gameDate && bet.gameDate > filters.dateTo) return false;
+      if(filters.game && !(bet.gameLabel||'').toLowerCase().includes(filters.game.toLowerCase())) return false;
+      if(filters.result!=='all'){
+        const r = bet.result || 'pending';
+        if(r!==filters.result) return false;
+      }
+      if(!betMatchesText(bet, filters.betText)) return false;
+      return true;
+    });
+  }
+
   function renderSummary(){
     const graded = bets.filter(b=>b.result==='won'||b.result==='lost');
     const won = bets.filter(b=>b.result==='won').length;
@@ -2601,7 +2669,13 @@ async function renderBetTrackerPage(){
       tableDiv.appendChild(na);
       return;
     }
-    const sorted = bets.slice().sort((a,b)=> (b.gameDate||'').localeCompare(a.gameDate||''));
+    const sorted = applyFilters(bets).sort((a,b)=> (b.gameDate||'').localeCompare(a.gameDate||''));
+    if(sorted.length===0){
+      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-top:16px;';
+      na.textContent = 'No tracked bets match the current filters.';
+      tableDiv.appendChild(na);
+      return;
+    }
     const wrap = document.createElement('div'); wrap.className='table-wrap';
     const table = document.createElement('table'); table.style.width='100%';
     const thead = document.createElement('thead');
@@ -2695,6 +2769,20 @@ async function renderBetTrackerPage(){
     tableDiv.appendChild(wrap);
   }
 
+  async function autoGradeAll(){
+    let gradedCount = 0;
+    for(const bet of bets){
+      if(bet.result && bet.result!=='pending') continue;
+      const result = gradeTrackedBet(bet);
+      if(result){
+        await trackerUpdate(bet.id, {result});
+        bet.result = result; // keep the in-memory copy in sync so the render right after doesn't need a re-fetch
+        gradedCount++;
+      }
+    }
+    return gradedCount;
+  }
+
   async function refresh(){
     statusDiv.textContent = 'Loading your tracked bets\u2026';
     try{
@@ -2704,6 +2792,12 @@ async function renderBetTrackerPage(){
       statusDiv.textContent = `Couldn\u2019t load tracked bets: ${e.message}`;
       bets = [];
     }
+    // Auto-grade on every load, not just when the button is clicked \u2014 otherwise bets from
+    // finished games sit as "Pending" until someone happens to press the button.
+    if(bets.length){
+      const gradedCount = await autoGradeAll();
+      if(gradedCount) statusDiv.textContent = `${bets.length} tracked bet(s) loaded (auto-graded ${gradedCount}).`;
+    }
     renderSummary();
     renderAnalysis();
     renderTable();
@@ -2711,15 +2805,7 @@ async function renderBetTrackerPage(){
 
   gradeBtn.addEventListener('click', async ()=>{
     gradeBtn.disabled = true; gradeBtn.textContent = 'Grading\u2026';
-    let gradedCount = 0;
-    for(const bet of bets){
-      if(bet.result && bet.result!=='pending') continue;
-      const result = gradeTrackedBet(bet);
-      if(result){
-        await trackerUpdate(bet.id, {result});
-        gradedCount++;
-      }
-    }
+    const gradedCount = await autoGradeAll();
     gradeBtn.disabled = false; gradeBtn.textContent = '\u2705 Auto-Grade Pending Bets';
     statusDiv.textContent = `Graded ${gradedCount} bet(s). Refreshing\u2026`;
     await refresh();
