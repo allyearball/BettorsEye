@@ -3,8 +3,9 @@ Full build pipeline, run by GitHub Actions on a schedule:
   1. Download the latest box score + roster CSVs from the SportsDataverse (wehoop) releases
   2. Regenerate app_data.json from them
   3. Scrape VSiN's DraftKings betting splits and merge them into app_data.json
-  4. Gzip + base64 the dataset and inject it into the HTML template
-  5. Write the final, self-contained index.html into dist/ for deployment
+  4. Fetch current ESPN injury reports and merge them into app_data.json
+  5. Gzip + base64 the dataset and inject it into the HTML template
+  6. Write the final, self-contained index.html into dist/ for deployment
 Run locally with:  python build/build.py
 """
 import gzip
@@ -17,6 +18,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(__file__))
 from make_app_data import generate  # noqa: E402
 from scrape_vsin_splits import fetch_vsin_splits  # noqa: E402
+from fetch_injuries import fetch_all_injuries  # noqa: E402
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(REPO_ROOT, 'data')
 DIST_DIR = os.path.join(REPO_ROOT, 'dist')
@@ -59,6 +61,21 @@ def main():
         print(f'Merged VSiN splits for {len(vsin_splits)} teams into {data_json}')
     except Exception as e:
         print(f'WARNING: VSiN splits scrape failed ({e}) — Handle%/Bet% will show as unavailable this run.')
+
+    # Merge in current ESPN injury reports, keyed by short team name. Best-effort, same
+    # philosophy as the VSiN step — one bad fetch shouldn't fail the whole build, and the
+    # frontend already handles a missing/empty `injuries` key gracefully.
+    try:
+        injuries = fetch_all_injuries()
+        with open(data_json, 'r') as f:
+            app_data = json.load(f)
+        app_data['injuries'] = injuries
+        with open(data_json, 'w') as f:
+            json.dump(app_data, f, allow_nan=False)
+        total = sum(len(v) for v in injuries.values())
+        print(f'Merged {total} injury entries across {len(injuries)} teams into {data_json}')
+    except Exception as e:
+        print(f'WARNING: injury fetch failed ({e}) — injury alerts will show as unavailable this run.')
 
     with open(data_json, 'rb') as f:
         raw = f.read()
