@@ -798,10 +798,26 @@ const LINE_TREND_MARKETS = [
 ];
 
 let _oddsHistoryCache = null;
+// Pages through /history/export (see the Worker \u2014 it caps each response at ~40 records
+// to stay under the Workers free-plan 50-subrequest-per-invocation limit), accumulating
+// every record across as many calls as it takes. Cached after the first full fetch so
+// switching between player/team pages in one session doesn't re-download it repeatedly.
 async function fetchOddsHistoryCached(){
   if(_oddsHistoryCache) return _oddsHistoryCache;
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-  _oddsHistoryCache = await fetchJson(`${workerBase}/history/export`);
+  let all = [];
+  let cursor = null;
+  let guard = 0; // hard stop so a Worker bug can't spin this forever
+  while(guard++ < 200){
+    const url = cursor ? `${workerBase}/history/export?cursor=${encodeURIComponent(cursor)}` : `${workerBase}/history/export`;
+    const page = await fetchJson(url);
+    if(page && page.error) throw new Error(page.error);
+    all = all.concat(page.records || []);
+    if(page.done || !page.cursor) break;
+    cursor = page.cursor;
+  }
+  all.sort((a,b)=> (a.fetchedAt||'').localeCompare(b.fetchedAt||''));
+  _oddsHistoryCache = all;
   return _oddsHistoryCache;
 }
 
@@ -2427,8 +2443,7 @@ async function renderLineHistoryPage(leg, returnTo){
   }
 
   try{
-    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-    const history = await fetchJson(`${workerBase}/history/export`);
+    const history = await fetchOddsHistoryCached();
     const matches = (history||[]).filter(snap => snap.eventId === leg.eventId);
     if(matches.length === 0){
       statusDiv.textContent = 'No historical snapshots found yet for this game. Snapshots are only saved automatically while the Odds/Home pages are actively fetched before tip-off \u2014 as you keep using the app day to day, history will build up here on its own. Nothing to show yet for this one.';
@@ -3251,10 +3266,9 @@ async function renderBetTrackerPage(){
     screenshotDiv.style.display='none'; bulkJsonDiv.style.display='none';
     importDiv.style.display = 'block';
     importDiv.innerHTML = '<div class="footnote">Loading captured odds history from your Worker\u2026</div>';
-    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
     let history;
     try{
-      history = await fetchJson(`${workerBase}/history/export`);
+      history = await fetchOddsHistoryCached();
     }catch(e){
       importDiv.innerHTML = `<div class="footnote">Couldn\u2019t load odds history: ${e.message}</div>`;
       return;
