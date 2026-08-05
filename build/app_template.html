@@ -311,7 +311,7 @@ const AVG_COLS = TOTALS_COLS.map(c=>{
   return c;
 });
 const OPP_COLS = [
-  {key:'date', label:'Date', left:true}, {key:'opponent', label:'Opponent', left:true},
+  {key:'date', label:'Date', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
   {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'},
   {key:'oppFgm', label:'Opp FGM'}, {key:'oppFga', label:'Opp FGA'}, {key:'oppFgPct', label:'Opp FG%', pct:true},
   {key:'oppTpm', label:'Opp 3PM'}, {key:'oppTpa', label:'Opp 3PA'},
@@ -321,7 +321,7 @@ const OPP_COLS = [
   {key:'oppTo', label:'Opp TO'}, {key:'oppPf', label:'Opp PF'},
 ];
 const TEAM_GAME_COLS = [
-  {key:'date', label:'Date', left:true}, {key:'opponent', label:'Opponent', left:true},
+  {key:'date', label:'Date', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
   {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'}, {key:'min', label:'MIN'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
   {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
@@ -440,7 +440,7 @@ function computeTeamSummaryClientSide(team, gameIds){
     const oppFgm = sum('fgm'), oppFga = sum('fga'), oppTpm = sum('tpm'), oppTpa = sum('tpa'),
           oppFtm = sum('ftm'), oppFta = sum('fta');
     return {
-      date: g.date, opponent: oppName, teamPts, oppPts,
+      date: g.date, homeAway: isHome ? 'vs' : '@', opponent: oppName, teamPts, oppPts,
       oppFgm, oppFga, oppFgPct: oppFga ? Math.round((oppFgm/oppFga)*10000)/10000 : null,
       oppTpm, oppTpa, oppFtm, oppFta,
       oppOreb: sum('oreb'), oppDreb: sum('dreb'), oppReb: sum('reb'),
@@ -461,7 +461,7 @@ function computeTeamSummaryClientSide(team, gameIds){
     const sum = key => ownRows.reduce((a,r)=> a + (r[key]||0), 0);
     const fgm = sum('fgm'), fga = sum('fga'), tpm = sum('tpm'), tpa = sum('tpa'), ftm = sum('ftm'), fta = sum('fta');
     return {
-      date: g.date, opponent: oppName, teamPts, oppPts, min: sum('min'),
+      date: g.date, homeAway: isHome ? 'vs' : '@', opponent: oppName, teamPts, oppPts, min: sum('min'),
       fgm, fga, fgPct: fga ? Math.round((fgm/fga)*10000)/10000 : null,
       tpm, tpa, tpPct: tpa ? Math.round((tpm/tpa)*10000)/10000 : null,
       ftm, fta, ftPct: fta ? Math.round((ftm/fta)*10000)/10000 : null,
@@ -838,7 +838,7 @@ function renderTeamPage(team, year, month, windowMode){
   });
   makeTable(main, OPP_COLS, summary.opponents, {defaultSort:'date', defaultDir:'asc', footerRows: oppFooterRows});
 
-  const t4 = document.createElement('div'); t4.className='section-title'; t4.textContent='Individual Games (click to view box score)'; main.appendChild(t4);
+  const t4 = document.createElement('div'); t4.className='section-title'; t4.textContent='Individual Games (click to expand box score)'; main.appendChild(t4);
   const list = document.createElement('div'); list.className='gamelist';
   if(gameIds.length===0){
     const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;'; na.textContent='No games in this range.';
@@ -846,10 +846,26 @@ function renderTeamPage(team, year, month, windowMode){
   }
   gameIds.slice().reverse().forEach(gid=>{
     const g = DATA.games[String(gid)];
+    const chipWrap = document.createElement('div'); chipWrap.style.marginBottom='6px';
     const chip = document.createElement('button'); chip.className='gamechip';
-    chip.innerHTML = `${g.label}`;
-    chip.addEventListener('click', ()=>renderGamePage(g));
-    list.appendChild(chip);
+    chip.style.cssText = 'width:100%;box-sizing:border-box;';
+    chip.innerHTML = `${g.label} <span style="float:right;color:var(--sub);">\u25b8</span>`;
+    const expandDiv = document.createElement('div');
+    expandDiv.style.cssText = 'display:none;padding:12px 0 4px 0;';
+    let built = false;
+    chip.addEventListener('click', ()=>{
+      const isOpen = expandDiv.style.display !== 'none';
+      if(isOpen){
+        expandDiv.style.display = 'none';
+        chip.querySelector('span').textContent = '\u25b8';
+      } else {
+        if(!built){ buildBoxScoreContent(expandDiv, g); built = true; }
+        expandDiv.style.display = '';
+        chip.querySelector('span').textContent = '\u25be';
+      }
+    });
+    chipWrap.appendChild(chip); chipWrap.appendChild(expandDiv);
+    list.appendChild(chipWrap);
   });
   main.appendChild(list);
 }
@@ -877,6 +893,23 @@ function computeGameTeamTotals(rows, team){
   };
 }
 
+// Builds the two-team box score tables (each with its own footer TEAM TOTAL row) into any
+// container \u2014 shared by the full-page renderGamePage and the inline expand-in-place version
+// used on the Team Explorer page's Individual Games list.
+function buildBoxScoreContent(container, game){
+  const rowsWithBio = game.rows.map(r => Object.assign({}, r, bioLookup(r.player, r.team)));
+  [{team:game.away, label:`${game.away} (Away)`}, {team:game.home, label:`${game.home} (Home)`}].forEach(side=>{
+    const sec = document.createElement('div'); sec.className='section-title'; sec.textContent = side.label;
+    container.appendChild(sec);
+    const teamRows = rowsWithBio.filter(r=>r.team===side.team);
+    const totalsRow = computeGameTeamTotals(rowsWithBio, side.team);
+    makeTable(container, GAME_COLS_PER_TEAM, teamRows, {
+      defaultSort:'pts', teamFor:()=>side.team, defaultHideDNP: true,
+      footerRows: [{label:'TEAM TOTAL', values: totalsRow}],
+    });
+  });
+}
+
 function renderGamePage(game){
   lastRender = () => renderGamePage(game);
   main.innerHTML = '';
@@ -890,18 +923,7 @@ function renderGamePage(game){
   back.addEventListener('click', ()=>{ setActiveNav(game.home); renderTeamPage(game.home); });
   main.appendChild(back);
 
-  const rowsWithBio = game.rows.map(r => Object.assign({}, r, bioLookup(r.player, r.team)));
-
-  [{team:game.away, label:`${game.away} (Away)`}, {team:game.home, label:`${game.home} (Home)`}].forEach(side=>{
-    const sec = document.createElement('div'); sec.className='section-title'; sec.textContent = side.label;
-    main.appendChild(sec);
-    const teamRows = rowsWithBio.filter(r=>r.team===side.team);
-    const totalsRow = computeGameTeamTotals(rowsWithBio, side.team);
-    makeTable(main, GAME_COLS_PER_TEAM, teamRows, {
-      defaultSort:'pts', teamFor:()=>side.team, defaultHideDNP: true,
-      footerRows: [{label:'TEAM TOTAL', values: totalsRow}],
-    });
-  });
+  buildBoxScoreContent(main, game);
 }
 
 function median(arr){
