@@ -51,6 +51,9 @@
   .footnote{font-size:11.5px;color:var(--sub);margin-top:10px;line-height:1.5;}
   .gamelist{display:flex;flex-direction:column;gap:6px;}
   .gamechip{text-align:left;background:#fff;border:1px solid var(--line);border-radius:6px;padding:8px 12px;font-size:12.5px;cursor:pointer;}
+  /* Toggled by the "Show Opp Def Rank / Allowed columns" checkbox present on any table that has
+     them \u2014 default state is hidden (checkbox unchecked shows them; see each table's wiring). */
+  .hide-defcols .defcol{display:none;}
   .gamechip:hover{background:#eef4ff;}
   .gamechip .d{color:var(--sub);font-size:11px;}
   .result.green{color:var(--green);background:var(--greenbg);}
@@ -1932,6 +1935,17 @@ function fmtAmerican(price){
 function buildFilterableTable(container, columns, dataRows){
   const filterState = {};
   const wrapDiv = document.createElement('div'); wrapDiv.style.marginBottom='4px';
+  wrapDiv.classList.add('hide-defcols'); // default: Opp Def Rank / Allowed-Gm columns hidden
+  const DEF_COL_KEYS = ['defRank','defAllowed'];
+  const hasDefCols = columns.some(c=>DEF_COL_KEYS.includes(c.key));
+  if(hasDefCols){
+    const toggleLabel = document.createElement('label'); toggleLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;width:fit-content;margin-bottom:8px;';
+    const toggleCb = document.createElement('input'); toggleCb.type='checkbox'; toggleCb.checked = true;
+    toggleLabel.appendChild(toggleCb);
+    toggleLabel.appendChild(document.createTextNode('Hide Opp Def Rank / Allowed-Gm columns'));
+    toggleCb.addEventListener('change', ()=>{ wrapDiv.classList.toggle('hide-defcols', toggleCb.checked); });
+    wrapDiv.appendChild(toggleLabel);
+  }
 
   const filterBar = document.createElement('div');
   filterBar.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:8px;padding:8px 10px;background:#fff;border:1px solid var(--line);border-radius:6px;';
@@ -1978,7 +1992,7 @@ function buildFilterableTable(container, columns, dataRows){
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
   const trh = document.createElement('tr');
-  columns.forEach(col=>{ const th=document.createElement('th'); th.textContent=col.label; if(col.align==='left') th.classList.add('left'); appendDefIcon(th, col.def || STAT_DEFINITIONS[col.key]); trh.appendChild(th); });
+  columns.forEach(col=>{ const th=document.createElement('th'); th.textContent=col.label; if(col.align==='left') th.classList.add('left'); if(DEF_COL_KEYS.includes(col.key)) th.classList.add('defcol'); appendDefIcon(th, col.def || STAT_DEFINITIONS[col.key]); trh.appendChild(th); });
   thead.appendChild(trh); table.appendChild(thead);
   const tbody = document.createElement('tbody'); table.appendChild(tbody);
   const countDiv = document.createElement('div'); countDiv.style.cssText='font-size:11.5px;color:var(--sub);margin:2px 0 6px;';
@@ -2008,6 +2022,7 @@ function buildFilterableTable(container, columns, dataRows){
       columns.forEach((col,i)=>{
         const td = document.createElement('td');
         if(col.align==='left') td.classList.add('left');
+        if(DEF_COL_KEYS.includes(col.key)) td.classList.add('defcol');
         td.style.padding='5px 8px'; td.style.borderBottom='1px solid var(--line)'; td.style.fontSize='12.5px';
         if(col.align!=='left') td.style.textAlign='center';
         const cell = row.cells[i];
@@ -2614,6 +2629,35 @@ function hitCountFor(leg, windowSize){
   return {hits, gp:r.gp};
 }
 
+// Every game she's actually played against this specific opponent already THIS season, with
+// her value for this exact stat and her minutes in each \u2014 plus the average. Returns null if
+// they haven't met yet this season (most common case early in a season/for new matchups).
+function vsOpponentStatsForLeg(leg){
+  if(leg.betType!=='player_prop' && leg.betType!=='player_prop_alt') return null;
+  const rec = DATA.fullPlayerLogs[leg.player+'|'+leg.team];
+  if(!rec) return null;
+  const oppFull = FULL_TEAM_NAME[leg.opponent] || leg.opponent;
+  const games = rec.log.filter(g => !g.dnp && (g.opp===leg.opponent || g.opp===oppFull));
+  if(!games.length) return null;
+  const values = games.map(g => leg.statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[leg.statKey]||0));
+  const avg = Math.round((values.reduce((a,b)=>a+b,0)/values.length)*10)/10;
+  return { n: games.length, avg, games: games.map((g,i)=>({date:g.date, value:values[i], min:g.min})) };
+}
+function buildVsOpponentCell(leg){
+  const stats = vsOpponentStatsForLeg(leg);
+  if(!stats) return document.createTextNode('\u2014 (no meetings yet this season)');
+  const wrap = document.createElement('div');
+  stats.games.forEach(g=>{
+    const row = document.createElement('div'); row.style.fontSize = '11px';
+    row.textContent = `${g.date}: ${g.value} (${g.min!==null&&g.min!==undefined?g.min:'\u2014'} min)`;
+    wrap.appendChild(row);
+  });
+  const avgRow = document.createElement('div'); avgRow.style.cssText = 'font-size:11px;font-weight:700;margin-top:2px;';
+  avgRow.textContent = `Avg: ${stats.avg} (${stats.n} GP)`;
+  wrap.appendChild(avgRow);
+  return wrap;
+}
+
 function buildAdvancedEdgeCandidates(todaysGames){
   const MIN_PRICE = -165;
   let pool = [];
@@ -2705,10 +2749,25 @@ function renderTopBetsTable(container, cachedFetch, topN){
     return;
   }
 
+  const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'margin-bottom:8px;';
+  const toggleLabel = document.createElement('label'); toggleLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;width:fit-content;';
+  const toggleCb = document.createElement('input'); toggleCb.type='checkbox'; toggleCb.checked = true; // checked = hidden, per default
+  toggleLabel.appendChild(toggleCb);
+  toggleLabel.appendChild(document.createTextNode('Hide Opp Def Rank / Allowed-Gm columns'));
+  toggleRow.appendChild(toggleLabel);
+  container.appendChild(toggleRow);
+
   const wrap = document.createElement('div'); wrap.className='table-wrap';
+  wrap.classList.add('hide-defcols'); // default: hidden
+  toggleCb.addEventListener('change', ()=>{ wrap.classList.toggle('hide-defcols', toggleCb.checked); });
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th><th>L10%</th><th>L15%</th><th class="th-defrank">Opp Def Rank</th><th class="th-defallowed">Allowed/Gm</th><th></th></tr>';
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Pos</th><th class="th-l5">L5%</th><th class="th-l10">L10%</th><th class="th-l15">L15%</th>'
+    +'<th class="left">Bet</th><th class="left">Game</th><th class="left">Vs Opponent This Season</th><th>Price</th>'
+    +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="defcol th-defallowed">Allowed/Gm</th><th></th></tr>';
+  appendDefIcon(thead.querySelector('.th-l5'), 'Hit rate over her last 5 games played, with the actual record (hits/games) in parentheses.');
+  appendDefIcon(thead.querySelector('.th-l10'), 'Hit rate over her last 10 games played, with the actual record (hits/games) in parentheses.');
+  appendDefIcon(thead.querySelector('.th-l15'), 'Hit rate over her last 15 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-defallowed'), STAT_DEFINITIONS.defAllowed);
   table.appendChild(thead);
@@ -2717,10 +2776,25 @@ function renderTopBetsTable(container, cachedFetch, topN){
   topBets.forEach((bet, idx)=>{
     const tr = document.createElement('tr');
     const cellStyle = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;text-align:center;';
+    const isProp = bet.betType==='player_prop' || bet.betType==='player_prop_alt';
+
     const tdRank = document.createElement('td'); tdRank.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
     tdRank.textContent = idx+1;
     const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
-    tdPos.textContent = (bet.betType==='player_prop' || bet.betType==='player_prop_alt') ? (getPlayerPosition(bet.player, bet.team) || '\u2014') : '\u2014';
+    tdPos.textContent = isProp ? (getPlayerPosition(bet.player, bet.team) || '\u2014') : '\u2014';
+
+    const mkRate = (rate, gp, hitFrac) => {
+      const td = document.createElement('td'); td.style.cssText = cellStyle;
+      if(rate===null || rate===undefined){ td.textContent = '\u2014'; return td; }
+      const pct = Math.round(rate*100);
+      const hc = isProp ? hitFrac : (gp ? {hits: Math.round(rate*gp), gp} : null);
+      td.textContent = hc ? `${pct}% (${hc.hits}/${hc.gp})` : `${pct}%`;
+      return td;
+    };
+    const tdL5 = mkRate(bet.rate5, bet.gp5, isProp ? hitCountFor(bet,5) : null);
+    const tdL10 = mkRate(bet.rate10, bet.gp10, isProp ? hitCountFor(bet,10) : null);
+    const tdL15 = mkRate(bet.rate15, bet.gp15, isProp ? hitCountFor(bet,15) : null);
+
     const tdLabel = document.createElement('td'); tdLabel.className='left';
     tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
     tdLabel.appendChild(buildLegLabelNode(bet));
@@ -2734,15 +2808,18 @@ function renderTopBetsTable(container, cachedFetch, topN){
     } else {
       tdGame.textContent = bet.game;
     }
+
+    const tdVsOpp = document.createElement('td'); tdVsOpp.className='left';
+    tdVsOpp.style.cssText = cellStyle.replace('text-align:center;','');
+    if(isProp) tdVsOpp.appendChild(buildVsOpponentCell(bet));
+    else tdVsOpp.textContent = '\u2014';
+
     const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
     tdPrice.textContent = fmtAmerican(bet.price);
-    const tdL10 = document.createElement('td'); tdL10.style.cssText = cellStyle;
-    tdL10.textContent = Math.round(bet.rate10*100)+'%';
-    const tdL15 = document.createElement('td'); tdL15.style.cssText = cellStyle;
-    tdL15.textContent = Math.round(bet.rate15*100)+'%';
-    const tdDef = document.createElement('td'); tdDef.style.cssText = cellStyle;
-    const tdAllowed = document.createElement('td'); tdAllowed.style.cssText = cellStyle;
-    if((bet.betType==='player_prop' || bet.betType==='player_prop_alt') && bet.opponent){
+
+    const tdDef = document.createElement('td'); tdDef.className='left defcol'; tdDef.style.cssText = cellStyle.replace('text-align:center;','');
+    const tdAllowed = document.createElement('td'); tdAllowed.className='defcol'; tdAllowed.style.cssText = cellStyle;
+    if(isProp && bet.opponent){
       tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
       tdAllowed.appendChild(defAllowedCell(bet.opponent, bet.statKey, bet.player, bet.team));
     } else {
@@ -2751,8 +2828,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    tr.appendChild(tdRank); tr.appendChild(tdPos); tr.appendChild(tdLabel); tr.appendChild(tdGame);
-    tr.appendChild(tdPrice); tr.appendChild(tdL10); tr.appendChild(tdL15); tr.appendChild(tdDef); tr.appendChild(tdAllowed); tr.appendChild(tdTrack);
+    [tdRank, tdPos, tdL5, tdL10, tdL15, tdLabel, tdGame, tdVsOpp, tdPrice, tdDef, tdAllowed, tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
   });
   wrap.appendChild(table);
@@ -3385,9 +3461,9 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   [{short:awayShort, full:ev.away_team, opp:homeShort, outcome:dkOutcome(gameMarkets['h2h'], ev.away_team)},
    {short:homeShort, full:ev.home_team, opp:awayShort, outcome:dkOutcome(gameMarkets['h2h'], ev.home_team)}].forEach(side=>{
     if(!side.outcome) return;
-    const r10 = teamMoneylineHitRate(side.short, 10), r15 = teamMoneylineHitRate(side.short, 15);
+    const r5 = teamMoneylineHitRate(side.short, 5), r10 = teamMoneylineHitRate(side.short, 10), r15 = teamMoneylineHitRate(side.short, 15);
     if(r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
-      candidates.push({label:`${side.full} Moneyline`, price:side.outcome.price, rate10:r10.rate, rate15:r15.rate,
+      candidates.push({label:`${side.full} Moneyline`, price:side.outcome.price, rate5:r5.rate, rate10:r10.rate, rate15:r15.rate, gp5:r5.gp, gp10:r10.gp, gp15:r15.gp,
         betType:'moneyline', team:side.short, opponent:side.opp, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     }
   });
@@ -3397,9 +3473,9 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
    {short:homeShort, full:ev.home_team, opp:awayShort, outcome:dkOutcome(gameMarkets['spreads'], ev.home_team)}].forEach(side=>{
     if(!side.outcome) return;
     const pt = side.outcome.point;
-    const r10 = teamSpreadHitRate(side.short, pt, 10), r15 = teamSpreadHitRate(side.short, pt, 15);
+    const r5 = teamSpreadHitRate(side.short, pt, 5), r10 = teamSpreadHitRate(side.short, pt, 10), r15 = teamSpreadHitRate(side.short, pt, 15);
     if(r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
-      candidates.push({label:`${side.full} ${pt>0?'+':''}${pt}`, price:side.outcome.price, rate10:r10.rate, rate15:r15.rate,
+      candidates.push({label:`${side.full} ${pt>0?'+':''}${pt}`, price:side.outcome.price, rate5:r5.rate, rate10:r10.rate, rate15:r15.rate, gp5:r5.gp, gp10:r10.gp, gp15:r15.gp,
         betType:'spread', team:side.short, opponent:side.opp, line:pt, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     }
   });
@@ -3411,12 +3487,13 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
     const point = over ? over.point : (under ? under.point : undefined);
     if(point===undefined) return;
     const r10 = teamTotalHitRate(awayShort, point, 10), r15 = teamTotalHitRate(awayShort, point, 15);
+    const r5 = teamTotalHitRate(awayShort, point, 5);
     if(over && r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
-      candidates.push({label:`Game Total Over ${point}`, price:over.price, rate10:r10.rate, rate15:r15.rate,
+      candidates.push({label:`Game Total Over ${point}`, price:over.price, rate5:r5.rate, rate10:r10.rate, rate15:r15.rate, gp5:r5.gp, gp10:r10.gp, gp15:r15.gp,
         betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     }
     if(under && r10.gp>0 && r15.gp>0 && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
-      candidates.push({label:`Game Total Under ${point}`, price:under.price, rate10:1-r10.rate, rate15:1-r15.rate,
+      candidates.push({label:`Game Total Under ${point}`, price:under.price, rate5:1-r5.rate, rate10:1-r10.rate, rate15:1-r15.rate, gp5:r5.gp, gp10:r10.gp, gp15:r15.gp,
         betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     }
   })();
@@ -3430,12 +3507,13 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
       const point = over ? over.point : (under ? under.point : undefined);
       if(point===undefined) return;
       const r10 = teamOwnTotalHitRate(side.short, point, 10), r15 = teamOwnTotalHitRate(side.short, point, 15);
+      const r5 = teamOwnTotalHitRate(side.short, point, 5);
       if(over && r10.gp>0 && r15.gp>0 && r10.rate>=QUAL && r15.rate>=QUAL){
-        candidates.push({label:`${side.full} Team Total Over ${point}`, price:over.price, rate10:r10.rate, rate15:r15.rate,
+        candidates.push({label:`${side.full} Team Total Over ${point}`, price:over.price, rate5:r5.rate, rate10:r10.rate, rate15:r15.rate, gp5:r5.gp, gp10:r10.gp, gp15:r15.gp,
           betType:'team_total', team:side.short, opponent:side.opp, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
       if(under && r10.gp>0 && r15.gp>0 && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
-        candidates.push({label:`${side.full} Team Total Under ${point}`, price:under.price, rate10:1-r10.rate, rate15:1-r15.rate,
+        candidates.push({label:`${side.full} Team Total Under ${point}`, price:under.price, rate5:1-r5.rate, rate10:1-r10.rate, rate15:1-r15.rate, gp5:r5.gp, gp10:r10.gp, gp15:r15.gp,
           betType:'team_total', team:side.short, opponent:side.opp, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
     });
@@ -3457,17 +3535,17 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
       if(!team) return;
       const opponent = team===homeShort ? awayShort : homeShort;
       const overThreshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
-      const r10 = hitRateFor(pname, team, statKey, line, 10), r15 = hitRateFor(pname, team, statKey, line, 15);
+      const r5 = hitRateFor(pname, team, statKey, line, 5), r10 = hitRateFor(pname, team, statKey, line, 10), r15 = hitRateFor(pname, team, statKey, line, 15);
       if(!r10 || !r15) return;
       // require she actually played at least 60% of the games in BOTH windows (6-of-10, 9-of-15) —
       // otherwise a small-sample player (e.g. 2 games played all year) can slip through on a fluke rate
       if(r10.gp < MIN_GP_10 || r15.gp < MIN_GP_15) return;
       if(overO && r10.rate>=QUAL && r15.rate>=QUAL){
-        candidates.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:overO.price, rate10:r10.rate, rate15:r15.rate, gp10:r10.gp, gp15:r15.gp,
+        candidates.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:overO.price, rate5:r5?r5.rate:null, rate10:r10.rate, rate15:r15.rate, gp5:r5?r5.gp:0, gp10:r10.gp, gp15:r15.gp,
           betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'over', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
       if(underO && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
-        candidates.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:underO.price, rate10:1-r10.rate, rate15:1-r15.rate, gp10:r10.gp, gp15:r15.gp,
+        candidates.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:underO.price, rate5:r5?1-r5.rate:null, rate10:1-r10.rate, rate15:1-r15.rate, gp5:r5?r5.gp:0, gp10:r10.gp, gp15:r15.gp,
           betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'under', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
     });
