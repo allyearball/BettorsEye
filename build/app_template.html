@@ -3894,6 +3894,7 @@ async function renderBetTrackerPage(){
   main.appendChild(analysisDiv);
 
   const actionsRow = document.createElement('div'); actionsRow.style.cssText='display:flex;gap:10px;margin:14px 0;flex-wrap:wrap;';
+  const refreshBtn = document.createElement('button'); refreshBtn.className='addbtn'; refreshBtn.textContent = '\ud83d\udd04 Refresh';
   const gradeBtn = document.createElement('button'); gradeBtn.className='addbtn'; gradeBtn.textContent = '\u2705 Auto-Grade Pending Bets';
   const addFormBtn = document.createElement('button'); addFormBtn.className='addbtn'; addFormBtn.textContent = '+ Add Bet Manually';
   const importBtn = document.createElement('button'); importBtn.className='addbtn'; importBtn.textContent = '\u2b07 Import From Odds History';
@@ -3901,9 +3902,19 @@ async function renderBetTrackerPage(){
   const bulkJsonBtn = document.createElement('button'); bulkJsonBtn.className='addbtn'; bulkJsonBtn.textContent = '\ud83d\udcc4 Bulk Import JSON';
   const deleteAllBtn = document.createElement('button'); deleteAllBtn.textContent = '\ud83d\uddd1\ufe0f Delete All Tracked Bets';
   deleteAllBtn.style.cssText = 'padding:8px 14px;border-radius:6px;border:1px solid var(--red);background:#fff;color:var(--red);font-size:13px;cursor:pointer;font-family:var(--sans);font-weight:700;';
-  actionsRow.appendChild(gradeBtn); actionsRow.appendChild(addFormBtn); actionsRow.appendChild(importBtn);
+  actionsRow.appendChild(refreshBtn); actionsRow.appendChild(gradeBtn); actionsRow.appendChild(addFormBtn); actionsRow.appendChild(importBtn);
   actionsRow.appendChild(screenshotBtn); actionsRow.appendChild(bulkJsonBtn); actionsRow.appendChild(deleteAllBtn);
   main.appendChild(actionsRow);
+
+  // Reloads the tracked-bets list from your Worker (so it picks up anything added elsewhere
+  // since this page opened) and re-grades every still-pending bet against whatever box scores
+  // have landed by now \u2014 same underlying logic that already runs once automatically on page
+  // load, just re-runnable on demand without needing to leave and come back to this page.
+  refreshBtn.addEventListener('click', async ()=>{
+    refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing\u2026';
+    await refresh();
+    refreshBtn.disabled = false; refreshBtn.textContent = '\ud83d\udd04 Refresh';
+  });
 
   deleteAllBtn.addEventListener('click', async ()=>{
     if(!bets.length){ alert('Nothing to delete \u2014 the tracker is already empty.'); return; }
