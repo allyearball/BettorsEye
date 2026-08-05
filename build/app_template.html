@@ -4404,9 +4404,21 @@ async function renderBetTrackerPage(){
     const out = [];
     betList.forEach(b=>{
       if(b.isParlay && Array.isArray(b.legs)){
-        b.legs.forEach(leg=>{ out.push(Object.assign({}, leg, {_legResult: gradeLeg(leg)})); });
+        b.legs.forEach(leg=>{
+          // Trust this leg's own stored result if it has one (e.g. from a spreadsheet import
+          // where the actual outcome is already known) \u2014 only fall back to re-deriving it
+          // from box scores when it's genuinely still pending. Re-deriving unconditionally was
+          // the bug: gradeLeg() silently returns null (counted as neither win nor loss) whenever
+          // it can't cleanly match team/opponent/date/player against this app's box score data
+          // (very common for "Live" in-game props, and guaranteed for any leg missing team info),
+          // which quietly dropped already-known results out of these leg-level breakdowns even
+          // though the bet count itself stayed accurate.
+          const legResult = (leg.result && leg.result!=='pending') ? leg.result : gradeLeg(leg);
+          out.push(Object.assign({}, leg, {_legResult: legResult}));
+        });
       } else {
-        out.push(Object.assign({}, b, {_legResult: gradeTrackedBet(b)}));
+        const betResult = (b.result && b.result!=='pending') ? b.result : gradeTrackedBet(b);
+        out.push(Object.assign({}, b, {_legResult: betResult}));
       }
     });
     return out;
