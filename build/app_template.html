@@ -3879,6 +3879,13 @@ function findHistoricalGame(team, opponent, gameDate){
     const exact = candidates.find(g=>g.date===gameDate);
     if(exact) return exact;
   }
+  // Never fuzzy-match a game that's today or in the future relative to the requested date —
+  // there's no historical result to "guess" yet. Without this check, a bet on today's game
+  // (no exact match yet, since it hasn't been played/ingested) would silently fall back to the
+  // closest PAST meeting between the same two teams (they play each other multiple times a
+  // season) and get incorrectly graded against that old game instead of staying pending.
+  const todayStr = new Date().toISOString().slice(0,10);
+  if(gameDate && gameDate >= todayStr) return null;
   if(gameDate){
     candidates.sort((a,b)=> Math.abs(new Date(a.date)-new Date(gameDate)) - Math.abs(new Date(b.date)-new Date(gameDate)));
   }
