@@ -2418,8 +2418,9 @@ async function renderHomePage(){
       }catch(e){ console.warn('Detail fetch failed for', ev.id, e); }
       cachedForToday.push({ev, detail});
     }
-    renderTopBetsTable(contentDiv, cachedForToday, 30);
-    renderAdvancedTopBetsTable(contentDiv2, cachedForToday, 30);
+    const liveGames = await fetchLiveGamesToday();
+    renderTopBetsTable(contentDiv, cachedForToday, 30, liveGames);
+    renderAdvancedTopBetsTable(contentDiv2, cachedForToday, 30, liveGames);
     maybeSnapshotTodaysTopBets(cachedForToday); // fire-and-forget; see its own comment for the noon-ET logic
     statusDiv.textContent = `Showing today\u2019s top bets across ${todaysGames.length} game(s). Tap Refresh to pull the latest lines again.`;
   }catch(e){
@@ -3073,7 +3074,8 @@ function computeStandardTopBets(cachedFetch, topN){
   return { todaysGames, topBets: pool.slice(0, topN) };
 }
 
-function renderTopBetsTable(container, cachedFetch, topN){
+function renderTopBetsTable(container, cachedFetch, topN, liveGames){
+  liveGames = liveGames || [];
   topN = topN || 30;
   container.innerHTML = '';
   if(!cachedFetch.length) return;
@@ -3140,6 +3142,11 @@ function renderTopBetsTable(container, cachedFetch, topN){
     const tdLabel = document.createElement('td'); tdLabel.className='left';
     tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
     tdLabel.appendChild(buildLegLabelNode(bet));
+    const subLine1 = document.createElement('div');
+    subLine1.style.cssText = 'font-size:10.5px;color:var(--sub);margin-top:2px;';
+    subLine1.textContent = buildBetSubLineBase(bet);
+    tdLabel.appendChild(subLine1);
+    enhanceBetSubLineIfLive(bet, liveGames, subLine1);
 
     const tdOverall = document.createElement('td'); tdOverall.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
     tdOverall.textContent = Math.round(worstCaseRate(bet)*100)+'%';
@@ -3195,7 +3202,8 @@ function renderTopBetsTable(container, cachedFetch, topN){
 // Second Top Bets table, ranked by the advanced-analytics edge score instead of simple hit
 // rate (see buildAdvancedEdgeCandidates above). Same today + Q1-grace eligibility window as
 // the main table, same -250 price floor, but player props only.
-function renderAdvancedTopBetsTable(container, cachedFetch, topN){
+function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames){
+  liveGames = liveGames || [];
   topN = topN || 30;
   container.innerHTML = '';
   if(!cachedFetch.length) return;
@@ -3252,6 +3260,11 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
     tdPos.textContent = getPlayerPosition(bet.player, bet.team) || '\u2014';
     const tdLabel = document.createElement('td'); tdLabel.className='left'; tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
     tdLabel.appendChild(buildLegLabelNode(bet));
+    const subLine2 = document.createElement('div');
+    subLine2.style.cssText = 'font-size:10.5px;color:var(--sub);margin-top:2px;';
+    subLine2.textContent = buildBetSubLineBase(bet);
+    tdLabel.appendChild(subLine2);
+    enhanceBetSubLineIfLive(bet, liveGames, subLine2);
     const tdGame = document.createElement('td'); tdGame.className='left'; tdGame.style.cssText = cellStyle.replace('text-align:center;','') + 'color:var(--sub);';
     const gameTeams = bet.game.split(' @ ');
     if(gameTeams.length===2){
@@ -4060,6 +4073,79 @@ function nowInEastern(){
     dateStr: `${get('year')}-${String(get('month')).padStart(2,'0')}-${String(get('day')).padStart(2,'0')}`,
     hour: get('hour'), minute: get('minute'),
   };
+}
+
+// ================= Live game state (for the Bet cell's second line on the Home page) =================
+// Same Worker-proxy pattern as the gap-fill feature \u2014 the Worker fetches ESPN's live
+// scoreboard/box score from Cloudflare's network. These two specific routes are unauthenticated
+// (public score data) since they're called directly from the browser, not from build.py.
+async function fetchLiveGamesToday(){
+  try{
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    if(!workerBase) return [];
+    const et = nowInEastern();
+    const data = await fetchJson(`${workerBase}/livegames?date=${et.dateStr}`);
+    if(data && data.error) throw new Error(data.error);
+    return data.games || [];
+  }catch(e){ console.warn('Live games fetch failed', e); return []; }
+}
+const _liveBoxscoreCache = {};
+async function fetchLiveBoxscoreCached(eventId){
+  if(_liveBoxscoreCache[eventId]) return _liveBoxscoreCache[eventId];
+  try{
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    if(!workerBase) return [];
+    const data = await fetchJson(`${workerBase}/liveboxscore?event=${eventId}`);
+    if(data && data.error) throw new Error(data.error);
+    _liveBoxscoreCache[eventId] = data.rows || [];
+    return _liveBoxscoreCache[eventId];
+  }catch(e){ console.warn('Live boxscore fetch failed for', eventId, e); return []; }
+}
+function findLiveGameForBet(liveGames, bet){
+  if(!bet.team || !bet.opponent) return null;
+  return liveGames.find(g =>
+    (g.homeShort===bet.team && g.awayShort===bet.opponent) || (g.awayShort===bet.team && g.homeShort===bet.opponent)
+  ) || null;
+}
+function shortPlayerName(fullName){
+  if(!fullName) return '';
+  const parts = fullName.trim().split(/\s+/);
+  if(parts.length<2) return fullName;
+  return `${parts[0][0]}. ${parts.slice(1).join(' ')}`;
+}
+const STAT_SHORT_LABEL = {pts:'PTS', reb:'REB', ast:'AST', tpm:'3PM', pra:'PRA'};
+// Synchronous part \u2014 matchup (@ ) and start time (ET), always shown, no live fetch needed.
+function buildBetSubLineBase(bet){
+  const gameTeams = (bet.game||'').split(' @ ');
+  const awayFull = gameTeams[0], homeFull = gameTeams[1];
+  const awayShort = SHORT_TEAM_NAME[awayFull] || awayFull;
+  const homeShort = SHORT_TEAM_NAME[homeFull] || homeFull;
+  const startTimeET = bet.commenceTime ? new Date(bet.commenceTime).toLocaleTimeString('en-US', {timeZone:'America/New_York', hour:'numeric', minute:'2-digit'}) + ' ET' : '';
+  return `${awayShort} @ ${homeShort}${startTimeET ? ' \u2014 '+startTimeET : ''}`;
+}
+// Async part \u2014 only does anything once the game has actually started: appends live quarter/
+// clock, score, and (for player props) that player's current in-game value for the exact stat
+// being bet on, e.g. "1Q 7:43 | NY 17 - IND 20 | 0 AST C. Clark". Patches the element in place
+// rather than blocking the table's initial render on a live-score fetch.
+async function enhanceBetSubLineIfLive(bet, liveGames, subLineEl){
+  const live = findLiveGameForBet(liveGames, bet);
+  if(!live || !live.started) return;
+  const quarterLabel = live.completed ? 'Final' : `${live.period||'?'}Q ${live.displayClock||''}`.trim();
+  const scoreLabel = `${live.awayShort} ${live.awayScore!=null?live.awayScore:'\u2014'} - ${live.homeShort} ${live.homeScore!=null?live.homeScore:'\u2014'}`;
+  let extra = ` | ${quarterLabel} | ${scoreLabel}`;
+  if((bet.betType==='player_prop' || bet.betType==='player_prop_alt') && bet.player && bet.statKey){
+    const rows = await fetchLiveBoxscoreCached(live.espnEventId);
+    const row = rows.find(r => r.athlete_display_name===bet.player);
+    if(row){
+      const val = bet.statKey==='pra' ? (row.points||0)+(row.rebounds||0)+(row.assists||0)
+        : bet.statKey==='pts' ? row.points : bet.statKey==='reb' ? row.rebounds : bet.statKey==='ast' ? row.assists
+        : bet.statKey==='tpm' ? row.three_point_field_goals_made : null;
+      if(val!==null && val!==undefined){
+        extra += ` | ${val} ${STAT_SHORT_LABEL[bet.statKey]||bet.statKey.toUpperCase()} ${shortPlayerName(bet.player)}`;
+      }
+    }
+  }
+  subLineEl.textContent += extra;
 }
 
 // Once per day, at the first opportunity on or after 12:00pm ET (there's no server process
