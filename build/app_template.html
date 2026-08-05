@@ -2928,7 +2928,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th class="left">Vs Opponent This Season</th><th>Price</th>'
     +'<th class="th-l5">L5</th><th class="th-l10b">L10</th><th class="th-l15b">L15</th><th class="th-full">Season</th>'
     +'<th class="th-agree">Agree</th><th class="th-dvp">DvP Idx</th><th class="left">Injury</th><th></th></tr>';
   appendDefIcon(thead.querySelector('.th-l5'), 'EMA (exponential moving average) of this stat over her last 5 games played, plus how many of those 5 games actually cleared this specific line on this specific side (Over/Under) \u2014 e.g. "21.4 (4/5)" means an EMA of 21.4 and she hit this side in 4 of her last 5 games.');
@@ -2956,6 +2956,8 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
       tdGame.appendChild(document.createTextNode(' @ '));
       tdGame.appendChild(teamLinkEl(gameTeams[1], gameTeams[1]));
     } else { tdGame.textContent = bet.game; }
+    const tdVsOpp = document.createElement('td'); tdVsOpp.className='left'; tdVsOpp.style.cssText = cellStyle.replace('text-align:center;','');
+    tdVsOpp.appendChild(buildVsOpponentCell(bet));
     const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
     tdPrice.textContent = fmtAmerican(bet.price);
     const mk = (v, hc) => {
@@ -2976,7 +2978,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
     else tdInjury.textContent = '\u2014';
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdRank,tdPos,tdLabel,tdGame,tdPrice,tdL5,tdL10,tdL15,tdFull,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
+    [tdRank,tdPos,tdLabel,tdGame,tdVsOpp,tdPrice,tdL5,tdL10,tdL15,tdFull,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
   });
   wrap.appendChild(table);
