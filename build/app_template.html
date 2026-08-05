@@ -1178,7 +1178,7 @@ function computePlayerAdvancedLog(pl, team){
       ptsEma: emaOf(cumPts, Math.min(10,cumPts.length)), ptsStd: stdDevOf(trailPts), ptsIqr: iqrOf(trailPts),
       rebEma: emaOf(cumReb, Math.min(10,cumReb.length)), rebStd: stdDevOf(trailReb), rebIqr: iqrOf(trailReb),
       astEma: emaOf(cumAst, Math.min(10,cumAst.length)), astStd: stdDevOf(trailAst), astIqr: iqrOf(trailAst),
-      dvpPts: dvpIndex(oppShort, 'pts', bucket), dvpReb: dvpIndex(oppShort, 'reb', bucket), dvpAst: dvpIndex(oppShort, 'ast', bucket),
+      dvpPts: dvpIndexAsOf(oppShort, 'pts', bucket, g.date), dvpReb: dvpIndexAsOf(oppShort, 'reb', bucket, g.date), dvpAst: dvpIndexAsOf(oppShort, 'ast', bucket, g.date),
     });
   });
   return rows;
@@ -1197,6 +1197,79 @@ const PLAYER_LOG_COLS = [
 ];
 const STAT_KEYS_FOR_SUMMARY = ['min','pts','fgm','fga','fgPct','tpm','tpa','tpPct','ftm','fta','ftPct',
   'oreb','dreb','reb','ast','stl','blk','to','pf','plusMinus'];
+
+// Same box score columns as the main log, plus point-in-time DvP for the specific opponent
+// every row in this table is against (see dvpIndexAsOf above).
+const PLAYER_VS_OPP_COLS = PLAYER_LOG_COLS.concat([
+  {key:'dvpPts', label:'DvP-PTS', round2:true}, {key:'dvpReb', label:'DvP-REB', round2:true}, {key:'dvpAst', label:'DvP-AST', round2:true},
+]);
+
+function gamesVsOpponentRows(playerName, team, opponentShort){
+  const rec = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!rec) return [];
+  const oppFull = FULL_TEAM_NAME[opponentShort] || opponentShort;
+  const bucket = positionBucket(getPlayerPosition(playerName, team));
+  return rec.log.filter(g => g.opp===opponentShort || g.opp===oppFull).map(g=>({
+    date: g.date, opp: g.opp, homeAway: g.homeAway, starter: g.starter, dnp: g.dnp,
+    min: g.min, pts: g.pts, fgm: g.fgm, fga: g.fga, fgPct: g.fgPct,
+    tpm: g.tpm, tpa: g.tpa, tpPct: g.tpPct, ftm: g.ftm, fta: g.fta, ftPct: g.ftPct,
+    oreb: g.oreb, dreb: g.dreb, reb: g.reb, ast: g.ast, stl: g.stl, blk: g.blk,
+    to: g.to, pf: g.pf, plusMinus: g.plusMinus,
+    dvpPts: dvpIndexAsOf(opponentShort, 'pts', bucket, g.date),
+    dvpReb: dvpIndexAsOf(opponentShort, 'reb', bucket, g.date),
+    dvpAst: dvpIndexAsOf(opponentShort, 'ast', bucket, g.date),
+  }));
+}
+// Same Total/Min/Max/Average/Median/Mode footer pattern used by the main box score table,
+// factored out so the Vs Opponent table (and its advanced-metrics counterpart) can reuse it
+// exactly rather than re-implementing it.
+function buildStandardFooterRows(rows, statKeys){
+  const footerRows = [];
+  const labels = [
+    {label:'TOTAL (games played)', fn: arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)*100)/100 : null},
+    {label:'MIN (games played)', fn: arr => arr.length ? Math.min(...arr) : null},
+    {label:'MAX (games played)', fn: arr => arr.length ? Math.max(...arr) : null},
+    {label:'AVERAGE (games played)', fn: arr => arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*100)/100 : null},
+    {label:'MEDIAN (games played)', fn: median},
+    {label:'MODE (games played)', fn: mode},
+  ];
+  labels.forEach(({label, fn})=>{
+    const values = {};
+    statKeys.forEach(k=>{ values[k] = fn(statValues(rows, k)); });
+    footerRows.push({label, values});
+  });
+  return footerRows;
+}
+// Reuses computePlayerAdvancedLog exactly (same EMA/StdDev/IQR/USG%/DvP math), just fed a
+// pseudo player-log restricted to games against one specific opponent \u2014 so "her advanced
+// metrics vs this team" is the identical calculation as the main table, over a smaller series.
+function computePlayerAdvancedLogVsOpponent(playerName, team, opponentShort){
+  const rec = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!rec) return [];
+  const oppFull = FULL_TEAM_NAME[opponentShort] || opponentShort;
+  const subLog = rec.log.filter(g => g.opp===opponentShort || g.opp===oppFull);
+  return computePlayerAdvancedLog({player: playerName, log: subLog}, team);
+}
+// Best-effort live lookup of a team's next scheduled opponent, via the same Odds API this
+// app already proxies through your Worker for the Odds page \u2014 there's no schedule/fixtures
+// data baked into the season dataset itself, only completed box scores, so this is the only
+// way to know "who's next" at all. Returns null (not an error) if it can't be determined \u2014
+// no Worker URL configured, no upcoming odds posted yet, network hiccup, etc.
+async function fetchNextOpponent(teamShort){
+  try{
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    if(!workerBase) return null;
+    const events = await fetchJson(`${workerBase}/v4/sports/basketball_wnba/odds?regions=us&markets=h2h`);
+    const fullName = FULL_TEAM_NAME[teamShort];
+    const now = new Date();
+    const upcoming = (events||[]).filter(ev => (ev.home_team===fullName || ev.away_team===fullName) && new Date(ev.commence_time) > now);
+    upcoming.sort((a,b)=> new Date(a.commence_time)-new Date(b.commence_time));
+    if(!upcoming.length) return null;
+    const ev = upcoming[0];
+    const oppFull = ev.home_team===fullName ? ev.away_team : ev.home_team;
+    return SHORT_TEAM_NAME[oppFull] || oppFull;
+  }catch(e){ return null; }
+}
 
 function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   windowMode = windowMode===undefined ? 10 : windowMode; // default matches prior behavior
@@ -1331,10 +1404,60 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
 
   const t5 = document.createElement('div'); t5.className='section-title'; t5.textContent='Advanced Metrics \u2014 Same Games, Forecasting View'; main.appendChild(t5);
   const adv2Footnote = document.createElement('div'); adv2Footnote.className='footnote'; adv2Footnote.style.marginBottom='8px';
-  adv2Footnote.textContent = 'Same games as the box score table above, but built for forecasting against a sportsbook line instead of describing what already happened. USG% is the standard Basketball-Reference formula. EMA (exponential moving average) weights recent games more heavily and is computed using every game up to and including that row, oldest to newest. StdDev/IQR use a trailing window of up to the last 10 games played (not the calendar window above) \u2014 a high value means the average is a less reliable predictor of any single game than it looks. DvP Index compares that game\u2019s opponent to the league-average defense against her position for that stat: above 1.05 is a plus matchup (favors the Over), below 0.95 is a tougher one. "Potential Assists" isn\u2019t included \u2014 it genuinely can\u2019t be computed from this app\u2019s data source (see the Team page\u2019s Advanced Metrics section for the longer explanation).';
+  adv2Footnote.textContent = 'Same games as the box score table above, but built for forecasting against a sportsbook line instead of describing what already happened. USG% is the standard Basketball-Reference formula. EMA (exponential moving average) weights recent games more heavily and is computed using every game up to and including that row, oldest to newest. StdDev/IQR use a trailing window of up to the last 10 games played (not the calendar window above) \u2014 a high value means the average is a less reliable predictor of any single game than it looks. DvP Index compares that game\u2019s opponent to the league-average defense against her position for that stat, using ONLY games that had already been played before that game\u2019s tip-off (not the final, full-season DvP, which would leak in results from games that hadn\u2019t happened yet) \u2014 above 1.05 is a plus matchup (favors the Over), below 0.95 is a tougher one. "Potential Assists" isn\u2019t included \u2014 it genuinely can\u2019t be computed from this app\u2019s data source (see the Team page\u2019s Advanced Metrics section for the longer explanation).';
   main.appendChild(adv2Footnote);
   const advLogRows = computePlayerAdvancedLog(pl, team);
   makeTable(main, PLAYER_ADV_COLS, advLogRows, {defaultSort:'date', defaultDir:'desc', hideLabel:'Hide games she didn\u2019t play (DNP)'});
+
+  // ---- Vs Opponent: full-season gamelog + advanced metrics against one selected team ----
+  const t6 = document.createElement('div'); t6.className='section-title'; t6.textContent='Vs. Opponent \u2014 Full Season Gamelog'; main.appendChild(t6);
+  const vsOppNote = document.createElement('div'); vsOppNote.className='footnote'; vsOppNote.style.marginBottom='8px';
+  vsOppNote.textContent = 'Defaults to her actual next scheduled opponent when that can be looked up from live odds (this app has no schedule/fixtures data otherwise, only completed box scores); if that lookup comes back empty, defaults to the first team alphabetically instead. Change the dropdown to see any matchup from this season. DvP Index shown per row is point-in-time (as of right before that specific game), same as the table above \u2014 not the final, full-season DvP.';
+  main.appendChild(vsOppNote);
+
+  const vsOppControls = document.createElement('div'); vsOppControls.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:14px;';
+  const vsOppLabel = document.createElement('div'); vsOppLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;'; vsOppLabel.textContent='Opponent:';
+  const vsOppSelect = document.createElement('select'); vsOppSelect.style.cssText='padding:6px 10px;border:1px solid var(--line);border-radius:6px;font-size:12.5px;font-family:var(--sans);background:#fff;';
+  const opponentTeams = TEAM_NAMES.filter(t=>t!==team).slice().sort();
+  opponentTeams.forEach(t=>{ const op=document.createElement('option'); op.value=t; op.textContent=FULL_TEAM_NAME[t]||t; vsOppSelect.appendChild(op); });
+  if(opponentTeams.length) vsOppSelect.value = opponentTeams[0];
+  vsOppControls.appendChild(vsOppLabel); vsOppControls.appendChild(vsOppSelect);
+  main.appendChild(vsOppControls);
+
+  const vsOppStdContainer = document.createElement('div'); main.appendChild(vsOppStdContainer);
+  const t7 = document.createElement('div'); t7.className='section-title'; t7.textContent='Vs. Opponent \u2014 Advanced Metrics'; main.appendChild(t7);
+  const vsOppAdvNote = document.createElement('div'); vsOppAdvNote.className='footnote'; vsOppAdvNote.style.marginBottom='8px';
+  vsOppAdvNote.textContent = 'Same games as the table above, same advanced-metrics calculation as the main Advanced Metrics table (EMA/StdDev/IQR/USG%/point-in-time DvP) \u2014 just computed over only her meetings with this specific opponent, so EMA/StdDev/IQR reflect how consistent she\u2019s been against this team specifically rather than her overall recent form.';
+  main.appendChild(vsOppAdvNote);
+  const vsOppAdvContainer = document.createElement('div'); main.appendChild(vsOppAdvContainer);
+
+  function renderVsOpponentTables(opponentShort){
+    vsOppStdContainer.innerHTML = ''; vsOppAdvContainer.innerHTML = '';
+    if(!opponentShort) return;
+    const rows = gamesVsOpponentRows(playerName, team, opponentShort);
+    if(!rows.length){
+      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;';
+      na.textContent = `No meetings with ${FULL_TEAM_NAME[opponentShort]||opponentShort} yet this season.`;
+      vsOppStdContainer.appendChild(na);
+      vsOppAdvContainer.appendChild(na.cloneNode(true));
+      return;
+    }
+    const footerRows = buildStandardFooterRows(rows, STAT_KEYS_FOR_SUMMARY);
+    makeTable(vsOppStdContainer, PLAYER_VS_OPP_COLS, rows, {defaultSort:'date', defaultDir:'desc', footerRows});
+    const advRows = computePlayerAdvancedLogVsOpponent(playerName, team, opponentShort);
+    makeTable(vsOppAdvContainer, PLAYER_ADV_COLS, advRows, {defaultSort:'date', defaultDir:'desc'});
+  }
+  vsOppSelect.addEventListener('change', ()=>renderVsOpponentTables(vsOppSelect.value));
+  renderVsOpponentTables(vsOppSelect.value);
+
+  // Best-effort upgrade: if her actual next opponent can be found live, switch the dropdown
+  // to it automatically. Silently does nothing if the lookup fails or finds no upcoming game.
+  fetchNextOpponent(team).then(opp=>{
+    if(opp && opponentTeams.includes(opp) && vsOppSelect.value !== opp){
+      vsOppSelect.value = opp;
+      renderVsOpponentTables(opp);
+    }
+  });
 }
 
 /* ---------- nav ---------- */
@@ -1366,7 +1489,7 @@ function buildNav(){
 function buildTopLinks(){
   const tl = document.getElementById('toplinks');
   const homeBtn = document.createElement('button'); homeBtn.textContent='Home'; homeBtn.classList.add('active');
-  const explorerBtn = document.createElement('button'); explorerBtn.textContent='Team Explorer';
+  const explorerBtn = document.createElement('button'); explorerBtn.textContent='Stats';
   const oddsBtn = document.createElement('button'); oddsBtn.textContent='DraftKings Odds (Live)';
   const trackerBtn = document.createElement('button'); trackerBtn.textContent='Bet Tracker';
   const appTrackerBtn = document.createElement('button'); appTrackerBtn.textContent='App Tracker';
@@ -1438,7 +1561,7 @@ function teamLinkEl(teamNameOrShort, displayText){
     // Coming from the Odds/Top Bets pages, the Team Explorer sidebar is hidden \u2014 bring it
     // up and mark "Team Explorer" active so the click doesn't strand the user with no way
     // back to the rest of Team Explorer, same as clicking it from the top nav would.
-    const explorerBtn = [...document.querySelectorAll('#toplinks button')].find(b=>b.textContent==='Team Explorer');
+    const explorerBtn = [...document.querySelectorAll('#toplinks button')].find(b=>b.textContent==='Stats');
     document.querySelectorAll('#toplinks button').forEach(b=>b.classList.remove('active'));
     if(explorerBtn) explorerBtn.classList.add('active');
     nav.style.display = '';
@@ -1569,6 +1692,85 @@ function getDefenseRank(opponentTeam, statKey, bucket){
   return (ranks[opponentTeam] && ranks[opponentTeam][bucket] && ranks[opponentTeam][bucket][statKey]) || null;
 }
 const POSITION_LABEL = {G:'Guards', F:'Forwards', C:'Centers'};
+
+// Point-in-time variants of the DvP system above, used in player gamelogs so a historical
+// game's DvP reflects what the opponent's defense actually looked like BEFORE that game tipped
+// off \u2014 not the final, full-season DvP (which would leak in games that happened afterward).
+// Cached per cutoff date since a given date can recur across many players/rows in one session.
+const _dvpAsOfCache = {};
+function computeDefenseVsPositionAsOf(cutoffDate){
+  if(_dvpAsOfCache[cutoffDate]) return _dvpAsOfCache[cutoffDate];
+  const STAT_KEYS = ['pts','reb','ast','tpm','pra'];
+  const BUCKETS = ['G','F','C'];
+  const allowed = {}; const gamesPlayed = {};
+  TEAM_NAMES.forEach(team=>{
+    allowed[team] = {}; BUCKETS.forEach(b=>{ allowed[team][b] = {pts:0,reb:0,ast:0,tpm:0,pra:0}; });
+    gamesPlayed[team] = 0;
+  });
+  Object.values(DATA.games).forEach(g=>{
+    if(g.date >= cutoffDate) return; // strictly before \u2014 this game itself doesn't count toward its own pre-game DvP
+    if(gamesPlayed[g.home]!==undefined) gamesPlayed[g.home]++;
+    if(gamesPlayed[g.away]!==undefined) gamesPlayed[g.away]++;
+    g.rows.forEach(r=>{
+      if(r.dnp) return;
+      const bucket = positionBucket(r.pos);
+      if(!bucket) return;
+      const defTeam = r.team===g.home ? g.away : g.home;
+      if(!allowed[defTeam]) return;
+      const acc = allowed[defTeam][bucket];
+      acc.pts += r.pts||0; acc.reb += r.reb||0; acc.ast += r.ast||0; acc.tpm += r.tpm||0;
+      acc.pra += (r.pts||0)+(r.reb||0)+(r.ast||0);
+    });
+  });
+  const perGame = {};
+  TEAM_NAMES.forEach(team=>{
+    const gp = gamesPlayed[team];
+    perGame[team] = {};
+    BUCKETS.forEach(b=>{ perGame[team][b] = {}; STAT_KEYS.forEach(k=>{ perGame[team][b][k] = gp ? allowed[team][b][k]/gp : null; }); });
+  });
+  const ranks = {};
+  TEAM_NAMES.forEach(team=>{ ranks[team] = {G:{},F:{},C:{}}; });
+  BUCKETS.forEach(bucket=>{
+    STAT_KEYS.forEach(statKey=>{
+      const withData = TEAM_NAMES.filter(t=> perGame[t][bucket][statKey]!==null);
+      const sorted = withData.slice().sort((a,b)=> perGame[a][bucket][statKey]-perGame[b][bucket][statKey]);
+      sorted.forEach((team,i)=>{ ranks[team][bucket][statKey] = { rank:i+1, of:sorted.length, perGame: Math.round(perGame[team][bucket][statKey]*10)/10 }; });
+    });
+  });
+  _dvpAsOfCache[cutoffDate] = ranks;
+  return ranks;
+}
+function getDefenseRankAsOf(opponentTeam, statKey, bucket, cutoffDate){
+  if(!bucket) return null;
+  const ranks = computeDefenseVsPositionAsOf(cutoffDate);
+  return (ranks[opponentTeam] && ranks[opponentTeam][bucket] && ranks[opponentTeam][bucket][statKey]) || null;
+}
+const _dvpBaselineAsOfCache = {};
+function computeDvpBaselineAsOf(cutoffDate){
+  if(_dvpBaselineAsOfCache[cutoffDate]) return _dvpBaselineAsOfCache[cutoffDate];
+  const ranks = computeDefenseVsPositionAsOf(cutoffDate);
+  const baseline = {};
+  ['G','F','C'].forEach(b=>{
+    baseline[b] = {};
+    ['pts','reb','ast','tpm','pra'].forEach(k=>{
+      const vals = TEAM_NAMES.map(t=> ranks[t] && ranks[t][b] && ranks[t][b][k] ? ranks[t][b][k].perGame : null).filter(v=>v!==null);
+      baseline[b][k] = vals.length ? vals.reduce((a,b2)=>a+b2,0)/vals.length : null;
+    });
+  });
+  _dvpBaselineAsOfCache[cutoffDate] = baseline;
+  return baseline;
+}
+// The date-aware equivalent of dvpIndex() \u2014 same >1.05/<0.95 read, just computed only from
+// games that had already been played before this specific game's tip-off.
+function dvpIndexAsOf(opponentTeam, statKey, bucket, cutoffDate){
+  if(!bucket) return null;
+  const r = getDefenseRankAsOf(opponentTeam, statKey, bucket, cutoffDate);
+  if(!r) return null;
+  const baseline = computeDvpBaselineAsOf(cutoffDate);
+  const base = baseline[bucket] && baseline[bucket][statKey];
+  if(!base) return null;
+  return Math.round((r.perGame / base) * 1000) / 1000;
+}
 
 // Builds the small colored "rank/of" cell used in the player props tables. Green = worse
 // defense for that stat+position (more favorable matchup for an Over bet); red = tougher
