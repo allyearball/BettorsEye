@@ -2935,26 +2935,76 @@ function vsOpponentHitIcon(hit){
   }
   return span;
 }
-function buildVsOpponentCell(leg){
-  const stats = vsOpponentStatsForLeg(leg);
-  if(!stats) return document.createTextNode('\u2014 (no meetings yet this season)');
-  const wrap = document.createElement('div');
-  const threshold = leg.thresholdToHit!==undefined && leg.thresholdToHit!==null ? leg.thresholdToHit : leg.line;
-  const hasLine = threshold!==undefined && threshold!==null;
-  stats.games.forEach(g=>{
-    const row = document.createElement('div'); row.style.cssText = 'font-size:11px;display:flex;align-items:center;gap:4px;';
-    if(hasLine){
-      const hit = leg.side==='under' ? g.value < threshold : g.value >= threshold;
-      row.appendChild(vsOpponentHitIcon(hit));
+// Team-level equivalent of vsOpponentStatsForLeg, for bets that aren't about one player
+// (moneyline/spread/total/team_total) — every meeting between these exact two teams already
+// played this season, with whether that specific historical game would have hit THIS bet's
+// current line/side (same logic per bet type as gradeLeg, just applied to past meetings
+// instead of the specific game this bet is on).
+function computeTeamVsOpponentGames(leg){
+  if(!leg.team || !leg.opponent) return null;
+  const games = Object.values(DATA.games).filter(g =>
+    (g.home===leg.team && g.away===leg.opponent) || (g.away===leg.team && g.home===leg.opponent)
+  );
+  if(!games.length) return null;
+  const rows = games.map(g=>{
+    const isHome = g.home===leg.team;
+    const teamPts = isHome ? g.homeScore : g.awayScore;
+    const oppPts = isHome ? g.awayScore : g.homeScore;
+    let label, hit;
+    if(leg.betType==='moneyline'){
+      label = `${teamPts}-${oppPts} (${teamPts>oppPts?'W':teamPts===oppPts?'T':'L'})`;
+      hit = teamPts>oppPts;
+    } else if(leg.betType==='spread'){
+      label = `${teamPts}-${oppPts}`;
+      hit = ((teamPts-oppPts)+leg.line) > 0;
+    } else if(leg.betType==='total'){
+      const combined = teamPts+oppPts;
+      label = `${combined} total (${teamPts}-${oppPts})`;
+      hit = leg.side==='under' ? combined<leg.line : combined>leg.line;
+    } else if(leg.betType==='team_total'){
+      label = `${teamPts} pts`;
+      hit = leg.side==='under' ? teamPts<leg.line : teamPts>leg.line;
+    } else {
+      return null;
     }
-    const txt = document.createElement('span');
-    txt.textContent = `${g.date}: ${g.value} (${g.min!==null&&g.min!==undefined?g.min:'\u2014'} min)`;
+    return {date: g.date, label, hit};
+  }).filter(Boolean).sort((a,b)=>a.date.localeCompare(b.date));
+  return rows.length ? rows : null;
+}
+function buildVsOpponentCell(leg){
+  if(leg.betType==='player_prop' || leg.betType==='player_prop_alt'){
+    const stats = vsOpponentStatsForLeg(leg);
+    if(!stats) return document.createTextNode('\u2014 (no meetings yet this season)');
+    const wrap = document.createElement('div');
+    const threshold = leg.thresholdToHit!==undefined && leg.thresholdToHit!==null ? leg.thresholdToHit : leg.line;
+    const hasLine = threshold!==undefined && threshold!==null;
+    stats.games.forEach(g=>{
+      const row = document.createElement('div'); row.style.cssText = 'font-size:11px;display:flex;align-items:center;gap:4px;';
+      if(hasLine){
+        const hit = leg.side==='under' ? g.value < threshold : g.value >= threshold;
+        row.appendChild(vsOpponentHitIcon(hit));
+      }
+      const txt = document.createElement('span');
+      txt.textContent = `${g.date}: ${g.value} (${g.min!==null&&g.min!==undefined?g.min:'\u2014'} min)`;
+      row.appendChild(txt);
+      wrap.appendChild(row);
+    });
+    const avgRow = document.createElement('div'); avgRow.style.cssText = 'font-size:11px;font-weight:700;margin-top:2px;';
+    avgRow.textContent = `Avg: ${stats.avg} (${stats.n} GP)`;
+    wrap.appendChild(avgRow);
+    return wrap;
+  }
+  // Team-level bets: moneyline/spread/total/team_total
+  const rows = computeTeamVsOpponentGames(leg);
+  if(!rows) return document.createTextNode('\u2014 (no meetings yet this season)');
+  const wrap = document.createElement('div');
+  rows.forEach(r=>{
+    const row = document.createElement('div'); row.style.cssText = 'font-size:11px;display:flex;align-items:center;gap:4px;';
+    row.appendChild(vsOpponentHitIcon(r.hit));
+    const txt = document.createElement('span'); txt.textContent = `${r.date}: ${r.label}`;
     row.appendChild(txt);
     wrap.appendChild(row);
   });
-  const avgRow = document.createElement('div'); avgRow.style.cssText = 'font-size:11px;font-weight:700;margin-top:2px;';
-  avgRow.textContent = `Avg: ${stats.avg} (${stats.n} GP)`;
-  wrap.appendChild(avgRow);
   return wrap;
 }
 
@@ -3119,8 +3169,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
 
     const tdVsOpp = document.createElement('td'); tdVsOpp.className='left';
     tdVsOpp.style.cssText = cellStyle.replace('text-align:center;','');
-    if(isProp) tdVsOpp.appendChild(buildVsOpponentCell(bet));
-    else tdVsOpp.textContent = '\u2014';
+    tdVsOpp.appendChild(buildVsOpponentCell(bet));
 
     const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
     tdPrice.textContent = fmtAmerican(bet.price);
