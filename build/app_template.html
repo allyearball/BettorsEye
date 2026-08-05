@@ -1347,7 +1347,8 @@ function buildTopLinks(){
   const explorerBtn = document.createElement('button'); explorerBtn.textContent='Team Explorer';
   const oddsBtn = document.createElement('button'); oddsBtn.textContent='DraftKings Odds (Live)';
   const trackerBtn = document.createElement('button'); trackerBtn.textContent='Bet Tracker';
-  function clearActive(){ [homeBtn,explorerBtn,oddsBtn,trackerBtn].forEach(b=>b.classList.remove('active')); }
+  const appTrackerBtn = document.createElement('button'); appTrackerBtn.textContent='App Tracker';
+  function clearActive(){ [homeBtn,explorerBtn,oddsBtn,trackerBtn,appTrackerBtn].forEach(b=>b.classList.remove('active')); }
   homeBtn.addEventListener('click', ()=>{
     clearActive(); homeBtn.classList.add('active');
     nav.innerHTML=''; nav.style.display='none';
@@ -1367,7 +1368,12 @@ function buildTopLinks(){
     nav.innerHTML=''; nav.style.display='none';
     renderBetTrackerPage();
   });
-  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn);
+  appTrackerBtn.addEventListener('click', ()=>{
+    clearActive(); appTrackerBtn.classList.add('active');
+    nav.innerHTML=''; nav.style.display='none';
+    renderAppTrackerPage();
+  });
+  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn); tl.appendChild(appTrackerBtn);
 }
 async function initApp(){
   try {
@@ -2190,6 +2196,7 @@ async function renderHomePage(){
     }
     renderTopBetsTable(contentDiv, cachedForToday, 30);
     renderAdvancedTopBetsTable(contentDiv2, cachedForToday, 30);
+    maybeSnapshotTodaysTopBets(cachedForToday); // fire-and-forget; see its own comment for the noon-ET logic
     statusDiv.textContent = `Showing today\u2019s top bets across ${todaysGames.length} game(s). Tap Refresh to pull the latest lines again.`;
   }catch(e){
     statusDiv.textContent = `Couldn\u2019t load today\u2019s bets: ${e.message}. Double-check your Worker URL is reachable, or visit the DraftKings Odds page directly.`;
@@ -2756,31 +2763,15 @@ function buildAdvancedEdgeCandidates(todaysGames){
   return pool;
 }
 
-function renderTopBetsTable(container, cachedFetch, topN){
+// Standalone extraction of the Standard Top 30 list-building logic (previously inline only
+// inside renderTopBetsTable) \u2014 also used by the daily App Tracker snapshot feature, so the
+// snapshot captures exactly what this table would show, not a re-implementation of it.
+function computeStandardTopBets(cachedFetch, topN){
   topN = topN || 30;
-  container.innerHTML = '';
-  if(!cachedFetch.length) return;
-
   const todayStr = new Date().toDateString();
   const now = new Date();
-  // Once a game is live, DraftKings reprices based on in-game reality (score, who's actually
-  // playing, foul trouble), but the hit rates here are computed against FULL-game historical
-  // distributions \u2014 comparing a live line against full-game history is comparing two
-  // different things, and it's what makes live-game bets look artificially attractive here
-  // while tending not to hit. A bet stays eligible through an estimated end of the 1st
-  // quarter (see isEligibleForTopBets \u2014 this app has no live game clock, so that's a
-  // real-world-elapsed-time estimate, not the actual in-game clock), then drops out.
   const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
-  const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
-  sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Standard`;
-  container.appendChild(sec);
-
-  if(todaysGames.length === 0){
-    const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet. (Bets drop out after an estimated end of the 1st quarter \u2014 see the note below.)';
-    container.appendChild(msg0);
-    return;
-  }
+  if(todaysGames.length === 0) return { todaysGames, topBets: [] };
 
   const MIN_PRICE = -165;
   function candidatesForGame(ev, detail, QUAL){
@@ -2805,7 +2796,25 @@ function renderTopBetsTable(container, cachedFetch, topN){
     widerPool.forEach(c=>{ const key = c.game+'|'+c.label; if(!seen.has(key)){ pool.push(c); seen.add(key); } });
   }
   pool.sort((a,b)=> worstCaseRate(b) - worstCaseRate(a));
-  const topBets = pool.slice(0, topN);
+  return { todaysGames, topBets: pool.slice(0, topN) };
+}
+
+function renderTopBetsTable(container, cachedFetch, topN){
+  topN = topN || 30;
+  container.innerHTML = '';
+  if(!cachedFetch.length) return;
+
+  const { todaysGames, topBets } = computeStandardTopBets(cachedFetch, topN);
+  const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
+  sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Standard`;
+  container.appendChild(sec);
+
+  if(todaysGames.length === 0){
+    const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
+    msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet. (Bets drop out after an estimated end of the 1st quarter \u2014 see the note below.)';
+    container.appendChild(msg0);
+    return;
+  }
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
   note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows \u2014 see the "Overall %" column for the exact number driving the rank. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`;
@@ -3727,6 +3736,92 @@ async function trackerDelete(id){
   return fetchJson(`${workerBase}/tracker/delete`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id})});
 }
 
+// ================= App Tracker (auto-captured daily Top 30 snapshots) =================
+async function appTrackerAdd(bet){
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  return fetchJson(`${workerBase}/apptracker/add`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(bet)});
+}
+// Paginated, same reasoning as fetchOddsHistoryCached \u2014 this list can grow by up to ~60
+// entries a day (30 Standard + 30 Advanced), so it needs to page from the start rather than
+// risk the same 50-subrequest ceiling that broke /history/export before it was fixed.
+async function appTrackerListAll(){
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  let all = [];
+  let cursor = null;
+  let guard = 0;
+  while(guard++ < 200){
+    const url = cursor ? `${workerBase}/apptracker/list?cursor=${encodeURIComponent(cursor)}` : `${workerBase}/apptracker/list`;
+    const page = await fetchJson(url);
+    if(page && page.error) throw new Error(page.error);
+    all = all.concat(page.records || []);
+    if(page.done || !page.cursor) break;
+    cursor = page.cursor;
+  }
+  return all;
+}
+async function appTrackerUpdate(id, patch){
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  return fetchJson(`${workerBase}/apptracker/update`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id, patch})});
+}
+async function appTrackerDelete(id){
+  const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  return fetchJson(`${workerBase}/apptracker/delete`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id})});
+}
+
+// Current date/time in US Eastern, regardless of the viewer's own timezone \u2014 "12:00pm ET"
+// needs to mean the same moment for everyone, not 12pm in whatever timezone the browser is in.
+function nowInEastern(){
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false,
+  }).formatToParts(new Date());
+  const get = t => parseInt(parts.find(p=>p.type===t).value, 10);
+  return {
+    dateStr: `${get('year')}-${String(get('month')).padStart(2,'0')}-${String(get('day')).padStart(2,'0')}`,
+    hour: get('hour'), minute: get('minute'),
+  };
+}
+
+// Once per day, at the first opportunity on or after 12:00pm ET (there's no server process
+// that can compute these rankings independently \u2014 see the App Tracker page for the full
+// explanation of why this isn't a literal 12:00:00 capture), snapshots the current Top 30
+// Standard and Top 30 Advanced Analytics lists into the App Tracker as pending picks.
+let _snapshotAttemptedThisSession = false;
+async function maybeSnapshotTodaysTopBets(cachedForToday){
+  if(_snapshotAttemptedThisSession) return; // at most once per page session; avoids duplicate racing on fast repeated calls
+  const et = nowInEastern();
+  if(et.hour < 12) return; // not noon ET yet today
+  _snapshotAttemptedThisSession = true;
+  try{
+    const existing = await appTrackerListAll();
+    if(existing.some(b => b.snapshotDate === et.dateStr)) return; // already captured today
+
+    const snapshotTime = new Date().toISOString();
+    const toSnapshot = [];
+
+    const std = computeStandardTopBets(cachedForToday, 30);
+    std.topBets.forEach((bet, i)=>{
+      toSnapshot.push(Object.assign({}, bet, {
+        snapshotDate: et.dateStr, snapshotSource: 'standard', snapshotRank: i+1, snapshotAt: snapshotTime,
+        result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
+      }));
+    });
+
+    const todaysGamesAdv = cachedForToday.filter(({ev}) => new Date(ev.commence_time).toDateString() === new Date().toDateString() && isEligibleForTopBets(ev, new Date()));
+    const advPool = buildAdvancedEdgeCandidates(todaysGamesAdv).slice(0, 30);
+    advPool.forEach((bet, i)=>{
+      toSnapshot.push(Object.assign({}, bet, {
+        snapshotDate: et.dateStr, snapshotSource: 'advanced', snapshotRank: i+1, snapshotAt: snapshotTime,
+        result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
+      }));
+    });
+
+    for(const bet of toSnapshot){ await appTrackerAdd(bet); }
+  }catch(e){
+    console.warn('Daily Top 30 snapshot failed', e);
+  }
+}
+
 // Quick one-click "+ Track" button, usable anywhere a structured leg object is already
 // on hand (Top Bets cards, game lines, player props, alt lines). Quick-add is always a
 // pregame straight bet, since that's the only kind of line this app ever displays live.
@@ -3953,6 +4048,162 @@ function fmtResultBadge(result){
   else if(result==='push'){ span.textContent='PUSH'; span.style.background='#f0f2f6'; span.style.color='var(--sub)'; }
   else { span.textContent='PENDING'; span.style.background='#fff8e6'; span.style.color='#7a5c00'; }
   return span;
+}
+
+// ================= App Tracker page (auto-captured daily Top 30 snapshots) =================
+async function renderAppTrackerPage(){
+  lastRender = () => renderAppTrackerPage();
+  main.innerHTML = '';
+  const head = document.createElement('div'); head.className='pagehead';
+  head.innerHTML = `<h2>\ud83d\udcca App Tracker</h2><div class="meta">Every Top 30 recommendation (Standard + Advanced Analytics) this app has automatically captured, meant to be taken once per day pre-game \u2014 see the note below for exactly when. Auto-grades against this app's own historical box scores once each game concludes, same as the Bet Tracker.</div>`;
+  main.appendChild(head);
+
+  const noteDiv = document.createElement('div'); noteDiv.className='footnote'; noteDiv.style.marginBottom='14px';
+  noteDiv.textContent = 'How this works, honestly: the Top 30 lists are computed entirely in your browser using live odds and this app\u2019s season data \u2014 there\u2019s no backend process that can run that logic on a fixed clock independent of a browser being open. So instead, every time the Home page loads, the app checks whether today\u2019s snapshot (US Eastern date) has already been captured; if it\u2019s on or after 12:00pm ET and it hasn\u2019t, it captures the current Top 30 Standard and Top 30 Advanced lists right then, tagged as pending picks. That means the exact capture time is "whenever the Home page is first opened on or after noon ET that day," not a guaranteed 12:00:00 timestamp \u2014 opening the Home page at least once daily after noon ET is what keeps this consistent.';
+  main.appendChild(noteDiv);
+
+  const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
+  statusDiv.textContent = 'Loading snapshot history\u2026';
+  main.appendChild(statusDiv);
+
+  const summaryDiv = document.createElement('div'); main.appendChild(summaryDiv);
+
+  const actionsRow = document.createElement('div'); actionsRow.style.cssText='display:flex;gap:10px;margin:14px 0;flex-wrap:wrap;';
+  const refreshBtn = document.createElement('button'); refreshBtn.className='addbtn'; refreshBtn.textContent = '\ud83d\udd04 Refresh';
+  const gradeBtn = document.createElement('button'); gradeBtn.className='addbtn'; gradeBtn.textContent = '\u2705 Auto-Grade Pending';
+  const deleteAllBtn = document.createElement('button'); deleteAllBtn.textContent = '\ud83d\uddd1\ufe0f Delete All Snapshots';
+  deleteAllBtn.style.cssText = 'padding:8px 14px;border-radius:6px;border:1px solid var(--red);background:#fff;color:var(--red);font-size:13px;cursor:pointer;font-family:var(--sans);font-weight:700;';
+  actionsRow.appendChild(refreshBtn); actionsRow.appendChild(gradeBtn); actionsRow.appendChild(deleteAllBtn);
+  main.appendChild(actionsRow);
+
+  const tableDiv = document.createElement('div'); main.appendChild(tableDiv);
+
+  let bets = [];
+
+  async function autoGradeAllSnapshots(){
+    let gradedCount = 0;
+    for(const bet of bets){
+      if(bet.result && bet.result!=='pending') continue;
+      const result = gradeTrackedBet(bet); // snapshot entries are single-leg-shaped (isParlay:false), same as any straight tracked bet
+      if(result){
+        await appTrackerUpdate(bet.id, {result});
+        bet.result = result;
+        gradedCount++;
+      }
+    }
+    return gradedCount;
+  }
+
+  async function refresh(){
+    statusDiv.textContent = 'Loading snapshot history\u2026';
+    try{
+      bets = await appTrackerListAll();
+      statusDiv.textContent = `${bets.length} snapshot pick(s) loaded.`;
+    }catch(e){
+      statusDiv.textContent = `Couldn\u2019t load snapshot history: ${e.message}`;
+      bets = [];
+    }
+    if(bets.length){
+      const gradedCount = await autoGradeAllSnapshots();
+      if(gradedCount) statusDiv.textContent = `${bets.length} snapshot pick(s) loaded (auto-graded ${gradedCount}).`;
+    }
+    renderSummary();
+    renderTable();
+  }
+
+  refreshBtn.addEventListener('click', async ()=>{
+    refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing\u2026';
+    await refresh();
+    refreshBtn.disabled = false; refreshBtn.textContent = '\ud83d\udd04 Refresh';
+  });
+  gradeBtn.addEventListener('click', async ()=>{
+    gradeBtn.disabled = true; gradeBtn.textContent = 'Grading\u2026';
+    const gradedCount = await autoGradeAllSnapshots();
+    gradeBtn.disabled = false; gradeBtn.textContent = '\u2705 Auto-Grade Pending';
+    statusDiv.textContent = `Graded ${gradedCount} pick(s). Refreshing\u2026`;
+    await refresh();
+  });
+  deleteAllBtn.addEventListener('click', async ()=>{
+    if(!bets.length){ alert('Nothing to delete \u2014 no snapshots captured yet.'); return; }
+    if(!confirm(`Delete all ${bets.length} snapshot pick(s)? This can\u2019t be undone.`)) return;
+    deleteAllBtn.disabled = true; const orig = deleteAllBtn.textContent;
+    let done = 0;
+    for(const bet of bets.slice()){
+      try{ await appTrackerDelete(bet.id); done++; }catch(e){ console.warn('Delete failed for', bet.id, e); }
+      deleteAllBtn.textContent = `Deleting\u2026 ${done}/${bets.length}`;
+    }
+    deleteAllBtn.disabled = false; deleteAllBtn.textContent = orig;
+    statusDiv.textContent = `Deleted ${done} of ${bets.length} snapshot pick(s).`;
+    await refresh();
+  });
+
+  function renderSummary(){
+    summaryDiv.innerHTML = '';
+    if(!bets.length) return;
+    const wins = bets.filter(b=>b.result==='won').length;
+    const losses = bets.filter(b=>b.result==='lost').length;
+    const pending = bets.filter(b=>!b.result || b.result==='pending').length;
+    const graded = wins+losses;
+    const pct = graded ? Math.round((wins/graded)*100) : null;
+    const box = document.createElement('div');
+    box.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin-bottom:14px;font-size:13px;';
+    box.innerHTML = `<div><b>${bets.length}</b> total picks</div><div style="color:var(--green)"><b>${wins}</b> won</div><div style="color:var(--red)"><b>${losses}</b> lost</div><div style="color:var(--sub)"><b>${pending}</b> pending</div>` + (pct!==null ? `<div><b>${pct}%</b> hit rate (graded picks only)</div>` : '');
+    summaryDiv.appendChild(box);
+    ['standard','advanced'].forEach(src=>{
+      const subset = bets.filter(b=>b.snapshotSource===src);
+      if(!subset.length) return;
+      const w = subset.filter(b=>b.result==='won').length, l = subset.filter(b=>b.result==='lost').length;
+      const g = w+l; const p = g ? Math.round((w/g)*100) : null;
+      const row = document.createElement('div'); row.style.cssText='font-size:12.5px;color:var(--sub);margin-bottom:4px;';
+      row.textContent = `${src==='standard'?'Standard':'Advanced Analytics'}: ${w}-${l}${p!==null?` (${p}%)`:''} of ${subset.length} picks`;
+      summaryDiv.appendChild(row);
+    });
+  }
+
+  function renderTable(){
+    tableDiv.innerHTML = '';
+    if(!bets.length){
+      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;';
+      na.textContent = 'No snapshots captured yet \u2014 the first one happens the next time the Home page is opened on or after 12:00pm ET.';
+      tableDiv.appendChild(na);
+      return;
+    }
+    const sorted = bets.slice().sort((a,b)=> (b.snapshotDate||'').localeCompare(a.snapshotDate||'') || (a.snapshotRank||0)-(b.snapshotRank||0));
+    const wrap = document.createElement('div'); wrap.className='table-wrap';
+    const table = document.createElement('table'); table.style.width='100%';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th class="left">Snapshot Date</th><th class="left">Source</th><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th class="left">Game Time</th><th>Price</th><th>Result</th><th></th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody'); table.appendChild(tbody);
+    sorted.forEach(bet=>{
+      const tr = document.createElement('tr');
+      const cellStyle = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;';
+      const tdDate = document.createElement('td'); tdDate.className='left'; tdDate.style.cssText=cellStyle; tdDate.textContent = bet.snapshotDate || '\u2014';
+      const tdSource = document.createElement('td'); tdSource.className='left'; tdSource.style.cssText=cellStyle;
+      tdSource.textContent = bet.snapshotSource==='advanced' ? 'Advanced' : 'Standard';
+      const tdRank = document.createElement('td'); tdRank.style.cssText=cellStyle+'text-align:center;font-weight:700;color:var(--navy2);'; tdRank.textContent = bet.snapshotRank||'\u2014';
+      const tdBet = document.createElement('td'); tdBet.className='left'; tdBet.style.cssText=cellStyle; tdBet.appendChild(buildLegLabelNode(bet));
+      const tdGame = document.createElement('td'); tdGame.className='left'; tdGame.style.cssText=cellStyle+'color:var(--sub);';
+      tdGame.textContent = bet.gameLabel || bet.game || '\u2014';
+      const tdTime = document.createElement('td'); tdTime.className='left'; tdTime.style.cssText=cellStyle; tdTime.textContent = fmtGameTimeOnly(bet.commenceTime);
+      const tdPrice = document.createElement('td'); tdPrice.style.cssText=cellStyle+'text-align:center;'; tdPrice.textContent = fmtAmerican(bet.price);
+      const tdResult = document.createElement('td'); tdResult.style.cssText=cellStyle+'text-align:center;';
+      const resultWrap = document.createElement('div'); resultWrap.style.cssText='display:flex;align-items:center;justify-content:center;gap:5px;';
+      resultWrap.appendChild(legResultIcon(bet.result)); resultWrap.appendChild(fmtResultBadge(bet.result));
+      tdResult.appendChild(resultWrap);
+      const tdActions = document.createElement('td'); tdActions.style.cssText=cellStyle+'text-align:center;white-space:nowrap;';
+      const delBtn = document.createElement('button'); delBtn.textContent='Delete';
+      delBtn.style.cssText='padding:3px 8px;border-radius:4px;border:1px solid var(--red);background:#fff;color:var(--red);font-size:11px;cursor:pointer;font-family:var(--sans);';
+      delBtn.addEventListener('click', async ()=>{ if(!confirm('Delete this snapshot pick?')) return; await appTrackerDelete(bet.id); await refresh(); });
+      tdActions.appendChild(delBtn);
+      [tdDate,tdSource,tdRank,tdBet,tdGame,tdTime,tdPrice,tdResult,tdActions].forEach(td=>tr.appendChild(td));
+      tbody.appendChild(tr);
+    });
+    wrap.appendChild(table);
+    tableDiv.appendChild(wrap);
+  }
+
+  await refresh();
 }
 
 async function renderBetTrackerPage(){
