@@ -27,6 +27,7 @@ from scrape_vsin_splits import fetch_vsin_splits  # noqa: E402
 from fetch_injuries import fetch_all_injuries  # noqa: E402
 from fetch_espn_recent_boxscores import fetch_recent_espn_boxscores  # noqa: E402
 from fetch_wnba_stats_gamelogs import fetch_wnba_stats_gamelogs  # noqa: E402
+from fetch_gapfill_via_worker import fetch_via_worker  # noqa: E402
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(REPO_ROOT, 'data')
 DIST_DIR = os.path.join(REPO_ROOT, 'dist')
@@ -53,11 +54,12 @@ def main():
         print(f'WARNING: play-by-play download failed ({e}) — half-time markets will show as unavailable this run.')
         pbp_csv = None
 
-    # Gap-fill: SportsDataverse's own release can lag several days behind real life. Try
-    # stats.wnba.com's bulk endpoint first (one call for the whole gap); if that fails for any
-    # reason, fall back to ESPN's per-game scraper; if BOTH fail, proceed with SportsDataverse's
-    # data as-is (a few days stale) rather than blocking the whole build. SportsDataverse stays
-    # authoritative for every date it already has — this only ever fills in what it doesn't.
+    # Gap-fill: SportsDataverse's own release can lag several days behind real life. Try, in
+    # order: (1) this pipeline's own Worker fetching ESPN from Cloudflare's network (bypasses
+    # the GitHub-Actions-IP block entirely — see fetch_gapfill_via_worker.py), (2) stats.wnba.com's
+    # bulk endpoint direct from GitHub Actions, (3) ESPN's per-game scraper direct from GitHub
+    # Actions, (4) give up gracefully and proceed with SportsDataverse's data as-is. SportsDataverse
+    # stays authoritative for every date it already has — this only ever fills in what it doesn't.
     # Today itself is deliberately excluded (games may still be in progress; a partial box score
     # would corrupt every downstream stat).
     try:
@@ -66,12 +68,16 @@ def main():
         yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
         season_year = yesterday[:4]
         if yesterday > sdv_max_date:
-            gap_df = fetch_wnba_stats_gamelogs(sdv_max_date, yesterday, season_year)
-            source = 'stats.wnba.com'
+            gap_df = fetch_via_worker(sdv_max_date, yesterday)
+            source = 'Worker-proxied ESPN'
+            if gap_df.empty:
+                print('Worker gap-fill came back empty — falling back to stats.wnba.com direct.')
+                gap_df = fetch_wnba_stats_gamelogs(sdv_max_date, yesterday, season_year)
+                source = 'stats.wnba.com'
             if gap_df.empty:
                 print('stats.wnba.com gap-fill came back empty — falling back to ESPN per-game scraper.')
                 gap_df = fetch_recent_espn_boxscores(sdv_max_date, yesterday)
-                source = 'ESPN'
+                source = 'ESPN direct'
             if not gap_df.empty:
                 for col in box_df.columns:
                     if col not in gap_df.columns:
@@ -82,7 +88,7 @@ def main():
                 combined.to_csv(box_csv, index=False)
                 print(f'Gap-filled {len(gap_df)} rows from {source} ({sdv_max_date} exclusive through {yesterday}) into {box_csv}')
             else:
-                print(f'Both gap-fill sources came back empty for {sdv_max_date} to {yesterday} — proceeding with SportsDataverse data only, which may be a few days stale.')
+                print(f'All three gap-fill sources came back empty for {sdv_max_date} to {yesterday} — proceeding with SportsDataverse data only, which may be a few days stale.')
         else:
             print('SportsDataverse data is already current through yesterday — no gap to fill.')
     except Exception as e:
