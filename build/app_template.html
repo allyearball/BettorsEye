@@ -2527,6 +2527,34 @@ function teammateKeyInjuryBoost(playerName, team, wantOver){
 // least 3 of the 4 windows to agree with each other before returning anything \u2014 windows that
 // disagree with each other isn't a real signal, however good any single window looks alone.
 // Shared by both the leg-based Top 30 ranking and the per-row Edge badge on the Odds page.
+// USG% trend: is she getting MORE or LESS involved recently than her season norm? Rising usage
+// supports an Over case (more offensive involvement/opportunity); falling usage supports an
+// Under case. Deliberately a secondary, capped signal (\u00b115% max) \u2014 EMA + DvP still drive
+// the bulk of the score; this just nudges it based on whether her role is trending the same way.
+function usgTrendMultiplier(pname, team, direction){
+  const rec = DATA.fullPlayerLogs[pname+'|'+team];
+  if(!rec) return 1.0;
+  const usgValues = [];
+  rec.log.filter(g=>!g.dnp).forEach(g=>{
+    const gameRecord = findGameByTeamDate(team, g.date);
+    if(!gameRecord) return;
+    const teamRows = gameRecord.rows.filter(r=>r.team===team && !r.dnp);
+    const playerRow = teamRows.find(r=>r.player===pname);
+    if(playerRow){
+      const u = usgPctForGame(playerRow, teamGameAggFromRows(teamRows));
+      if(u!==null) usgValues.push(u);
+    }
+  });
+  if(usgValues.length < 3) return 1.0;
+  const recent = usgValues.slice(-5);
+  const recentUsg = recent.reduce((a,b)=>a+b,0)/recent.length;
+  const seasonUsg = usgValues.reduce((a,b)=>a+b,0)/usgValues.length;
+  if(!seasonUsg) return 1.0;
+  const trendPct = (recentUsg - seasonUsg) / seasonUsg;
+  const capped = Math.max(-0.15, Math.min(0.15, trendPct));
+  return direction==='over' ? 1 + capped : 1 - capped;
+}
+
 function computeRowSignal(pname, team, opponent, statKey, line){
   const mw = multiWindowStats(pname, team, statKey);
   if(!mw) return null;
@@ -2544,16 +2572,27 @@ function computeRowSignal(pname, team, opponent, statKey, line){
 
   const bucket = positionBucket(getPlayerPosition(pname, team));
   const dvp = bucket ? dvpIndex(opponent, statKey, bucket) : null;
+  // DvP is now a hard veto at the extremes (a matchup this lopsided contradicts the form signal
+  // enough that no EMA edge should overrule it), and a severity-SCALED penalty/bonus in between —
+  // previously this was a flat 0.65x regardless of whether DvP was 0.94 or 0.79, which let a big
+  // enough EMA edge paper over even a lopsided matchup. Fixed to scale with how bad it actually is.
   let dvpMultiplier = 1.0;
   if(dvp!==null){
-    if(direction==='over' && dvp>1.05) dvpMultiplier = 1 + Math.min(dvp-1, 0.4);
-    else if(direction==='under' && dvp<0.95) dvpMultiplier = 1 + Math.min(1-dvp, 0.4);
-    else if(direction==='over' && dvp<0.95) dvpMultiplier = 0.65;
-    else if(direction==='under' && dvp>1.05) dvpMultiplier = 0.65;
+    if(direction==='over'){
+      if(dvp < 0.85) return null; // hard veto: opponent's D flatly contradicts the Over case
+      if(dvp > 1.05) dvpMultiplier = 1 + Math.min(dvp-1, 0.4);
+      else if(dvp < 0.95) dvpMultiplier = Math.max(0.35, 1 - (0.95-dvp)*3);
+    } else {
+      if(dvp > 1.15) return null; // hard veto: opponent's D flatly contradicts the Under case
+      if(dvp < 0.95) dvpMultiplier = 1 + Math.min(1-dvp, 0.4);
+      else if(dvp > 1.05) dvpMultiplier = Math.max(0.35, 1 - (dvp-1.05)*3);
+    }
   }
 
+  const usgMultiplier = usgTrendMultiplier(pname, team, direction);
+
   return {
-    direction, score: agreement * edgeMagnitude * volatilityDamp * dvpMultiplier,
+    direction, score: agreement * edgeMagnitude * volatilityDamp * dvpMultiplier * usgMultiplier,
     agreement, avgEma, dvp,
     l5: mw.l5.ema, l10: mw.l10.ema, l15: mw.l15.ema, full: mw.full.ema, iqrL10: mw.iqrL10,
   };
@@ -2587,10 +2626,10 @@ function edgeVerdict(sig){
 function fmtEma(v){ return v===null||v===undefined ? 'n/a' : (Math.round(v*10)/10); }
 function edgeWhyText(pname, sig, line, marketLabel){
   if(!sig){
-    return `${pname} \u2014 ${marketLabel} line ${line}: not enough agreement across the L5/L10/L15/season EMA windows to call a direction here (need at least 3 of 4 pointing the same way).`;
+    return `${pname} \u2014 ${marketLabel} line ${line}: not enough agreement across the L5/L10/L15/season EMA windows to call a direction here (need at least 3 of 4 pointing the same way), or the matchup (DvP Index) flatly contradicts the direction the numbers point \u2014 in that case this is deliberately excluded rather than shown with a discount.`;
   }
   const dirWord = sig.direction==='over' ? 'Over' : 'Under';
-  return `${pname} \u2014 ${marketLabel} line ${line}. EMA: L5 ${fmtEma(sig.l5)}, L10 ${fmtEma(sig.l10)}, L15 ${fmtEma(sig.l15)}, Season ${fmtEma(sig.full)} \u2014 ${Math.round(sig.agreement*4)}/4 windows favor the ${dirWord}. DvP Index for her position: ${sig.dvp!==null?sig.dvp.toFixed(2):'n/a'} (>1.05 favors Over, <0.95 favors Under). L10 volatility (IQR): ${sig.iqrL10!==null?sig.iqrL10.toFixed(1):'n/a'} \u2014 higher means less consistent, so this signal is discounted accordingly.`;
+  return `${pname} \u2014 ${marketLabel} line ${line}. EMA: L5 ${fmtEma(sig.l5)}, L10 ${fmtEma(sig.l10)}, L15 ${fmtEma(sig.l15)}, Season ${fmtEma(sig.full)} \u2014 ${Math.round(sig.agreement*4)}/4 windows favor the ${dirWord}. DvP Index for her position: ${sig.dvp!==null?sig.dvp.toFixed(2):'n/a'} (>1.05 favors Over, <0.95 favors Under \u2014 a mismatch beyond 0.85/1.15 against the pick's direction excludes it entirely rather than just discounting it). L10 volatility (IQR): ${sig.iqrL10!==null?sig.iqrL10.toFixed(1):'n/a'} \u2014 higher means less consistent, so this signal is discounted accordingly. Usage Rate (USG%) trend (last 5 games vs. season) also nudges the score \u00b115% max, based on whether her recent involvement is rising or falling in the direction that supports this pick.`;
 }
 
 // The reusable Edge cell for the Player Props / Alt Lines tables: a tap-for-why verdict badge,
@@ -2867,7 +2906,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN){
   container.appendChild(sec);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = `Player props only, ranked by a composite edge score \u2014 not the same ranking as the hit-rate table above. A leg only qualifies if at least 3 of its 4 EMA windows (L5/L10/L15/full season) agree with the side DraftKings' line implies, then scored by how big that edge is, how volatile she's been (IQR over her last 10 games \u2014 high volatility discounts the score), and the opponent's Defense-vs-Position Index for her spot. Players listed Out or Doubtful are excluded outright; Questionable/Day-to-Day players are kept but flagged and discounted. Same pregame-through-Q1 window and -165 price floor as the table above. This is a second opinion from a different methodology, not a replacement \u2014 worth comparing where the two tables agree and where they don't.`;
+  note.textContent = `Player props only, ranked by a composite edge score \u2014 not the same ranking as the hit-rate table above. A leg only qualifies if at least 3 of its 4 EMA windows (L5/L10/L15/full season) agree with the side DraftKings' line implies, AND the opponent's Defense-vs-Position Index doesn't flatly contradict that direction (beyond 0.85/1.15 the wrong way excludes it outright, not just a discount). What's left is scored by how big the edge is, how volatile she's been (IQR over her last 10 games \u2014 high volatility discounts the score), the DvP Index itself (scaled bonus/penalty short of the hard cutoff above), and a Usage Rate (USG%) trend \u2014 whether her last 5 games show rising or falling involvement versus her season norm, nudging the score up to \u00b115%. Players listed Out or Doubtful are excluded outright; Questionable/Day-to-Day players are kept but flagged and discounted. Same pregame-through-Q1 window and -165 price floor as the table above. This is a second opinion from a different methodology, not a replacement \u2014 worth comparing where the two tables agree and where they don't.`;
   container.appendChild(note);
 
   if(todaysGames.length === 0){
@@ -3334,7 +3373,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'over',
           thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10), eventId: ev.id,
         }, 10);
-        overBtn.textContent = '+O'; overBtn.title = 'Track the Over';
+        // Relabel only the inner Track button (first child) \u2014 setting .textContent on the
+        // whole wrapper would also wipe out the \ud83d\udcc8 history button living inside it as its second child.
+        overBtn.children[0].textContent = '+O'; overBtn.children[0].title = 'Track the Over';
         trackCell.appendChild(overBtn);
       }
       if(underO && team){
@@ -3343,7 +3384,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'under',
           thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10), eventId: ev.id,
         }, 10);
-        underBtn.textContent = '+U'; underBtn.title = 'Track the Under';
+        underBtn.children[0].textContent = '+U'; underBtn.children[0].title = 'Track the Under';
         trackCell.appendChild(underBtn);
       }
 
