@@ -2691,13 +2691,34 @@ function vsOpponentStatsForLeg(leg){
   const avg = Math.round((values.reduce((a,b)=>a+b,0)/values.length)*10)/10;
   return { n: games.length, avg, games: games.map((g,i)=>({date:g.date, value:values[i], min:g.min})) };
 }
+// Small green-circle/red-\u2715 marker, same visual language as the Bet Tracker's win/loss
+// circles \u2014 indicates whether THIS specific historical game would have hit the bet currently
+// being recommended (same line, same side), not just shows the raw stat line.
+function vsOpponentHitIcon(hit){
+  const span = document.createElement('span');
+  if(hit){
+    span.style.cssText = 'display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);flex-shrink:0;';
+  } else {
+    span.style.cssText = 'display:inline-block;color:var(--red);font-weight:800;font-size:10px;flex-shrink:0;line-height:8px;';
+    span.textContent = '\u2715';
+  }
+  return span;
+}
 function buildVsOpponentCell(leg){
   const stats = vsOpponentStatsForLeg(leg);
   if(!stats) return document.createTextNode('\u2014 (no meetings yet this season)');
   const wrap = document.createElement('div');
+  const threshold = leg.thresholdToHit!==undefined && leg.thresholdToHit!==null ? leg.thresholdToHit : leg.line;
+  const hasLine = threshold!==undefined && threshold!==null;
   stats.games.forEach(g=>{
-    const row = document.createElement('div'); row.style.fontSize = '11px';
-    row.textContent = `${g.date}: ${g.value} (${g.min!==null&&g.min!==undefined?g.min:'\u2014'} min)`;
+    const row = document.createElement('div'); row.style.cssText = 'font-size:11px;display:flex;align-items:center;gap:4px;';
+    if(hasLine){
+      const hit = leg.side==='under' ? g.value < threshold : g.value >= threshold;
+      row.appendChild(vsOpponentHitIcon(hit));
+    }
+    const txt = document.createElement('span');
+    txt.textContent = `${g.date}: ${g.value} (${g.min!==null&&g.min!==undefined?g.min:'\u2014'} min)`;
+    row.appendChild(txt);
     wrap.appendChild(row);
   });
   const avgRow = document.createElement('div'); avgRow.style.cssText = 'font-size:11px;font-weight:700;margin-top:2px;';
