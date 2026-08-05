@@ -1,11 +1,13 @@
 """
 Full build pipeline, run by GitHub Actions on a schedule:
   1. Download the latest box score + roster CSVs from the SportsDataverse (wehoop) releases
-  2. Regenerate app_data.json from them
-  3. Scrape VSiN's DraftKings betting splits and merge them into app_data.json
-  4. Fetch current ESPN injury reports and merge them into app_data.json
-  5. Gzip + base64 the dataset and inject it into the HTML template
-  6. Write the final, self-contained index.html into dist/ for deployment
+  2. Gap-fill any days after SportsDataverse's own most recent date (which can lag several
+     days behind) using ESPN's site API directly, through yesterday
+  3. Regenerate app_data.json from the combined box score data
+  4. Scrape VSiN's DraftKings betting splits and merge them into app_data.json
+  5. Fetch current ESPN injury reports and merge them into app_data.json
+  6. Gzip + base64 the dataset and inject it into the HTML template
+  7. Write the final, self-contained index.html into dist/ for deployment
 Run locally with:  python build/build.py
 """
 import gzip
@@ -15,10 +17,13 @@ import os
 import shutil
 import sys
 import urllib.request
+from datetime import datetime, timedelta, timezone
+import pandas as pd
 sys.path.insert(0, os.path.dirname(__file__))
 from make_app_data import generate  # noqa: E402
 from scrape_vsin_splits import fetch_vsin_splits  # noqa: E402
 from fetch_injuries import fetch_all_injuries  # noqa: E402
+from fetch_espn_recent_boxscores import fetch_recent_espn_boxscores  # noqa: E402
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(REPO_ROOT, 'data')
 DIST_DIR = os.path.join(REPO_ROOT, 'dist')
@@ -44,6 +49,37 @@ def main():
     except Exception as e:
         print(f'WARNING: play-by-play download failed ({e}) — half-time markets will show as unavailable this run.')
         pbp_csv = None
+
+    # Gap-fill: SportsDataverse's own release can lag several days behind real life. Rather
+    # than silently showing stale data until they catch up, fetch anything AFTER their most
+    # recent date, through yesterday, straight from ESPN, and merge it in before generate()
+    # ever runs — SportsDataverse stays authoritative for every date it already has; this only
+    # ever fills in dates it doesn't have yet. Today itself is deliberately excluded (games may
+    # still be in progress; a partial box score would corrupt every downstream stat).
+    try:
+        box_df = pd.read_csv(box_csv)
+        sdv_max_date = str(box_df['game_date'].max())
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+        if yesterday > sdv_max_date:
+            espn_df = fetch_recent_espn_boxscores(sdv_max_date, yesterday)
+            if not espn_df.empty:
+                # Align columns: only keep/add columns the main CSV also has, so a shape
+                # mismatch can't silently introduce ragged/incompatible rows downstream.
+                for col in box_df.columns:
+                    if col not in espn_df.columns:
+                        espn_df[col] = None
+                espn_df = espn_df[box_df.columns]
+                combined = pd.concat([box_df, espn_df], ignore_index=True)
+                combined = combined.drop_duplicates(subset=['game_id', 'athlete_id'], keep='first')
+                combined.to_csv(box_csv, index=False)
+                print(f'Gap-filled {len(espn_df)} ESPN rows ({sdv_max_date} exclusive through {yesterday}) into {box_csv}')
+            else:
+                print(f'ESPN gap-fill found nothing new between {sdv_max_date} and {yesterday}.')
+        else:
+            print('SportsDataverse data is already current through yesterday — no gap to fill.')
+    except Exception as e:
+        print(f'WARNING: ESPN gap-fill step failed ({e}) — proceeding with SportsDataverse data only, which may be a few days stale.')
+
     stats = generate(box_csv, ros_csv, data_json, pbp_csv)
     print('Generated dataset:', stats)
 
