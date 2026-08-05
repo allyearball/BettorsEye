@@ -590,12 +590,54 @@ function computeLeagueDefenseRow(team, teamGames, opponents, mode){
 // individual player's season line, side by side. Currently only the season(s) already loaded
 // client-side are selectable in the Season dropdown (that's whatever the pipeline has pulled in);
 // a full 2015-2025 historical backfill is a separate, larger pipeline project.
+// ================= Sticky "Game window" bar (Team page + Player page only) =================
+// A fixed bar pinned to the bottom of the viewport, visible regardless of scroll position,
+// since this filter affects every table on those two pages and re-finding a dropdown after
+// scrolling down a long page was the actual problem being solved here. Lives outside `main`
+// (appended to document.body directly) since `main.innerHTML=''` on every page render would
+// otherwise wipe it out along with everything else \u2014 removeGameWindowStickyBar() is called
+// explicitly by every OTHER page's render function so it doesn't linger where it doesn't apply.
+const GAME_WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
+function removeGameWindowStickyBar(){
+  const existing = document.getElementById('gameWindowStickyBar');
+  if(existing) existing.remove();
+  document.body.style.paddingBottom = '';
+}
+function renderGameWindowStickyBar(currentWindowMode, onSelect){
+  removeGameWindowStickyBar();
+  const bar = document.createElement('div');
+  bar.id = 'gameWindowStickyBar';
+  bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:500;background:#fff;'
+    + 'border-top:2px solid var(--navy2);box-shadow:0 -2px 10px rgba(0,0,0,0.10);'
+    + 'padding:10px 16px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:center;';
+  const label = document.createElement('div');
+  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:13px;';
+  label.textContent = 'Game window:';
+  bar.appendChild(label);
+  GAME_WINDOW_OPTIONS.forEach(opt=>{
+    const wrap = document.createElement('label');
+    wrap.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer;';
+    const rb = document.createElement('input');
+    rb.type = 'radio'; rb.name = 'gameWindowStickyRadio'; rb.value = String(opt.value);
+    rb.checked = (opt.value === currentWindowMode);
+    rb.style.cursor = 'pointer';
+    rb.addEventListener('change', ()=>{ if(rb.checked) onSelect(opt.value); });
+    wrap.appendChild(rb);
+    wrap.appendChild(document.createTextNode(opt.label));
+    bar.appendChild(wrap);
+  });
+  document.body.appendChild(bar);
+  document.body.style.paddingBottom = '54px'; // room so the fixed bar doesn't cover the page's last bit of content
+  return bar;
+}
+
 function renderLeagueStatsPage(year, mode){
   mode = mode || 'totals';
   const allYears = [...new Set(TEAM_NAMES.flatMap(t=>availableYears(t)))].sort();
   year = year || allYears[allYears.length-1];
   lastRender = () => renderLeagueStatsPage(year, mode);
   main.innerHTML = '';
+  removeGameWindowStickyBar();
 
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83c\udfc0 League Stats \u2014 ${year}</h2><div class="meta">Every team's and every player's season line, side by side. Click a column header to sort, click a player's name to see her full game log.</div>`;
@@ -677,6 +719,15 @@ function renderLeagueStatsPage(year, mode){
   const playerCols = mode==='totals' ? LEAGUE_PLAYER_COLS : LEAGUE_PLAYER_AVG_COLS;
   makeTable(main, playerCols, playerRows, {defaultSort:'pts', defaultDir:'desc', teamFor:r=>r.team, defaultHideDNP:true, hideLabel:'Hide players who didn\u2019t play any minutes this season'});
 
+  const t3 = document.createElement('div'); t3.className='section-title';
+  t3.textContent = `Individual Player Advanced Metrics \u2014 ${year}`;
+  main.appendChild(t3);
+  const advFn = document.createElement('div'); advFn.className='footnote'; advFn.style.marginBottom='8px';
+  advFn.textContent = 'Same advanced-metrics engine as each player\u2019s own page, applied league-wide. EMA/StdDev/IQR reflect her most recent played game (current rolling form, same number her own player page shows right now); USG% and DvP Faced are season averages instead, since a single game\u2019s usage or single game\u2019s matchup wouldn\u2019t represent a season the way a trailing average does. Tap any column header\u2019s \u24d8 for the full definition.';
+  main.appendChild(advFn);
+  const leagueAdvRows = computeLeagueAdvancedRows(year);
+  makeTable(main, LEAGUE_ADV_COLS, leagueAdvRows, {defaultSort:'ptsEma', defaultDir:'desc', teamFor:r=>r.team});
+
   const fn = document.createElement('div'); fn.className='footnote';
   fn.textContent = 'Team shooting percentages (FG%/3P%/FT%) are computed from the team\u2019s combined makes/attempts across the season, not averaged from individual players\u2019 percentages \u2014 that\u2019s the only mathematically correct way to roll them up. "Avg Height (Wtd)" weights each player\u2019s height by her total minutes played that season, so rotation players count more than bench players who barely played.';
   main.appendChild(fn);
@@ -725,20 +776,7 @@ function renderTeamPage(team, year, month, windowMode){
   selectorRow.appendChild(buildYearMonthSelector(availableYears(team), (y)=>availableMonthsForYear(team,y), year, month, (y,m)=>renderTeamPage(team, y, m, windowMode)));
   main.appendChild(selectorRow);
 
-  const windowRow = document.createElement('div');
-  windowRow.style.cssText = 'display:flex;align-items:center;gap:18px;margin:0 0 16px;font-size:13px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px 14px;';
-  const windowLabel = document.createElement('div'); windowLabel.style.cssText='font-weight:700;color:var(--navy2);'; windowLabel.textContent = 'Game window:';
-  windowRow.appendChild(windowLabel);
-  const TEAM_WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
-  TEAM_WINDOW_OPTIONS.forEach(opt=>{
-    const b = document.createElement('button');
-    b.textContent = opt.label;
-    const active = opt.value===windowMode;
-    b.style.cssText = `padding:5px 12px;border-radius:5px;border:1px solid ${active?'var(--navy2)':'var(--line)'};background:${active?'var(--navy2)':'#fff'};color:${active?'#fff':'var(--ink)'};font-size:12.5px;cursor:pointer;font-family:var(--sans);`;
-    b.addEventListener('click', ()=>{ if(opt.value!==windowMode) renderTeamPage(team, year, month, opt.value); });
-    windowRow.appendChild(b);
-  });
-  main.appendChild(windowRow);
+  renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderTeamPage(team, year, month, val); });
 
   const t1 = document.createElement('div'); t1.className='section-title'; t1.textContent='Player Totals'; main.appendChild(t1);
   makeTable(main, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team});
@@ -913,6 +951,7 @@ function buildBoxScoreContent(container, game){
 function renderGamePage(game){
   lastRender = () => renderGamePage(game);
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   const head = document.createElement('div'); head.className='pagehead';
   const venue = (DATA.teamVenues && DATA.teamVenues[game.home]) || {};
   const venueLine = venue.name ? `<br>${venue.name}${venue.city ? ' \u2014 '+venue.city+(venue.state?', '+venue.state:'') : ''}` : '';
@@ -1141,6 +1180,44 @@ const PLAYER_ADV_COLS = [
   {key:'dvpPts', label:'DvP-PTS', round2:true}, {key:'dvpReb', label:'DvP-REB', round2:true}, {key:'dvpAst', label:'DvP-AST', round2:true},
 ];
 
+// League-wide, one row per player who played at least one game this season, using the SAME
+// computePlayerAdvancedLog engine as the player-page table above (not a re-implementation).
+// EMA/StdDev/IQR use her most recent played game (her current rolling form, same as what her
+// own player page would show right now); USG% and DvP use the SEASON AVERAGE instead, since
+// unlike EMA those aren't themselves rolling values \u2014 a single game's USG% or a single game's
+// matchup difficulty wouldn't represent her season the way a trailing average does.
+const LEAGUE_ADV_COLS = [
+  {key:'team', label:'Team', left:true}, {key:'player', label:'Player', left:true},
+  {key:'usgPct', label:'USG% (season avg)', round2:true},
+  {key:'ptsEma', label:'PTS EMA (current)', round2:true}, {key:'ptsStd', label:'PTS StdDev(L10)', round2:true}, {key:'ptsIqr', label:'PTS IQR(L10)', round2:true},
+  {key:'rebEma', label:'REB EMA (current)', round2:true}, {key:'rebStd', label:'REB StdDev(L10)', round2:true}, {key:'rebIqr', label:'REB IQR(L10)', round2:true},
+  {key:'astEma', label:'AST EMA (current)', round2:true}, {key:'astStd', label:'AST StdDev(L10)', round2:true}, {key:'astIqr', label:'AST IQR(L10)', round2:true},
+  {key:'avgDvpPts', label:'Avg DvP Faced (PTS)', round2:true}, {key:'avgDvpReb', label:'Avg DvP Faced (REB)', round2:true}, {key:'avgDvpAst', label:'Avg DvP Faced (AST)', round2:true},
+];
+function computeLeagueAdvancedRows(year){
+  const rows = [];
+  Object.keys(DATA.fullPlayerLogs).forEach(key=>{
+    const sep = key.lastIndexOf('|');
+    const playerName = key.slice(0, sep), team = key.slice(sep+1);
+    const rec = DATA.fullPlayerLogs[key];
+    const yearLog = rec.log.filter(g => g.date && g.date.startsWith(String(year)));
+    if(!yearLog.some(g=>!g.dnp)) return;
+    const advLog = computePlayerAdvancedLog({player: playerName, log: yearLog}, team).filter(r=>!r.dnp);
+    if(!advLog.length) return;
+    const last = advLog[advLog.length-1];
+    const avg = arr => { arr = arr.filter(v=>v!==null && v!==undefined); return arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*1000)/1000 : null; };
+    rows.push({
+      team, player: playerName,
+      usgPct: avg(advLog.map(r=>r.usgPct)),
+      ptsEma: last.ptsEma, ptsStd: last.ptsStd, ptsIqr: last.ptsIqr,
+      rebEma: last.rebEma, rebStd: last.rebStd, rebIqr: last.rebIqr,
+      astEma: last.astEma, astStd: last.astStd, astIqr: last.astIqr,
+      avgDvpPts: avg(advLog.map(r=>r.dvpPts)), avgDvpReb: avg(advLog.map(r=>r.dvpReb)), avgDvpAst: avg(advLog.map(r=>r.dvpAst)),
+    });
+  });
+  return rows;
+}
+
 function findGameByTeamDate(team, date){
   return Object.values(DATA.games).find(g => (g.home===team || g.away===team) && g.date===date);
 }
@@ -1351,21 +1428,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   ));
   main.appendChild(selectorRow);
 
-  // window filter — same control style as the Odds page, applied to the game log + summary rows below
-  const windowRow = document.createElement('div');
-  windowRow.style.cssText = 'display:flex;align-items:center;gap:18px;margin:0 0 16px;font-size:13px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:10px 14px;';
-  const windowLabel = document.createElement('div'); windowLabel.style.cssText='font-weight:700;color:var(--navy2);'; windowLabel.textContent = 'Game log window:';
-  windowRow.appendChild(windowLabel);
-  const WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
-  WINDOW_OPTIONS.forEach(opt=>{
-    const b = document.createElement('button');
-    b.textContent = opt.label;
-    const active = opt.value===windowMode;
-    b.style.cssText = `padding:5px 12px;border-radius:5px;border:1px solid ${active?'var(--navy2)':'var(--line)'};background:${active?'var(--navy2)':'#fff'};color:${active?'#fff':'var(--ink)'};font-size:12.5px;cursor:pointer;font-family:var(--sans);`;
-    b.addEventListener('click', ()=>{ if(opt.value!==windowMode) renderPlayerPage(playerName, team, returnTo, opt.value, year, month); });
-    windowRow.appendChild(b);
-  });
-  main.appendChild(windowRow);
+  renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderPlayerPage(playerName, team, returnTo, val, year, month); });
 
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const monthLabelText = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
@@ -2337,6 +2400,7 @@ async function loadSavedUrl(){
 async function renderHomePage(){
   lastRender = () => renderHomePage();
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83c\udfe0 Today\u2019s Top 30 Bets</h2><div class="meta">Pulled live from DraftKings via your Worker, ranked by historical hit rate over the last 10 and 15 games \u2014 same method as the DraftKings Odds page.</div>`;
   main.appendChild(head);
@@ -2431,6 +2495,7 @@ async function renderHomePage(){
 function renderOddsPage(){
   lastRender = () => renderOddsPage();
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>DraftKings Odds \u2014 Live (via The Odds API)</h2><div class="meta">Pulls each team's next scheduled game through your own Cloudflare Worker proxy \u2014 your real API key lives only in your Worker's environment, never in this file or in your browser.</div>`;
   main.appendChild(head);
@@ -4289,6 +4354,7 @@ function extractLegFromSnapshotMarkets(leg, markets, homeShort, awayShort){
 async function renderLineHistoryPage(leg, returnTo){
   lastRender = () => renderLineHistoryPage(leg, returnTo);
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
   back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderHomePage(); });
   main.appendChild(back);
@@ -4420,6 +4486,7 @@ function fmtResultBadge(result){
 async function renderAppTrackerPage(){
   lastRender = () => renderAppTrackerPage();
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83d\udcca App Tracker</h2><div class="meta">Every Top 30 recommendation (Standard + Advanced Analytics) this app has automatically captured, meant to be taken once per day pre-game \u2014 see the note below for exactly when. Auto-grades against this app's own historical box scores once each game concludes, same as the Bet Tracker.</div>`;
   main.appendChild(head);
@@ -4575,6 +4642,7 @@ async function renderAppTrackerPage(){
 async function renderBetTrackerPage(){
   lastRender = () => renderBetTrackerPage();
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83d\udcdd Bet Tracker</h2><div class="meta">A mock record of bets you've made or want to track \u2014 stored on your Worker, so it's the same list on any device. Auto-grades against this app's own historical box scores whenever the game is already in our data.</div>`;
   main.appendChild(head);
