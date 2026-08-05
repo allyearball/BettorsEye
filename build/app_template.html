@@ -2622,6 +2622,15 @@ function buildEdgeCell(pname, team, opponent, statKey, line, marketLabel){
 // with QUAL=0 \u2014 no hit-rate floor, since this ranking uses its own scoring instead).
 // Actual hit count for a leg's specific side within a window, e.g. "4/5" \u2014 reuses the same
 // hitRateFor already powering the rest of the app, just formatted as counts instead of a rate.
+// The actual ranking metric: worst-case (minimum) hit rate across whichever of L5/L10/L15
+// are available for this bet \u2014 a bet only ranks as high as its weakest window, so one great
+// window can't hide a mediocre one. Used consistently everywhere a Top Bets list is sorted.
+function worstCaseRate(bet){
+  const rates = [bet.rate5, bet.rate10, bet.rate15].filter(r => r!==null && r!==undefined);
+  if(!rates.length) return 0;
+  return Math.min(...rates);
+}
+
 function hitCountFor(leg, windowSize){
   const r = hitRateFor(leg.player, leg.team, leg.statKey, leg.line, windowSize);
   if(!r || r.gp===0) return null;
@@ -2735,11 +2744,11 @@ function renderTopBetsTable(container, cachedFetch, topN){
     const seen = new Set(pool.map(c=>c.game+'|'+c.label));
     widerPool.forEach(c=>{ const key = c.game+'|'+c.label; if(!seen.has(key)){ pool.push(c); seen.add(key); } });
   }
-  pool.sort((a,b)=> Math.min(b.rate10,b.rate15) - Math.min(a.rate10,a.rate15));
+  pool.sort((a,b)=> worstCaseRate(b) - worstCaseRate(a));
   const topBets = pool.slice(0, topN);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-10 and last-15-game windows. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`;
+  note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows \u2014 see the "Overall %" column for the exact number driving the rank. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`;
   container.appendChild(note);
 
   if(topBets.length === 0){
@@ -2762,9 +2771,11 @@ function renderTopBetsTable(container, cachedFetch, topN){
   toggleCb.addEventListener('change', ()=>{ wrap.classList.toggle('hide-defcols', toggleCb.checked); });
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th>Rank</th><th class="left">Pos</th><th class="th-l5">L5%</th><th class="th-l10">L10%</th><th class="th-l15">L15%</th>'
-    +'<th class="left">Bet</th><th class="left">Game</th><th class="left">Vs Opponent This Season</th><th>Price</th>'
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="th-overall">Overall %</th>'
+    +'<th class="th-l5">L5%</th><th class="th-l10">L10%</th><th class="th-l15">L15%</th>'
+    +'<th class="left">Game</th><th class="left">Vs Opponent This Season</th><th>Price</th>'
     +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="defcol th-defallowed">Allowed/Gm</th><th></th></tr>';
+  appendDefIcon(thead.querySelector('.th-overall'), 'The actual number this table is ranked by: the worst-case (minimum) hit rate across whichever of L5/L10/L15 are available for this bet. A bet only ranks as high as its weakest window \u2014 one great window can\u2019t hide a mediocre one.');
   appendDefIcon(thead.querySelector('.th-l5'), 'Hit rate over her last 5 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-l10'), 'Hit rate over her last 10 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-l15'), 'Hit rate over her last 15 games played, with the actual record (hits/games) in parentheses.');
@@ -2783,6 +2794,13 @@ function renderTopBetsTable(container, cachedFetch, topN){
     const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
     tdPos.textContent = isProp ? (getPlayerPosition(bet.player, bet.team) || '\u2014') : '\u2014';
 
+    const tdLabel = document.createElement('td'); tdLabel.className='left';
+    tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
+    tdLabel.appendChild(buildLegLabelNode(bet));
+
+    const tdOverall = document.createElement('td'); tdOverall.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
+    tdOverall.textContent = Math.round(worstCaseRate(bet)*100)+'%';
+
     const mkRate = (rate, gp, hitFrac) => {
       const td = document.createElement('td'); td.style.cssText = cellStyle;
       if(rate===null || rate===undefined){ td.textContent = '\u2014'; return td; }
@@ -2795,9 +2813,6 @@ function renderTopBetsTable(container, cachedFetch, topN){
     const tdL10 = mkRate(bet.rate10, bet.gp10, isProp ? hitCountFor(bet,10) : null);
     const tdL15 = mkRate(bet.rate15, bet.gp15, isProp ? hitCountFor(bet,15) : null);
 
-    const tdLabel = document.createElement('td'); tdLabel.className='left';
-    tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
-    tdLabel.appendChild(buildLegLabelNode(bet));
     const tdGame = document.createElement('td'); tdGame.className='left';
     tdGame.style.cssText = cellStyle.replace('text-align:center;','') + 'color:var(--sub);';
     const gameTeams = bet.game.split(' @ ');
@@ -2828,7 +2843,7 @@ function renderTopBetsTable(container, cachedFetch, topN){
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdRank, tdPos, tdL5, tdL10, tdL15, tdLabel, tdGame, tdVsOpp, tdPrice, tdDef, tdAllowed, tdTrack].forEach(td=>tr.appendChild(td));
+    [tdRank, tdPos, tdLabel, tdOverall, tdL5, tdL10, tdL15, tdGame, tdVsOpp, tdPrice, tdDef, tdAllowed, tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
   });
   wrap.appendChild(table);
@@ -2982,7 +2997,7 @@ function renderTopBets(container, cachedFetch, topN){
     widerPool.forEach(c=>{ const key = c.game+'|'+c.label; if(!seen.has(key)){ pool.push(c); seen.add(key); } });
   }
 
-  pool.sort((a,b)=> Math.min(b.rate10,b.rate15) - Math.min(a.rate10,a.rate15));
+  pool.sort((a,b)=> worstCaseRate(b) - worstCaseRate(a));
   const topBets = pool.slice(0, topN);
 
   const sec = document.createElement('div'); sec.className='section-title';
@@ -3003,7 +3018,7 @@ function renderTopBets(container, cachedFetch, topN){
   const grid = document.createElement('div');
   grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:22px;';
   topBets.forEach((c, idx)=>{
-    const worstCase = Math.round(Math.min(c.rate10,c.rate15)*100);
+    const worstCase = Math.round(worstCaseRate(c)*100);
     const isGold = worstCase>=96;
     const card = document.createElement('div');
     card.style.cssText = `border:2px solid var(${isGold?'--gold':'--green'});border-radius:8px;padding:12px;background:var(${isGold?'--goldbg':'--greenbg'});`;
@@ -3552,7 +3567,7 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   });
 
   // sort by worst-case confidence (min of the two windows) descending, so the safest legs lead
-  candidates.sort((a,b)=> Math.min(b.rate10,b.rate15) - Math.min(a.rate10,a.rate15));
+  candidates.sort((a,b)=> worstCaseRate(b) - worstCaseRate(a));
   return candidates;
 }
 
