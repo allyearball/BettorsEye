@@ -2663,7 +2663,8 @@ function renderOddsPage(){
   function renderResultsArea(){
     resultsDiv.innerHTML = '';
     if(viewingSingleGame){
-      windowRow.style.display = 'none';
+      const stickyBar = document.getElementById('gameWindowStickyBar');
+      if(stickyBar) stickyBar.style.display = 'none';
       topBetsDiv.style.display = 'none';
       gameBoxesDiv.style.display = 'none';
       const backBtn = document.createElement('button'); backBtn.className='backbtn'; backBtn.textContent='\u2190 Back to all games';
@@ -2675,7 +2676,8 @@ function renderOddsPage(){
 
       renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null, false);
     } else {
-      windowRow.style.display = '';
+      const stickyBar = document.getElementById('gameWindowStickyBar');
+      if(stickyBar) stickyBar.style.display = '';
       topBetsDiv.style.display = '';
       gameBoxesDiv.style.display = '';
       cachedFetch.forEach(({ev, detail}) => {
