@@ -609,26 +609,26 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
   bar.id = 'gameWindowStickyBar';
   bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:500;background:#fff;'
     + 'border-top:2px solid var(--navy2);box-shadow:0 -2px 10px rgba(0,0,0,0.10);'
-    + 'padding:14px 16px;display:flex;align-items:center;gap:22px;flex-wrap:nowrap;justify-content:flex-start;'
+    + 'padding:12px 14px;display:flex;flex-direction:row;align-items:center;gap:14px;flex-wrap:nowrap;justify-content:flex-start;'
     + 'overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;';
   const label = document.createElement('div');
-  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:15.5px;flex-shrink:0;';
+  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:14px;flex-shrink:0;white-space:nowrap;';
   label.textContent = labelText || 'Game window:';
   bar.appendChild(label);
   GAME_WINDOW_OPTIONS.forEach(opt=>{
     const wrap = document.createElement('label');
-    wrap.style.cssText = 'display:flex;align-items:center;gap:9px;font-size:15.5px;cursor:pointer;flex-shrink:0;';
+    wrap.style.cssText = 'display:inline-flex;flex-direction:row;align-items:center;gap:6px;font-size:14px;cursor:pointer;flex-shrink:0;white-space:nowrap;';
     const rb = document.createElement('input');
     rb.type = 'radio'; rb.name = 'gameWindowStickyRadio'; rb.value = String(opt.value);
     rb.checked = (opt.value === currentWindowMode);
-    rb.style.cssText = 'cursor:pointer;width:20px;height:20px;flex-shrink:0;';
+    rb.style.cssText = 'cursor:pointer;width:18px;height:18px;flex-shrink:0;';
     rb.addEventListener('change', ()=>{ if(rb.checked) onSelect(opt.value); });
     wrap.appendChild(rb);
     wrap.appendChild(document.createTextNode(opt.label));
     bar.appendChild(wrap);
   });
   document.body.appendChild(bar);
-  document.body.style.paddingBottom = '64px'; // room so the fixed bar (now a single row regardless of width) doesn't cover the page's last bit of content
+  document.body.style.paddingBottom = '58px'; // room so the fixed bar doesn't cover the page's last bit of content
   return bar;
 }
 
@@ -2603,6 +2603,11 @@ function renderOddsPage(){
   let cachedFetch = []; // [{ev, detail}] — so switching the window re-renders without hitting the API again
   let viewingSingleGame = null; // {ev, detail} when drilled into one game, else null
   let singleGameWindow = 10;
+  // Persists which game cards and which sections within them are expanded/collapsed, keyed by
+  // event id (stable across a window change) and a fixed section key (NOT the display title,
+  // since that includes the window-size label and would change every time the window changes).
+  // Changing the hit-rate window re-renders the numbers but must not reset what you had open.
+  const gameUiState = {};
 
   // At-a-glance boxes for every game today — team names, spread, total, moneyline, and
   // tip-off time. Click one to jump straight to that game's full bet list. (Note: The Odds
@@ -2682,11 +2687,12 @@ function renderOddsPage(){
       topBetsDiv.style.display = '';
       gameBoxesDiv.style.display = '';
       cachedFetch.forEach(({ev, detail}) => {
+        if(!gameUiState[ev.id]) gameUiState[ev.id] = {collapsed: undefined, sections: {}};
         renderGameOddsBlock(resultsDiv, ev, detail, currentWindow, ()=>{
           viewingSingleGame = {ev, detail};
           singleGameWindow = 10;
           renderResultsArea();
-        });
+        }, undefined, gameUiState[ev.id]);
       });
     }
   }
@@ -3463,9 +3469,13 @@ function renderTopBets(container, cachedFetch, topN){
   container.appendChild(grid);
 }
 
-function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, startCollapsed){
+function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, startCollapsed, uiState){
   windowSize = windowSize===undefined ? 10 : windowSize;
-  startCollapsed = startCollapsed===undefined ? true : startCollapsed;
+  // uiState (if provided) is this specific game's persisted {collapsed, sections} — falls back
+  // to the old hardcoded defaults only the very first time this game is ever rendered.
+  const hasSaved = !!uiState;
+  if(!uiState) uiState = {collapsed: undefined, sections: {}};
+  startCollapsed = uiState.collapsed !== undefined ? uiState.collapsed : (startCollapsed===undefined ? true : startCollapsed);
   const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
   const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
   const wrap = document.createElement('div'); wrap.className='table-wrap'; wrap.style.padding='16px'; wrap.style.marginBottom='20px';
@@ -3517,6 +3527,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     const isExpanded = gameContentDiv.style.display !== 'none';
     gameContentDiv.style.display = isExpanded ? 'none' : '';
     gameArrow.textContent = isExpanded ? '\u25b8' : '\u25be';
+    uiState.collapsed = isExpanded; // now collapsed, since it was just expanded
   });
 
   const recordsDiv = document.createElement('div');
@@ -3668,7 +3679,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   const windowLabelText = windowSize==='all' ? 'Full Season' : `Last ${windowSize}`;
 
   // Small helper: a clickable ▶/▼ header that shows/hides a content block below it.
-  function makeCollapsibleSection(parentEl, titleText, startExpanded){
+  function makeCollapsibleSection(parentEl, titleText, startExpanded, sectionKey){
+    if(sectionKey && uiState.sections[sectionKey] !== undefined) startExpanded = uiState.sections[sectionKey];
     const headerRow = document.createElement('div');
     headerRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-top:4px;';
     const arrow = document.createElement('span');
@@ -3685,35 +3697,36 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const isExpanded = content.style.display !== 'none';
       content.style.display = isExpanded ? 'none' : '';
       arrow.textContent = isExpanded ? '\u25b8' : '\u25be';
+      if(sectionKey) uiState.sections[sectionKey] = !isExpanded;
     });
     return content;
   }
 
-  const sec1Content = makeCollapsibleSection(gameContentDiv, `Full Game \u2014 ${windowLabelText} Hit Rate`, true);
+  const sec1Content = makeCollapsibleSection(gameContentDiv, `Full Game \u2014 ${windowLabelText} Hit Rate`, true, 'fullGame');
   sec1Content.appendChild(lineRow('Moneyline', gameMarkets['h2h'], false, false, true));
   sec1Content.appendChild(lineRow('Spread', gameMarkets['spreads'], true, false, true));
   sec1Content.appendChild(lineRow('Total', gameMarkets['totals'], false, true, true));
 
-  const secTTContent = makeCollapsibleSection(gameContentDiv, `Team Totals (Full Game) \u2014 ${windowLabelText} Hit Rate`, true);
+  const secTTContent = makeCollapsibleSection(gameContentDiv, `Team Totals (Full Game) \u2014 ${windowLabelText} Hit Rate`, true, 'teamTotals');
   secTTContent.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals'], true));
 
   const halfNote = document.createElement('div'); halfNote.className='footnote'; halfNote.style.margin='4px 0 10px';
   halfNote.textContent = 'Half hit rates are derived from this season\u2019s play-by-play data (score at the end of Q2 = 1st half; final minus that = 2nd half). A small number of games can be missing this if their play-by-play log was incomplete \u2014 those are simply excluded from the count rather than treated as a miss, so the games-played figure in the badge may be slightly lower than the full-game one above.';
 
-  const sec2Content = makeCollapsibleSection(gameContentDiv, '1st Half', false);
+  const sec2Content = makeCollapsibleSection(gameContentDiv, '1st Half', false, 'half1');
   sec2Content.appendChild(halfNote.cloneNode(true));
   sec2Content.appendChild(lineRow('Moneyline', detailMarkets['h2h_h1'], false, false, true, 1));
   sec2Content.appendChild(lineRow('Spread', detailMarkets['spreads_h1'], true, false, true, 1));
   sec2Content.appendChild(lineRow('Total', detailMarkets['totals_h1'], false, true, true, 1));
   sec2Content.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h1'], true, 1));
 
-  const sec3Content = makeCollapsibleSection(gameContentDiv, '2nd Half', false);
+  const sec3Content = makeCollapsibleSection(gameContentDiv, '2nd Half', false, 'half2');
   sec3Content.appendChild(lineRow('Moneyline', detailMarkets['h2h_h2'], false, false, true, 2));
   sec3Content.appendChild(lineRow('Spread', detailMarkets['spreads_h2'], true, false, true, 2));
   sec3Content.appendChild(lineRow('Total', detailMarkets['totals_h2'], false, true, true, 2));
   sec3Content.appendChild(teamTotalsRow('Team Total', detailMarkets['team_totals_h2'], true, 2));
 
-  const sec4Content = makeCollapsibleSection(gameContentDiv, `Player Props (Points / Rebounds / Assists / Threes / Pts+Reb+Ast) \u2014 ${windowLabelText} Hit Rate`, true);
+  const sec4Content = makeCollapsibleSection(gameContentDiv, `Player Props (Points / Rebounds / Assists / Threes / Pts+Reb+Ast) \u2014 ${windowLabelText} Hit Rate`, true, 'playerProps');
 
   const propDataRows = [];
   const propMarketsSeen = new Set();
@@ -3803,7 +3816,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   }
 
   // ================= Alternate lines (multiple X+ milestone levels per player) =================
-  const sec5Content = makeCollapsibleSection(gameContentDiv, `Player Props \u2014 Multiple Levels (Alt Lines, incl. Pts+Reb+Ast) \u2014 ${windowLabelText} Hit Rate`, false);
+  const sec5Content = makeCollapsibleSection(gameContentDiv, `Player Props \u2014 Multiple Levels (Alt Lines, incl. Pts+Reb+Ast) \u2014 ${windowLabelText} Hit Rate`, false, 'altLines');
 
   const altDataRows = [];
   const altMarketsSeen = new Set();
@@ -3874,7 +3887,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     sec5Content.appendChild(na2);
   }
 
-  const sec6Content = makeCollapsibleSection(gameContentDiv, 'Auto-Generated Parlays', false);
+  const sec6Content = makeCollapsibleSection(gameContentDiv, 'Auto-Generated Parlays', false, 'parlays');
   buildParlaySection(sec6Content, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.75);
   buildParlaySection(sec6Content, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.70);
 
