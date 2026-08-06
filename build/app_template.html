@@ -609,25 +609,26 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
   bar.id = 'gameWindowStickyBar';
   bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:500;background:#fff;'
     + 'border-top:2px solid var(--navy2);box-shadow:0 -2px 10px rgba(0,0,0,0.10);'
-    + 'padding:24px 16px;display:flex;align-items:center;gap:26px;flex-wrap:wrap;justify-content:center;';
+    + 'padding:14px 16px;display:flex;align-items:center;gap:22px;flex-wrap:nowrap;justify-content:flex-start;'
+    + 'overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;';
   const label = document.createElement('div');
-  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:15.5px;';
+  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:15.5px;flex-shrink:0;';
   label.textContent = labelText || 'Game window:';
   bar.appendChild(label);
   GAME_WINDOW_OPTIONS.forEach(opt=>{
     const wrap = document.createElement('label');
-    wrap.style.cssText = 'display:flex;align-items:center;gap:9px;font-size:15.5px;cursor:pointer;';
+    wrap.style.cssText = 'display:flex;align-items:center;gap:9px;font-size:15.5px;cursor:pointer;flex-shrink:0;';
     const rb = document.createElement('input');
     rb.type = 'radio'; rb.name = 'gameWindowStickyRadio'; rb.value = String(opt.value);
     rb.checked = (opt.value === currentWindowMode);
-    rb.style.cssText = 'cursor:pointer;width:20px;height:20px;';
+    rb.style.cssText = 'cursor:pointer;width:20px;height:20px;flex-shrink:0;';
     rb.addEventListener('change', ()=>{ if(rb.checked) onSelect(opt.value); });
     wrap.appendChild(rb);
     wrap.appendChild(document.createTextNode(opt.label));
     bar.appendChild(wrap);
   });
   document.body.appendChild(bar);
-  document.body.style.paddingBottom = '104px'; // room so the fixed bar (now ~2x taller) doesn't cover the page's last bit of content
+  document.body.style.paddingBottom = '64px'; // room so the fixed bar (now a single row regardless of width) doesn't cover the page's last bit of content
   return bar;
 }
 
