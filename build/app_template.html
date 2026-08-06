@@ -603,7 +603,7 @@ function removeGameWindowStickyBar(){
   if(existing) existing.remove();
   document.body.style.paddingBottom = '';
 }
-function renderGameWindowStickyBar(currentWindowMode, onSelect){
+function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
   removeGameWindowStickyBar();
   const bar = document.createElement('div');
   bar.id = 'gameWindowStickyBar';
@@ -612,7 +612,7 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect){
     + 'padding:24px 16px;display:flex;align-items:center;gap:26px;flex-wrap:wrap;justify-content:center;';
   const label = document.createElement('div');
   label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:15.5px;';
-  label.textContent = 'Game window:';
+  label.textContent = labelText || 'Game window:';
   bar.appendChild(label);
   GAME_WINDOW_OPTIONS.forEach(opt=>{
     const wrap = document.createElement('label');
@@ -2588,8 +2588,7 @@ function renderOddsPage(){
   }
 
   let currentWindow = 10; // list-view window, default matches prior behavior
-  const windowRow = buildWindowSelector('Hit-rate window:', currentWindow, (val)=>{ currentWindow = val; renderResultsArea(); });
-  main.appendChild(windowRow);
+  renderGameWindowStickyBar(currentWindow, (val)=>{ currentWindow = val; renderResultsArea(); }, 'Hit-rate window:');
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
   main.appendChild(statusDiv);
@@ -3471,7 +3470,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   const titleRow = document.createElement('div'); titleRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
   const gameArrow = document.createElement('span');
   gameArrow.textContent = startCollapsed ? '\u25b8' : '\u25be';
-  gameArrow.style.cssText = 'font-size:13px;color:var(--navy2);cursor:pointer;user-select:none;display:inline-block;width:14px;flex-shrink:0;';
+  gameArrow.style.cssText = 'font-size:24px;color:var(--navy2);cursor:pointer;user-select:none;display:inline-block;width:26px;flex-shrink:0;line-height:1;';
   titleRow.appendChild(gameArrow);
 
   const dt = new Date(ev.commence_time);
@@ -3671,7 +3670,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     headerRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-top:4px;';
     const arrow = document.createElement('span');
     arrow.textContent = startExpanded ? '\u25be' : '\u25b8';
-    arrow.style.cssText = 'font-size:12px;color:var(--navy2);display:inline-block;width:12px;flex-shrink:0;';
+    arrow.style.cssText = 'font-size:22px;color:var(--navy2);display:inline-block;width:24px;flex-shrink:0;line-height:1;';
     const titleEl = document.createElement('div'); titleEl.className='section-title'; titleEl.style.margin='0';
     titleEl.textContent = titleText;
     headerRow.appendChild(arrow); headerRow.appendChild(titleEl);
