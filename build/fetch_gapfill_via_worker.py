@@ -34,12 +34,25 @@ def fetch_via_worker(after_date_str, through_date_str):
             f'{worker_url.rstrip("/")}/gapfill/box',
             params={'after': after_date_str, 'through': through_date_str},
             headers={'x-gapfill-secret': notify_secret},
-            timeout=60,
+            timeout=90,
         )
-        resp.raise_for_status()
+    except Exception as e:
+        print(f'WARNING: Worker gap-fill request failed (network-level, never got a response): {e}', file=sys.stderr)
+        return pd.DataFrame()
+
+    if resp.status_code != 200:
+        print(f'WARNING: Worker gap-fill returned HTTP {resp.status_code}. Body (first 500 chars): {resp.text[:500]!r}', file=sys.stderr)
+        return pd.DataFrame()
+
+    try:
         payload = resp.json()
     except Exception as e:
-        print(f'WARNING: Worker gap-fill request failed: {e}', file=sys.stderr)
+        # This is the case that actually happened once already: a 200 status but a body that
+        # isn't valid JSON (empty, truncated, or an HTML error page instead of the expected
+        # JSON) — printing the raw body here is the whole point, so next time this is
+        # diagnosable instead of just "Expecting value: line 1 column 1 (char 0)" again.
+        print(f'WARNING: Worker gap-fill returned HTTP 200 but the body wasn\'t valid JSON ({e}). '
+              f'Body length: {len(resp.text)} chars. Body (first 500 chars): {resp.text[:500]!r}', file=sys.stderr)
         return pd.DataFrame()
 
     for w in payload.get('warnings', []):
