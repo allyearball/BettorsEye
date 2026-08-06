@@ -609,25 +609,25 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect){
   bar.id = 'gameWindowStickyBar';
   bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:500;background:#fff;'
     + 'border-top:2px solid var(--navy2);box-shadow:0 -2px 10px rgba(0,0,0,0.10);'
-    + 'padding:10px 16px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;justify-content:center;';
+    + 'padding:24px 16px;display:flex;align-items:center;gap:26px;flex-wrap:wrap;justify-content:center;';
   const label = document.createElement('div');
-  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:13px;';
+  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:15.5px;';
   label.textContent = 'Game window:';
   bar.appendChild(label);
   GAME_WINDOW_OPTIONS.forEach(opt=>{
     const wrap = document.createElement('label');
-    wrap.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer;';
+    wrap.style.cssText = 'display:flex;align-items:center;gap:9px;font-size:15.5px;cursor:pointer;';
     const rb = document.createElement('input');
     rb.type = 'radio'; rb.name = 'gameWindowStickyRadio'; rb.value = String(opt.value);
     rb.checked = (opt.value === currentWindowMode);
-    rb.style.cursor = 'pointer';
+    rb.style.cssText = 'cursor:pointer;width:20px;height:20px;';
     rb.addEventListener('change', ()=>{ if(rb.checked) onSelect(opt.value); });
     wrap.appendChild(rb);
     wrap.appendChild(document.createTextNode(opt.label));
     bar.appendChild(wrap);
   });
   document.body.appendChild(bar);
-  document.body.style.paddingBottom = '54px'; // room so the fixed bar doesn't cover the page's last bit of content
+  document.body.style.paddingBottom = '104px'; // room so the fixed bar (now ~2x taller) doesn't cover the page's last bit of content
   return bar;
 }
 
@@ -2456,9 +2456,7 @@ async function renderHomePage(){
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
 
   try{
-    const events = await fetchJson(
-      `${workerBase}/v4/sports/basketball_wnba/odds?regions=us&bookmakers=draftkings&markets=h2h,spreads,totals&oddsFormat=american`
-    );
+    const events = await fetchCachedOddsEvents();
     if(!events || events.length===0){
       statusDiv.textContent = 'DraftKings has no WNBA games listed right now.';
       return;
@@ -2475,10 +2473,7 @@ async function renderHomePage(){
     for(const ev of todaysGames){
       let detail = null;
       try{
-        detail = await fetchJson(
-          `${workerBase}/v4/sports/basketball_wnba/events/${ev.id}/odds`
-          + `?regions=us&bookmakers=draftkings&markets=team_totals,player_points,player_rebounds,player_assists,player_threes&oddsFormat=american`
-        );
+        detail = await fetchCachedOddsDetail(ev.id);
       }catch(e){ console.warn('Detail fetch failed for', ev.id, e); }
       cachedForToday.push({ev, detail});
     }
@@ -2711,9 +2706,7 @@ function renderOddsPage(){
     statusDiv.textContent = 'Fetching game lines from DraftKings...';
     fetchBtn.disabled = true;
     try{
-      const baseUrl = `${workerBase}/v4/sports/basketball_wnba/odds`
-        + `?regions=us&bookmakers=draftkings&markets=h2h,spreads,totals&oddsFormat=american`;
-      const events = await fetchJson(baseUrl);
+      const events = await fetchCachedOddsEvents(workerBase);
 
       if(!events || events.length===0){
         statusDiv.textContent = 'DraftKings has no WNBA games listed right now (nothing posted yet, or off-season).';
@@ -2728,9 +2721,7 @@ function renderOddsPage(){
         statusDiv.textContent = `Fetching detail for game ${i+1} of ${events.length}: ${ev.away_team} @ ${ev.home_team}...`;
         let detail = null;
         try{
-          const detailUrl = `${workerBase}/v4/sports/basketball_wnba/events/${ev.id}/odds`
-            + `?regions=us&bookmakers=draftkings&markets=h2h_h1,h2h_h2,spreads_h1,spreads_h2,totals_h1,totals_h2,team_totals,team_totals_h1,team_totals_h2,player_points,player_rebounds,player_assists,player_threes,player_points_rebounds_assists,player_points_alternate,player_rebounds_alternate,player_assists_alternate,player_threes_alternate,player_points_rebounds_assists_alternate&oddsFormat=american`;
-          detail = await fetchJson(detailUrl);
+          detail = await fetchCachedOddsDetail(ev.id, workerBase);
         }catch(e){
           console.warn('Detail fetch failed for', ev.id, e);
         }
@@ -4056,6 +4047,41 @@ function gradeLeg(leg){
   return null;
 }
 
+// Companion to gradeLeg: given a bet that's already resolved (or resolvable), returns a
+// human-readable string of the actual final value that determined the outcome \u2014 the final
+// score for game-level bets, her actual final stat line for player props. Returns null if the
+// game can't be found (still not played, or genuinely no data) rather than guessing.
+function computeFinalValueLabel(bet){
+  const g = findHistoricalGame(bet.team, bet.opponent, bet.gameDate);
+  if(!g) return null;
+  const isHome = g.home === bet.team;
+  const teamPts = isHome ? g.homeScore : g.awayScore;
+  const oppPts = isHome ? g.awayScore : g.homeScore;
+
+  if(bet.betType === 'moneyline'){
+    return `Final: ${bet.team} ${teamPts} \u2013 ${bet.opponent} ${oppPts}`;
+  }
+  if(bet.betType === 'spread'){
+    const margin = teamPts - oppPts;
+    return `Final: ${bet.team} ${teamPts} \u2013 ${bet.opponent} ${oppPts} (margin ${margin>0?'+':''}${margin})`;
+  }
+  if(bet.betType === 'total'){
+    return `Final total: ${teamPts + oppPts}`;
+  }
+  if(bet.betType === 'team_total'){
+    return `Final: ${bet.team} scored ${teamPts}`;
+  }
+  if(bet.betType === 'player_prop' || bet.betType === 'player_prop_alt'){
+    const row = g.rows.find(r=>r.player===bet.player && r.team===bet.team);
+    if(!row) return null;
+    if(row.dnp) return 'DNP';
+    const val = statValue(row, bet.statKey);
+    if(val===null || val===undefined) return null;
+    return `Final: ${val} ${STAT_SHORT_LABEL[bet.statKey] || bet.statKey.toUpperCase()}`;
+  }
+  return null;
+}
+
 // Grades a tracked entry — a straight bet (single implicit leg, using the bet's own
 // top-level fields) or a parlay (bet.legs array; wins only if every leg wins, pushes
 // are treated as removed/neutral per standard parlay rules, still pending if any leg
@@ -4144,6 +4170,25 @@ function nowInEastern(){
 // Same Worker-proxy pattern as the gap-fill feature \u2014 the Worker fetches ESPN's live
 // scoreboard/box score from Cloudflare's network. These two specific routes are unauthenticated
 // (public score data) since they're called directly from the browser, not from build.py.
+// ================= Cached odds (backend-cached via Worker cron, not fetched live per page load) =================
+// Per the architecture recommendation: a Worker Cron Trigger refreshes these in KV on a fixed
+// schedule (see odds-api-proxy-worker.js's scheduled() handler), so a page load reads from
+// cache instead of spending an Odds API credit every single time. The Worker still falls back
+// to a live fetch+cache-write if the cache is empty/stale, so this never just breaks if the
+// cron hasn't run yet.
+async function fetchCachedOddsEvents(workerBaseOverride){
+  const workerBase = workerBaseOverride || (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  const resp = await fetchJson(`${workerBase}/cachedodds/events`);
+  if(resp && resp.error) throw new Error(resp.error);
+  return resp.data || [];
+}
+async function fetchCachedOddsDetail(eventId, workerBaseOverride){
+  const workerBase = workerBaseOverride || (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  const resp = await fetchJson(`${workerBase}/cachedodds/detail?eventId=${eventId}`);
+  if(resp && resp.error) throw new Error(resp.error);
+  return resp.data || null;
+}
+
 async function fetchLiveGamesToday(){
   try{
     const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
@@ -4504,9 +4549,11 @@ async function renderAppTrackerPage(){
   const actionsRow = document.createElement('div'); actionsRow.style.cssText='display:flex;gap:10px;margin:14px 0;flex-wrap:wrap;';
   const refreshBtn = document.createElement('button'); refreshBtn.className='addbtn'; refreshBtn.textContent = '\ud83d\udd04 Refresh';
   const gradeBtn = document.createElement('button'); gradeBtn.className='addbtn'; gradeBtn.textContent = '\u2705 Auto-Grade Pending';
+  const forceRegradeBtn = document.createElement('button'); forceRegradeBtn.className='addbtn'; forceRegradeBtn.textContent = '\u267b\ufe0f Force Re-check All Results';
+  forceRegradeBtn.title = 'Re-grades every pick, including ones that already show a result \u2014 use this if a result looks wrong (a past grading bug could have assigned a result before the game had actually finished).';
   const deleteAllBtn = document.createElement('button'); deleteAllBtn.textContent = '\ud83d\uddd1\ufe0f Delete All Snapshots';
   deleteAllBtn.style.cssText = 'padding:8px 14px;border-radius:6px;border:1px solid var(--red);background:#fff;color:var(--red);font-size:13px;cursor:pointer;font-family:var(--sans);font-weight:700;';
-  actionsRow.appendChild(refreshBtn); actionsRow.appendChild(gradeBtn); actionsRow.appendChild(deleteAllBtn);
+  actionsRow.appendChild(refreshBtn); actionsRow.appendChild(gradeBtn); actionsRow.appendChild(forceRegradeBtn); actionsRow.appendChild(deleteAllBtn);
   main.appendChild(actionsRow);
 
   const tableDiv = document.createElement('div'); main.appendChild(tableDiv);
@@ -4525,6 +4572,25 @@ async function renderAppTrackerPage(){
       }
     }
     return gradedCount;
+  }
+  // Unlike autoGradeAllSnapshots, this re-checks EVERY pick regardless of its current stored
+  // result and overwrites it if the freshly computed result differs \u2014 the fix for a pick that
+  // got graded incorrectly before its game had actually finished (a real bug that existed
+  // before findHistoricalGame was corrected to never fuzzy-match a same-day-or-future game).
+  // Auto-Grade Pending alone can't fix that, since it skips anything already marked non-pending
+  // \u2014 a wrong result would otherwise stay wrong forever.
+  async function forceRegradeAllSnapshots(){
+    let changedCount = 0;
+    for(const bet of bets){
+      const result = gradeTrackedBet(bet);
+      const newResult = result || 'pending';
+      if(newResult !== (bet.result || 'pending')){
+        await appTrackerUpdate(bet.id, {result: newResult});
+        bet.result = newResult;
+        changedCount++;
+      }
+    }
+    return changedCount;
   }
 
   async function refresh(){
@@ -4554,6 +4620,15 @@ async function renderAppTrackerPage(){
     const gradedCount = await autoGradeAllSnapshots();
     gradeBtn.disabled = false; gradeBtn.textContent = '\u2705 Auto-Grade Pending';
     statusDiv.textContent = `Graded ${gradedCount} pick(s). Refreshing\u2026`;
+    await refresh();
+  });
+  forceRegradeBtn.addEventListener('click', async ()=>{
+    if(!bets.length){ alert('Nothing to check \u2014 no snapshots captured yet.'); return; }
+    if(!confirm(`Re-check all ${bets.length} pick(s) against current box scores? Any pick whose result has changed will be overwritten.`)) return;
+    forceRegradeBtn.disabled = true; forceRegradeBtn.textContent = 'Re-checking\u2026';
+    const changedCount = await forceRegradeAllSnapshots();
+    forceRegradeBtn.disabled = false; forceRegradeBtn.textContent = '\u267b\ufe0f Force Re-check All Results';
+    statusDiv.textContent = `Re-checked all picks \u2014 ${changedCount} result(s) changed. Refreshing\u2026`;
     await refresh();
   });
   deleteAllBtn.addEventListener('click', async ()=>{
@@ -4605,7 +4680,7 @@ async function renderAppTrackerPage(){
     const wrap = document.createElement('div'); wrap.className='table-wrap';
     const table = document.createElement('table'); table.style.width='100%';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th class="left">Snapshot Date</th><th class="left">Source</th><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th class="left">Game Time</th><th>Price</th><th>Result</th><th></th></tr>';
+    thead.innerHTML = '<tr><th class="left">Snapshot Date</th><th class="left">Source</th><th>Rank</th><th class="left">Bet</th><th class="left">Game</th><th class="left">Game Time</th><th>Price</th><th>Result</th><th class="left">Final</th><th></th></tr>';
     table.appendChild(thead);
     const tbody = document.createElement('tbody'); table.appendChild(tbody);
     sorted.forEach(bet=>{
@@ -4624,12 +4699,19 @@ async function renderAppTrackerPage(){
       const resultWrap = document.createElement('div'); resultWrap.style.cssText='display:flex;align-items:center;justify-content:center;gap:5px;';
       resultWrap.appendChild(legResultIcon(bet.result)); resultWrap.appendChild(fmtResultBadge(bet.result));
       tdResult.appendChild(resultWrap);
+      const tdFinal = document.createElement('td'); tdFinal.className='left'; tdFinal.style.cssText=cellStyle+'color:var(--sub);';
+      if(bet.result && bet.result!=='pending'){
+        const finalLabel = computeFinalValueLabel(bet);
+        tdFinal.textContent = finalLabel || '\u2014';
+      } else {
+        tdFinal.textContent = '\u2014';
+      }
       const tdActions = document.createElement('td'); tdActions.style.cssText=cellStyle+'text-align:center;white-space:nowrap;';
       const delBtn = document.createElement('button'); delBtn.textContent='Delete';
       delBtn.style.cssText='padding:3px 8px;border-radius:4px;border:1px solid var(--red);background:#fff;color:var(--red);font-size:11px;cursor:pointer;font-family:var(--sans);';
       delBtn.addEventListener('click', async ()=>{ if(!confirm('Delete this snapshot pick?')) return; await appTrackerDelete(bet.id); await refresh(); });
       tdActions.appendChild(delBtn);
-      [tdDate,tdSource,tdRank,tdBet,tdGame,tdTime,tdPrice,tdResult,tdActions].forEach(td=>tr.appendChild(td));
+      [tdDate,tdSource,tdRank,tdBet,tdGame,tdTime,tdPrice,tdResult,tdFinal,tdActions].forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
     });
     wrap.appendChild(table);
