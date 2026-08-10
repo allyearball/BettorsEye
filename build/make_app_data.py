@@ -97,7 +97,7 @@ def compute_halftime_splits(pbp_csv_path, id_to_short_name):
     return splits
 
 
-def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None):
+def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None, injuries_json_path=None, venues_csv_path=None, periods_json_path=None):
     box = pd.read_csv(box_csv_path)
     ros = pd.read_csv(ros_csv_path)
 
@@ -146,6 +146,14 @@ def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None):
             'pts': n(r['points']),
         }
 
+    # Quarter-by-quarter scores, from fetch_sportradar_wnba.py's period_scores output. Keys
+    # are the SAME stable-int game IDs used everywhere else, but written as JSON object keys
+    # (always strings) -- compared as strings below to match reliably.
+    periods_by_game = {}
+    if periods_json_path and os.path.exists(periods_json_path):
+        with open(periods_json_path) as f:
+            periods_by_game = json.load(f)
+
     games_out = {}
     for gid in all_game_ids:
         g = box[box['game_id'] == gid].copy()
@@ -155,12 +163,16 @@ def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None):
         away = teams_meta[teams_meta['home_away'] == 'away'].iloc[0]
         label = f"{date} — {away['team_name']} at {home['team_name']} ({away['team_score']}-{home['team_score']})"
         rows = [game_row(r) for _, r in g.iterrows()]
-        games_out[str(int(gid))] = {
+        game_entry = {
             'id': int(gid), 'label': label, 'date': date,
             'home': home['team_name'], 'away': away['team_name'],
             'homeScore': n(home['team_score']), 'awayScore': n(away['team_score']),
             'rows': rows,
         }
+        period_entry = periods_by_game.get(str(int(gid)))
+        if period_entry:
+            game_entry['periods'] = period_entry
+        games_out[str(int(gid))] = game_entry
 
     def team_summary(team_name, game_ids):
         sub = box[(box['team_name'] == team_name) & (box['game_id'].isin(game_ids))].copy()
@@ -227,6 +239,7 @@ def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None):
         }
 
     full_player_logs = {}
+    has_reason_col = 'not_playing_reason' in box.columns  # older CSVs (pre-dating this field) won't have it -- handled gracefully below rather than crashing
     for t in TEAMS:
         sub_full = box[box['team_name'] == t].copy().sort_values('game_date')
         for aid, prow in sub_full.groupby('athlete_id'):
@@ -237,6 +250,7 @@ def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None):
                 log.append({
                     'date': r['game_date'], 'opp': r['opponent_team_name'], 'homeAway': r['home_away'],
                     'dnp': bool(r['did_not_play']), 'starter': bool(r['starter']),
+                    'notPlayingReason': (r['not_playing_reason'] if has_reason_col and pd.notna(r.get('not_playing_reason')) else None),
                     'min': n(r['minutes']), 'pts': n(r['points']),
                     'fgm': n(r['field_goals_made']), 'fga': n(r['field_goals_attempted']),
                     'fgPct': pct(r['field_goals_made'], r['field_goals_attempted']),
@@ -295,6 +309,28 @@ def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None):
             vs_opp[opp_name] = wl(opp_df)
         team_records[t] = {'overall': overall, 'home': home, 'away': away, 'vsOpponent': vs_opp}
 
+    # Both optional -- injuries from fetch_sportradar_injuries.py's output (already in the
+    # exact {team: [{player, position, status, detail, date}, ...]} shape the frontend
+    # expects), venues from fetch_sportradar_rosters.py's venues.csv. Neither file existing
+    # yet isn't an error -- the frontend already handles DATA.injuries/DATA.teamVenues being
+    # absent gracefully (shows nothing rather than breaking).
+    injuries_out = {}
+    if injuries_json_path and os.path.exists(injuries_json_path):
+        with open(injuries_json_path) as f:
+            loaded = json.load(f)
+        # fetch_injuries.py (ESPN) wraps as {"teams": {...}, "_fetchedAt":...}; the Sportradar
+        # version wrote the {team: [...]} dict directly. Handle either without caring which.
+        injuries_out = loaded.get("teams", loaded) if isinstance(loaded, dict) else {}
+
+    venues_out = {}
+    if venues_csv_path and os.path.exists(venues_csv_path):
+        venues_df = pd.read_csv(venues_csv_path)
+        for _, vr in venues_df.iterrows():
+            venues_out[vr['team_name']] = {
+                'name': n(vr.get('venue_name')), 'city': n(vr.get('venue_city')),
+                'state': n(vr.get('venue_state')), 'capacity': n(vr.get('venue_capacity')),
+            }
+
     data = {
         'generatedThrough': str(box['game_date'].max()),
         'teams': teams_out,
@@ -302,6 +338,8 @@ def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None):
         'teamRecords': team_records,
         'fullPlayerLogs': full_player_logs,
         'fullTeamGames': full_team_games,
+        'injuries': injuries_out,
+        'teamVenues': venues_out,
     }
 
     with open(out_json_path, 'w') as f:
@@ -321,5 +359,8 @@ if __name__ == '__main__':
     ros_path = sys.argv[2] if len(sys.argv) > 2 else 'data/rosters_2026.csv'
     out_path = sys.argv[3] if len(sys.argv) > 3 else 'build_output/app_data.json'
     pbp_path = sys.argv[4] if len(sys.argv) > 4 else 'data/pbp_2026.csv'
-    stats = generate(box_path, ros_path, out_path, pbp_path)
+    injuries_path = sys.argv[5] if len(sys.argv) > 5 else 'data/injuries.json'
+    venues_path = sys.argv[6] if len(sys.argv) > 6 else 'data/venues.csv'
+    periods_path = sys.argv[7] if len(sys.argv) > 7 else 'data/full_season_2026_periods.json'
+    stats = generate(box_path, ros_path, out_path, pbp_path, injuries_path, venues_path, periods_path)
     print(stats)
