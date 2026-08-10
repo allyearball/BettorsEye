@@ -24,11 +24,33 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      # ubuntu-latest is a fresh, disposable VM every single run -- nothing written to disk
+      # survives between runs on its own. build.py does an INCREMENTAL fetch (only the gap
+      # since the last run) and expects data/ to already have everything through last time,
+      # so without this cache step every 10-minute run would silently fall back to a full
+      # season re-fetch (5-10 minutes of continuous ESPN requests, every 10 minutes, forever)
+      # instead of a quick incremental one. This restores whatever the most recent run saved.
+      - name: Restore data cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: wnba-data-${{ github.run_id }}
+          restore-keys: |
+            wnba-data-
+
       - name: Build app (download fresh data, regenerate index.html)
-        env:
-          WORKER_URL: ${{ secrets.WORKER_URL }}
-          NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
         run: python build/build.py
+
+      # Saves this run's updated data/ under a unique key (the previous step's restore-keys
+      # prefix match will pick it up next time, since exact keys never collide on save).
+      - name: Save data cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data
+          key: wnba-data-${{ github.run_id }}
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/pages-action@v1
         with:
@@ -37,10 +59,9 @@ jobs:
           projectName: wnba-explorer
           directory: dist
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check for gold-tier bets and send push notifications
-        env:
-          WORKER_URL: ${{ secrets.WORKER_URL }}
-          NOTIFY_SECRET: ${{ secrets.NOTIFY_SECRET }}
-          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
-          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
-        run: python build/check_gold_bets.py
+
+      # REMOVED: "Check for gold-tier bets and send push notifications" (build/check_gold_bets.py).
+      # That file doesn't exist -- only the subscribe/dedupe infrastructure for push notifications
+      # was ever built, not the actual detect-a-qualifying-bet-and-send-it piece. Running this
+      # step would fail every single run. This is a separate, substantial feature (VAPID JWT
+      # signing + Web Push encryption) to build as its own task, not something to fake here.
