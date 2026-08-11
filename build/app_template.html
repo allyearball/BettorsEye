@@ -2678,6 +2678,30 @@ const WORKER_URL_LS_KEY = 'wnba_odds_worker_url';
 // works immediately with no per-browser setup step.
 const DEFAULT_WORKER_URL = 'https://odds-api-proxy.allyearball.workers.dev';
 
+// ---- Auth token persistence, used by Bet Tracker's login/signup gate ----
+// Unlike the Worker URL above, this genuinely is sensitive (it's what proves who you are to
+// the Worker) -- it lives only in this browser's localStorage, is never baked into the app,
+// and is sent only to your own Worker over HTTPS, never anywhere else.
+const AUTH_TOKEN_LS_KEY = 'wnba_auth_token';
+const AUTH_EMAIL_LS_KEY = 'wnba_auth_email';
+function getAuthToken(){ return localStorage.getItem(AUTH_TOKEN_LS_KEY); }
+function getAuthEmail(){ return localStorage.getItem(AUTH_EMAIL_LS_KEY); }
+function setAuthSession(token, email){
+  localStorage.setItem(AUTH_TOKEN_LS_KEY, token);
+  localStorage.setItem(AUTH_EMAIL_LS_KEY, email);
+}
+function clearAuthSession(){
+  localStorage.removeItem(AUTH_TOKEN_LS_KEY);
+  localStorage.removeItem(AUTH_EMAIL_LS_KEY);
+}
+function isLoggedIn(){ return !!getAuthToken(); }
+// Merges an Authorization header onto whatever headers a call already wants to send --
+// spread this INTO the headers object of any fetchJson() call that hits an auth-gated route.
+function authHeaders(){
+  const token = getAuthToken();
+  return token ? {'Authorization': `Bearer ${token}`} : {};
+}
+
 async function saveUrl(workerUrl){
   try{
     if(window.storage && window.storage.set){ await window.storage.set('odds_worker_url', workerUrl, false); }
@@ -4893,25 +4917,101 @@ function americanPayoutProfit(price, stake){
   return stake * (dec - 1);
 }
 
+// Shown in place of the Bet Tracker page whenever there's no valid session. A shared function
+// (rather than living inside renderBetTrackerPage) so any other page that ends up needing the
+// same private-per-user treatment later can reuse it without duplicating this UI.
+function renderAuthGate(container, onSuccess){
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'max-width:380px;margin:40px auto;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);';
+
+  const title = document.createElement('h2');
+  title.textContent = '\ud83d\udd12 Bet Tracker is private';
+  title.style.cssText = 'margin:0 0 8px;font-size:19px;';
+  wrap.appendChild(title);
+
+  const sub = document.createElement('div');
+  sub.className = 'footnote';
+  sub.style.marginBottom = '18px';
+  sub.textContent = 'Log in or create an account to see and track your own bets \u2014 your tracked bets are private to your account and no one else\u2019s.';
+  wrap.appendChild(sub);
+
+  const emailInput = document.createElement('input');
+  emailInput.type = 'email'; emailInput.placeholder = 'Email'; emailInput.autocomplete = 'email';
+  emailInput.style.cssText = 'width:100%;padding:10px;margin-bottom:10px;border:1px solid var(--line);border-radius:6px;font-size:14px;font-family:var(--sans);box-sizing:border-box;';
+
+  const pwInput = document.createElement('input');
+  pwInput.type = 'password'; pwInput.placeholder = 'Password (min 8 characters)'; pwInput.autocomplete = 'current-password';
+  pwInput.style.cssText = emailInput.style.cssText;
+
+  const errorDiv = document.createElement('div');
+  errorDiv.style.cssText = 'color:#b3261e;font-size:12.5px;margin-bottom:10px;min-height:16px;';
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:10px;';
+  const loginBtn = document.createElement('button'); loginBtn.className='addbtn'; loginBtn.textContent='Log In';
+  const signupBtn = document.createElement('button'); signupBtn.className='addbtn'; signupBtn.textContent='Sign Up';
+  btnRow.appendChild(loginBtn); btnRow.appendChild(signupBtn);
+
+  // fetchJson throws on non-2xx responses (both login's 401 and signup's 400 use non-2xx for
+  // real errors), so the actual "{"error":"..."}" body ends up embedded in the thrown Error's
+  // message rather than a clean return value -- this pulls the human-readable message back out
+  // instead of showing raw "HTTP 401: {...}" text.
+  function extractErrorMessage(err){
+    const match = String(err.message||'').match(/\{.*\}/);
+    if(match){
+      try{ const parsed = JSON.parse(match[0]); if(parsed.error) return parsed.error; }catch(_){}
+    }
+    return err.message || 'Something went wrong.';
+  }
+
+  async function attempt(path, btn){
+    errorDiv.textContent = '';
+    const email = emailInput.value.trim();
+    const password = pwInput.value;
+    if(!email || !password){ errorDiv.textContent = 'Enter an email and password.'; return; }
+    btn.disabled = true; const origText = btn.textContent; btn.textContent = 'Please wait\u2026';
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      const result = await fetchJson(`${workerBase}${path}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password})});
+      setAuthSession(result.token, result.email);
+      onSuccess();
+      return;
+    }catch(e){
+      errorDiv.textContent = extractErrorMessage(e);
+    }
+    btn.disabled = false; btn.textContent = origText;
+  }
+
+  loginBtn.addEventListener('click', ()=>attempt('/auth/login', loginBtn));
+  signupBtn.addEventListener('click', ()=>attempt('/auth/signup', signupBtn));
+  pwInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter') attempt('/auth/login', loginBtn); });
+
+  wrap.appendChild(emailInput);
+  wrap.appendChild(pwInput);
+  wrap.appendChild(errorDiv);
+  wrap.appendChild(btnRow);
+  container.appendChild(wrap);
+}
+
 async function trackerAdd(bet){
   // Every path that creates a tracked bet (manual form, history import, bulk JSON import,
   // screenshot parse) funnels through here -- defaulting placedAt centrally means the Time
   // column always has a real placement timestamp, not just for bets imported with one already.
   const withPlacedAt = Object.assign({placedAt: new Date().toISOString()}, bet);
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-  return fetchJson(`${workerBase}/tracker/add`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(withPlacedAt)});
+  return fetchJson(`${workerBase}/tracker/add`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body:JSON.stringify(withPlacedAt)});
 }
 async function trackerList(){
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-  return fetchJson(`${workerBase}/tracker/list`);
+  return fetchJson(`${workerBase}/tracker/list`, {headers: authHeaders()});
 }
 async function trackerUpdate(id, patch){
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-  return fetchJson(`${workerBase}/tracker/update`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id, patch})});
+  return fetchJson(`${workerBase}/tracker/update`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body:JSON.stringify({id, patch})});
 }
 async function trackerDelete(id){
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-  return fetchJson(`${workerBase}/tracker/delete`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id})});
+  return fetchJson(`${workerBase}/tracker/delete`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body:JSON.stringify({id})});
 }
 
 // ================= App Tracker (auto-captured daily Top 30 snapshots) =================
@@ -5978,9 +6078,26 @@ async function renderBetTrackerPage(){
   lastRender = () => renderBetTrackerPage();
   main.innerHTML = '';
   removeGameWindowStickyBar();
+
+  if(!isLoggedIn()){
+    renderAuthGate(main, ()=>renderBetTrackerPage());
+    return;
+  }
+
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83d\udcdd Bet Tracker</h2><div class="meta">A mock record of bets you've made or want to track \u2014 stored on your Worker, so it's the same list on any device. Auto-grades against this app's own historical box scores whenever the game is already in our data.</div>`;
   main.appendChild(head);
+
+  const acctRow = document.createElement('div'); acctRow.style.cssText='display:flex;align-items:center;gap:12px;margin-bottom:14px;font-size:12.5px;color:var(--sub);';
+  const acctLabel = document.createElement('span'); acctLabel.textContent = `Logged in as ${getAuthEmail()}`;
+  const logoutLink = document.createElement('a'); logoutLink.href='javascript:void(0)'; logoutLink.className='player-link'; logoutLink.textContent='Log Out';
+  logoutLink.addEventListener('click', async ()=>{
+    try{ await fetchJson(`${(await loadSavedUrl()) || DEFAULT_WORKER_URL}/auth/logout`, {method:'POST', headers: authHeaders()}); }catch(e){ /* best-effort -- clear locally regardless */ }
+    clearAuthSession();
+    renderBetTrackerPage();
+  });
+  acctRow.appendChild(acctLabel); acctRow.appendChild(logoutLink);
+  main.appendChild(acctRow);
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
   statusDiv.textContent = 'Loading your tracked bets\u2026';
