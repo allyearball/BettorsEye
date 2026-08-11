@@ -45,11 +45,17 @@
   th,td{padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap;text-align:right;font-size:12.5px;color:var(--ink);}
   th:first-child, td:first-child, th.left, td.left{text-align:left;}
   thead th{position:sticky;top:0;background:#eef1f6;color:var(--navy2);font-size:11px;text-transform:uppercase;cursor:pointer;user-select:none;border-bottom:2px solid var(--line);}
+  thead th.col-highlighted{background:#cfe0fc;}
+  td.col-highlighted{background:#eaf1fd;}
+  tbody tr:nth-child(even) td.col-highlighted{background:#e0ebfb;}
+  tbody tr:hover td.col-highlighted{background:#d5e5fa;}
   thead th:hover{background:#e2e7f0;}
   thead th .arrow{font-size:9px;margin-left:3px;color:var(--sub);}
   tbody tr:nth-child(even){background:#fafbfd;}
   tbody tr:hover{background:#eef4ff;}
   tbody tr.starter td.left{font-weight:700;}
+  tbody tr.starter td.left.no-starter-bold{font-weight:400;}
+  td.col-highlighted:not(.left){font-weight:700;}
   .footnote{font-size:11.5px;color:var(--sub);margin-top:10px;line-height:1.5;}
   .gamelist{display:flex;flex-direction:column;gap:6px;}
   .gamechip{text-align:left;background:#fff;border:1px solid var(--line);border-radius:6px;padding:8px 12px;font-size:12.5px;cursor:pointer;color:var(--ink);}
@@ -206,7 +212,7 @@ const STAT_DEFINITIONS = {
 
 function makeTable(container, columns, rows, opts){
   opts = opts||{};
-  const state = {sortKey: opts.defaultSort||(columns[0]&&columns[0].key), sortDir: opts.defaultDir||'desc'};
+  const state = {sortKey: opts.defaultSort||(columns[0]&&columns[0].key), sortDir: opts.defaultDir||'desc', highlightKey: null};
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const controls = document.createElement('div'); controls.className='controls';
   const hasPlayedConcept = rows.length>0 && ('min' in rows[0] || 'gp' in rows[0]);
@@ -244,6 +250,18 @@ function makeTable(container, columns, rows, opts){
     if('min' in r) return r.dnp===true || r.min===null || r.min===undefined || r.min===0;
     return false;
   }
+  function applyHighlightClasses(){
+    const ths = trh.querySelectorAll('th');
+    columns.forEach((col, i)=>{
+      ths[i].classList.toggle('col-highlighted', state.highlightKey===col.key);
+    });
+    tbody.querySelectorAll('tr').forEach(tr=>{
+      const tds = tr.querySelectorAll('td');
+      columns.forEach((col, i)=>{
+        if(tds[i]) tds[i].classList.toggle('col-highlighted', state.highlightKey===col.key);
+      });
+    });
+  }
   function render(){
     let data = rows.slice();
     if(cb && cb.checked) data = data.filter(r=>!didNotPlay(r));
@@ -254,6 +272,12 @@ function makeTable(container, columns, rows, opts){
       if(r.starter) tr.classList.add('starter');
       columns.forEach(col=>{
         const td = document.createElement('td'); if(col.left) td.classList.add('left');
+        if(col.noBoldStarter) td.classList.add('no-starter-bold');
+        td.style.cursor = 'pointer';
+        td.addEventListener('click', ()=>{
+          state.highlightKey = state.highlightKey===col.key ? null : col.key;
+          applyHighlightClasses();
+        });
         if(col.key==='player' && opts.teamFor){
           const team = opts.teamFor(r);
           const link = document.createElement('a');
@@ -289,6 +313,7 @@ function makeTable(container, columns, rows, opts){
       const arrow = th.querySelector('.arrow');
       arrow.textContent = columns[i].key===state.sortKey ? (state.sortDir==='asc'?'\u25B2':'\u25BC') : '';
     });
+    applyHighlightClasses();
   }
   if(cb) cb.addEventListener('change', render);
   render();
@@ -1481,8 +1506,8 @@ function computePlayerAdvancedLog(pl, team){
 }
 
 const PLAYER_LOG_COLS = [
-  {key:'date', label:'Date', left:true}, {key:'opp', label:'Opponent', left:true},
-  {key:'homeAway', label:'H/A', left:true}, {key:'starter', label:'Start', bool:true}, {key:'dnp', label:'DNP', bool:true},
+  {key:'date', label:'Date', left:true, noBoldStarter:true}, {key:'opp', label:'Opponent', left:true, noBoldStarter:true},
+  {key:'homeAway', label:'H/A', left:true, noBoldStarter:true}, {key:'starter', label:'Start', bool:true}, {key:'dnp', label:'DNP', bool:true},
   {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
   {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
