@@ -1828,6 +1828,11 @@ function buildTopLinks(){
   tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn); tl.appendChild(appTrackerBtn);
 }
 async function initApp(){
+  const resetToken = new URLSearchParams(window.location.search).get('resetToken');
+  if(resetToken){
+    renderResetPasswordPage(resetToken);
+    return;
+  }
   try {
     DATA = await loadData();
   } catch (err) {
@@ -4926,6 +4931,66 @@ function americanPayoutProfit(price, stake){
 // Shown in place of the Bet Tracker page whenever there's no valid session. A shared function
 // (rather than living inside renderBetTrackerPage) so any other page that ends up needing the
 // same private-per-user treatment later can reuse it without duplicating this UI.
+// Shown when the app loads with a ?resetToken= URL param -- i.e. the user clicked the link
+// from a password-reset email. Runs BEFORE DATA has loaded (initApp checks for this token
+// first), so this must not depend on DATA, TEAM_NAMES, or anything else app-data-related.
+function renderResetPasswordPage(token){
+  main.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'max-width:380px;margin:60px auto;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);';
+
+  const title = document.createElement('h2');
+  title.textContent = 'Set a new password';
+  title.style.cssText = 'margin:0 0 18px;font-size:19px;';
+  wrap.appendChild(title);
+
+  const pwInput = document.createElement('input');
+  pwInput.type = 'password'; pwInput.placeholder = 'New password (min 8 characters)'; pwInput.autocomplete = 'new-password';
+  pwInput.style.cssText = 'width:100%;padding:10px;margin-bottom:10px;border:1px solid var(--line);border-radius:6px;font-size:14px;font-family:var(--sans);box-sizing:border-box;';
+
+  const pwConfirm = document.createElement('input');
+  pwConfirm.type = 'password'; pwConfirm.placeholder = 'Confirm new password'; pwConfirm.autocomplete = 'new-password';
+  pwConfirm.style.cssText = pwInput.style.cssText;
+
+  const errorDiv = document.createElement('div');
+  errorDiv.style.cssText = 'color:#b3261e;font-size:12.5px;margin-bottom:10px;min-height:16px;';
+
+  const submitBtn = document.createElement('button'); submitBtn.className = 'addbtn'; submitBtn.textContent = 'Set New Password';
+
+  function extractErrorMessage(err){
+    const match = String(err.message||'').match(/\{.*\}/);
+    if(match){ try{ const parsed = JSON.parse(match[0]); if(parsed.error) return parsed.error; }catch(_){} }
+    return err.message || 'Something went wrong.';
+  }
+
+  submitBtn.addEventListener('click', async ()=>{
+    errorDiv.textContent = '';
+    if(pwInput.value.length < 8){ errorDiv.textContent = 'Password must be at least 8 characters.'; return; }
+    if(pwInput.value !== pwConfirm.value){ errorDiv.textContent = 'Passwords don\u2019t match.'; return; }
+    submitBtn.disabled = true; submitBtn.textContent = 'Please wait\u2026';
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      const result = await fetchJson(`${workerBase}/auth/reset-password`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({token, newPassword: pwInput.value})});
+      setAuthSession(result.token, result.email || '');
+      wrap.innerHTML = '';
+      const doneTitle = document.createElement('h2'); doneTitle.style.cssText = 'margin:0 0 8px;font-size:19px;'; doneTitle.textContent = 'Password updated \u2705';
+      const doneSub = document.createElement('div'); doneSub.className = 'footnote';
+      const link = document.createElement('a'); link.href = window.location.origin + window.location.pathname; link.className = 'player-link'; link.textContent = 'Continue to the app';
+      doneSub.appendChild(document.createTextNode('You\u2019re logged in. ')); doneSub.appendChild(link);
+      wrap.appendChild(doneTitle); wrap.appendChild(doneSub);
+    }catch(e){
+      errorDiv.textContent = extractErrorMessage(e);
+      submitBtn.disabled = false; submitBtn.textContent = 'Set New Password';
+    }
+  });
+
+  wrap.appendChild(pwInput);
+  wrap.appendChild(pwConfirm);
+  wrap.appendChild(errorDiv);
+  wrap.appendChild(submitBtn);
+  main.appendChild(wrap);
+}
+
 function renderAuthGate(container, onSuccess){
   const wrap = document.createElement('div');
   wrap.style.cssText = 'max-width:380px;margin:40px auto;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);';
@@ -4992,11 +5057,154 @@ function renderAuthGate(container, onSuccess){
   signupBtn.addEventListener('click', ()=>attempt('/auth/signup', signupBtn));
   pwInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter') attempt('/auth/login', loginBtn); });
 
+  const forgotLink = document.createElement('a');
+  forgotLink.href = 'javascript:void(0)'; forgotLink.className = 'player-link';
+  forgotLink.textContent = 'Forgot password?';
+  forgotLink.style.cssText = 'display:inline-block;margin-top:12px;font-size:12.5px;';
+
+  const forgotWrap = document.createElement('div');
+  forgotWrap.style.cssText = 'display:none;margin-top:14px;padding-top:14px;border-top:1px solid var(--line);';
+  const forgotSub = document.createElement('div'); forgotSub.className = 'footnote'; forgotSub.style.marginBottom = '10px';
+  forgotSub.textContent = 'Enter your account email and we\u2019ll send a link to reset your password.';
+  const forgotEmailInput = document.createElement('input');
+  forgotEmailInput.type = 'email'; forgotEmailInput.placeholder = 'Email'; forgotEmailInput.autocomplete = 'email';
+  forgotEmailInput.style.cssText = emailInput.style.cssText;
+  const forgotStatus = document.createElement('div');
+  forgotStatus.style.cssText = 'font-size:12.5px;margin-bottom:10px;min-height:16px;';
+  const forgotBtn = document.createElement('button'); forgotBtn.className = 'addbtn'; forgotBtn.textContent = 'Send Reset Link';
+
+  forgotLink.addEventListener('click', ()=>{
+    forgotWrap.style.display = forgotWrap.style.display === 'none' ? 'block' : 'none';
+  });
+  forgotBtn.addEventListener('click', async ()=>{
+    forgotStatus.style.color = 'var(--sub)';
+    const email = forgotEmailInput.value.trim();
+    if(!email){ forgotStatus.style.color = '#b3261e'; forgotStatus.textContent = 'Enter your email.'; return; }
+    forgotBtn.disabled = true; forgotBtn.textContent = 'Sending\u2026';
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      const result = await fetchJson(`${workerBase}/auth/forgot-password`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email})});
+      forgotStatus.style.color = 'var(--green)';
+      forgotStatus.textContent = result.message || 'If an account exists with that email, a reset link has been sent.';
+    }catch(e){
+      forgotStatus.style.color = '#b3261e';
+      forgotStatus.textContent = extractErrorMessage(e);
+    }
+    forgotBtn.disabled = false; forgotBtn.textContent = 'Send Reset Link';
+  });
+
+  forgotWrap.appendChild(forgotSub);
+  forgotWrap.appendChild(forgotEmailInput);
+  forgotWrap.appendChild(forgotStatus);
+  forgotWrap.appendChild(forgotBtn);
+
   wrap.appendChild(emailInput);
   wrap.appendChild(pwInput);
   wrap.appendChild(errorDiv);
   wrap.appendChild(btnRow);
+  wrap.appendChild(forgotLink);
+  wrap.appendChild(forgotWrap);
   container.appendChild(wrap);
+}
+
+function renderAccountSettingsPage(){
+  lastRender = () => renderAccountSettingsPage();
+  main.innerHTML = '';
+  removeGameWindowStickyBar();
+
+  if(!isLoggedIn()){
+    renderAuthGate(main, ()=>renderAccountSettingsPage());
+    return;
+  }
+
+  const head = document.createElement('div'); head.className='pagehead';
+  head.innerHTML = `<h2>\u2699\ufe0f Account Settings</h2><div class="meta">Update your login email or password.</div>`;
+  main.appendChild(head);
+
+  const backLink = document.createElement('a'); backLink.href='javascript:void(0)'; backLink.className='backbtn';
+  backLink.textContent = '\u2190 Back to Bet Tracker';
+  backLink.addEventListener('click', ()=>renderBetTrackerPage());
+  main.appendChild(backLink);
+
+  function extractErrorMessage(err){
+    const match = String(err.message||'').match(/\{.*\}/);
+    if(match){ try{ const parsed = JSON.parse(match[0]); if(parsed.error) return parsed.error; }catch(_){} }
+    return err.message || 'Something went wrong.';
+  }
+  function styledInput(type, placeholder, autocomplete){
+    const inp = document.createElement('input');
+    inp.type = type; inp.placeholder = placeholder; if(autocomplete) inp.autocomplete = autocomplete;
+    inp.style.cssText = 'width:100%;max-width:340px;padding:10px;margin-bottom:10px;border:1px solid var(--line);border-radius:6px;font-size:14px;font-family:var(--sans);box-sizing:border-box;display:block;';
+    return inp;
+  }
+
+  // ---- Change email ----
+  const emailSec = document.createElement('div');
+  emailSec.style.cssText = 'max-width:400px;padding:20px;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:20px;';
+  const emailTitle = document.createElement('div'); emailTitle.style.cssText = 'font-weight:800;font-size:15px;margin-bottom:4px;';
+  emailTitle.textContent = 'Change Email';
+  const emailCurrent = document.createElement('div'); emailCurrent.className = 'footnote'; emailCurrent.style.marginBottom = '14px';
+  emailCurrent.textContent = `Current: ${getAuthEmail()}`;
+  const newEmailInput = styledInput('email', 'New email', 'email');
+  const emailPwInput = styledInput('password', 'Current password (to confirm)', 'current-password');
+  const emailStatus = document.createElement('div'); emailStatus.style.cssText = 'font-size:12.5px;margin-bottom:10px;min-height:16px;';
+  const emailBtn = document.createElement('button'); emailBtn.className = 'addbtn'; emailBtn.textContent = 'Update Email';
+  emailBtn.addEventListener('click', async ()=>{
+    emailStatus.style.color = '#b3261e'; emailStatus.textContent = '';
+    if(!newEmailInput.value.trim() || !emailPwInput.value){ emailStatus.textContent = 'Enter a new email and your current password.'; return; }
+    emailBtn.disabled = true; emailBtn.textContent = 'Updating\u2026';
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      const result = await fetchJson(`${workerBase}/auth/change-email`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({newEmail: newEmailInput.value.trim(), currentPassword: emailPwInput.value})});
+      setAuthSession(getAuthToken(), result.email);
+      emailStatus.style.color = 'var(--green)'; emailStatus.textContent = 'Email updated.';
+      emailCurrent.textContent = `Current: ${result.email}`;
+      newEmailInput.value = ''; emailPwInput.value = '';
+    }catch(e){
+      emailStatus.style.color = '#b3261e';
+      emailStatus.textContent = extractErrorMessage(e);
+    }
+    emailBtn.disabled = false; emailBtn.textContent = 'Update Email';
+  });
+  emailSec.appendChild(emailTitle); emailSec.appendChild(emailCurrent);
+  emailSec.appendChild(newEmailInput); emailSec.appendChild(emailPwInput);
+  emailSec.appendChild(emailStatus); emailSec.appendChild(emailBtn);
+  main.appendChild(emailSec);
+
+  // ---- Change password ----
+  const pwSec = document.createElement('div');
+  pwSec.style.cssText = emailSec.style.cssText;
+  const pwTitle = document.createElement('div'); pwTitle.style.cssText = emailTitle.style.cssText;
+  pwTitle.textContent = 'Change Password';
+  const pwNote = document.createElement('div'); pwNote.className = 'footnote'; pwNote.style.marginBottom = '14px';
+  pwNote.textContent = 'Changing your password logs you out everywhere else \u2014 this device stays logged in.';
+  const currentPwInput = styledInput('password', 'Current password', 'current-password');
+  const newPwInput = styledInput('password', 'New password (min 8 characters)', 'new-password');
+  const newPwConfirm = styledInput('password', 'Confirm new password', 'new-password');
+  const pwStatus = document.createElement('div'); pwStatus.style.cssText = 'font-size:12.5px;margin-bottom:10px;min-height:16px;';
+  const pwBtn = document.createElement('button'); pwBtn.className = 'addbtn'; pwBtn.textContent = 'Update Password';
+  pwBtn.addEventListener('click', async ()=>{
+    pwStatus.style.color = '#b3261e'; pwStatus.textContent = '';
+    if(!currentPwInput.value || !newPwInput.value){ pwStatus.textContent = 'Fill in all fields.'; return; }
+    if(newPwInput.value.length < 8){ pwStatus.textContent = 'New password must be at least 8 characters.'; return; }
+    if(newPwInput.value !== newPwConfirm.value){ pwStatus.textContent = 'New passwords don\u2019t match.'; return; }
+    pwBtn.disabled = true; pwBtn.textContent = 'Updating\u2026';
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      const result = await fetchJson(`${workerBase}/auth/change-password`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({currentPassword: currentPwInput.value, newPassword: newPwInput.value})});
+      setAuthSession(result.token, getAuthEmail()); // server issued a fresh token since all other sessions were just invalidated
+      pwStatus.style.color = 'var(--green)'; pwStatus.textContent = 'Password updated.';
+      currentPwInput.value = ''; newPwInput.value = ''; newPwConfirm.value = '';
+    }catch(e){
+      pwStatus.style.color = '#b3261e';
+      pwStatus.textContent = extractErrorMessage(e);
+    }
+    pwBtn.disabled = false; pwBtn.textContent = 'Update Password';
+  });
+  pwSec.appendChild(pwTitle); pwSec.appendChild(pwNote);
+  pwSec.appendChild(currentPwInput); pwSec.appendChild(newPwInput); pwSec.appendChild(newPwConfirm);
+  pwSec.appendChild(pwStatus); pwSec.appendChild(pwBtn);
+  main.appendChild(pwSec);
 }
 
 async function trackerAdd(bet){
@@ -6114,13 +6322,15 @@ async function renderBetTrackerPage(){
 
   const acctRow = document.createElement('div'); acctRow.style.cssText='display:flex;align-items:center;gap:12px;margin-bottom:14px;font-size:12.5px;color:var(--sub);';
   const acctLabel = document.createElement('span'); acctLabel.textContent = `Logged in as ${getAuthEmail()}`;
+  const settingsLink = document.createElement('a'); settingsLink.href='javascript:void(0)'; settingsLink.className='player-link'; settingsLink.textContent='\u2699\ufe0f Account Settings';
+  settingsLink.addEventListener('click', ()=>renderAccountSettingsPage());
   const logoutLink = document.createElement('a'); logoutLink.href='javascript:void(0)'; logoutLink.className='player-link'; logoutLink.textContent='Log Out';
   logoutLink.addEventListener('click', async ()=>{
     try{ await fetchJson(`${(await loadSavedUrl()) || DEFAULT_WORKER_URL}/auth/logout`, {method:'POST', headers: authHeaders()}); }catch(e){ /* best-effort -- clear locally regardless */ }
     clearAuthSession();
     renderBetTrackerPage();
   });
-  acctRow.appendChild(acctLabel); acctRow.appendChild(logoutLink);
+  acctRow.appendChild(acctLabel); acctRow.appendChild(settingsLink); acctRow.appendChild(logoutLink);
   main.appendChild(acctRow);
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
