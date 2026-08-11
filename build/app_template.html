@@ -5500,29 +5500,46 @@ async function maybeSnapshotTodaysTopBets(cachedForToday){
   _snapshotAttemptedThisSession = true;
   try{
     const existing = await appTrackerListAll();
-    if(existing.some(b => b.snapshotDate === et.dateStr)) return; // already captured today
+    // Checked PER SOURCE, not just "does today have any record at all" -- if standard and
+    // advanced ever end up captured at different times (a partial failure, a retry, or simply
+    // this function being called more than once across the day), the old blanket check would
+    // see "something exists for today" and skip entirely, permanently leaving whichever
+    // category never got saved empty for that whole day with no way to backfill it.
+    const haveStandardToday = existing.some(b => b.snapshotDate === et.dateStr && b.snapshotSource === 'standard');
+    const haveAdvancedToday = existing.some(b => b.snapshotDate === et.dateStr && b.snapshotSource === 'advanced');
+    if(haveStandardToday && haveAdvancedToday) return; // both already captured today -- nothing to do
 
     const snapshotTime = new Date().toISOString();
     const toSnapshot = [];
 
-    const std = computeStandardTopBets(cachedForToday, 30);
-    std.topBets.forEach((bet, i)=>{
-      toSnapshot.push(Object.assign({}, bet, {
-        snapshotDate: et.dateStr, snapshotSource: 'standard', snapshotRank: i+1, snapshotAt: snapshotTime,
-        result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
-      }));
-    });
+    if(!haveStandardToday){
+      const std = computeStandardTopBets(cachedForToday, 30);
+      std.topBets.forEach((bet, i)=>{
+        toSnapshot.push(Object.assign({}, bet, {
+          snapshotDate: et.dateStr, snapshotSource: 'standard', snapshotRank: i+1, snapshotAt: snapshotTime,
+          result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
+        }));
+      });
+    }
 
-    const todaysGamesAdv = cachedForToday.filter(({ev}) => new Date(ev.commence_time).toDateString() === new Date().toDateString() && isEligibleForTopBets(ev, new Date()));
-    const advPool = buildAdvancedEdgeCandidates(todaysGamesAdv).slice(0, 30);
-    advPool.forEach((bet, i)=>{
-      toSnapshot.push(Object.assign({}, bet, {
-        snapshotDate: et.dateStr, snapshotSource: 'advanced', snapshotRank: i+1, snapshotAt: snapshotTime,
-        result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
-      }));
-    });
+    if(!haveAdvancedToday){
+      const todaysGamesAdv = cachedForToday.filter(({ev}) => new Date(ev.commence_time).toDateString() === new Date().toDateString() && isEligibleForTopBets(ev, new Date()));
+      const advPool = buildAdvancedEdgeCandidates(todaysGamesAdv).slice(0, 30);
+      advPool.forEach((bet, i)=>{
+        toSnapshot.push(Object.assign({}, bet, {
+          snapshotDate: et.dateStr, snapshotSource: 'advanced', snapshotRank: i+1, snapshotAt: snapshotTime,
+          result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
+        }));
+      });
+    }
 
-    for(const bet of toSnapshot){ await appTrackerAdd(bet); }
+    // Save each item independently rather than letting one failure abort everything after it
+    // in the loop -- a single transient error (e.g. one network blip on one KV write) used to
+    // silently discard every remaining item in the batch, not just the one that failed.
+    for(const bet of toSnapshot){
+      try{ await appTrackerAdd(bet); }
+      catch(e){ console.warn('Snapshot save failed for one pick (continuing with the rest):', bet.label, e); }
+    }
   }catch(e){
     console.warn('Daily Top 30 snapshot failed', e);
   }
