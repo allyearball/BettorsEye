@@ -4874,7 +4874,10 @@ function gradeLeg(leg){
 // score for game-level bets, her actual final stat line for player props. Returns null if the
 // game can't be found (still not played, or genuinely no data) rather than guessing.
 function computeFinalValueLabel(bet){
-  const g = findHistoricalGame(bet.team, bet.opponent, bet.gameDate);
+  // Same fix as gradeLeg: recompute the date fresh from commenceTime rather than trusting a
+  // possibly-stale stored gameDate (wrong by a day for any 8pm-ET-or-later game, pre-fix).
+  const gameDate = bet.commenceTime ? toEasternDateStr(bet.commenceTime) : bet.gameDate;
+  const g = findHistoricalGame(bet.team, bet.opponent, gameDate);
   if(!g) return null;
   const isHome = g.home === bet.team;
   const teamPts = isHome ? g.homeScore : g.awayScore;
@@ -7173,7 +7176,8 @@ async function renderBetTrackerPage(){
     if(existingBet){
       const gid = Object.keys(DATA.games).find(gid => {
         const refBet = existingBet.isParlay ? existingBet.legs[0] : existingBet;
-        return DATA.games[gid] === findHistoricalGame(refBet.team, refBet.opponent, refBet.gameDate);
+        const refGameDate = refBet.commenceTime ? toEasternDateStr(refBet.commenceTime) : refBet.gameDate;
+        return DATA.games[gid] === findHistoricalGame(refBet.team, refBet.opponent, refGameDate);
       });
       if(gid) gameSel.value = gid;
       const refForFields = existingBet.isParlay ? (existingBet.legs[0]||{}) : existingBet;
