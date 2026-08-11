@@ -28,6 +28,7 @@ import os
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -113,14 +114,34 @@ def main():
         except Exception as e:
             print(f'WARNING: could not read existing box score file ({e}) -- treating this as a first run (full season fetch).', file=sys.stderr)
 
-    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime('%Y-%m-%d')
+    # WNBA games are scheduled and date-tagged in US Eastern time (that's the convention ESPN's
+    # own data uses), not UTC -- and this runner's system clock IS UTC. During EDT, UTC is 4
+    # hours ahead of Eastern, so a run happening in the first few hours after UTC midnight is
+    # still evening in Eastern time, with that night's late (8pm/10pm ET) games still in
+    # progress. Computing "yesterday" from UTC instead of Eastern was letting a date get marked
+    # as fully fetched before its own late games had actually finished -- this is what silently
+    # left last night's late games stuck un-graded in App Tracker. Eastern time fixes the
+    # boundary itself.
+    now_et = datetime.now(ZoneInfo('America/New_York'))
+    yesterday = (now_et - timedelta(days=1)).strftime('%Y-%m-%d')
 
-    if yesterday <= since_date:
+    # Second, independent issue: even with the correct Eastern boundary, a date that got
+    # partially captured (say, an early game finished and got fetched, but a later game that
+    # night was still in progress at the time) was never revisited once since_date advanced
+    # past it -- the code trusted "we've seen this date" to mean "this date is complete." Rather
+    # than exclusively fetching from since_date forward, always back up 2 days and re-fetch that
+    # small overlap on every run. This is safe and cheap: the merge below dedupes on
+    # (game_id, athlete_id) keeping the newest row, so re-fetching a date that's already correct
+    # just re-confirms it, and a date that was incomplete gets properly completed.
+    fetch_from = (datetime.strptime(since_date, '%Y-%m-%d') - timedelta(days=2)).strftime('%Y-%m-%d')
+    fetch_from = max(fetch_from, SEASON_START)
+
+    if yesterday <= fetch_from:
         print(f'No new completed-game dates since {since_date} -- skipping the ESPN fetch step, app_data.json will still regenerate from what\'s already on disk (rosters/injuries refresh regardless).')
         new_box_df, new_venues_df, new_periods = pd.DataFrame(), pd.DataFrame(), {}
     else:
-        print(f'Fetching ESPN box scores/venues/periods: {since_date} exclusive through {yesterday}...')
-        new_box_df, new_venues_df, new_periods = fetch_recent_espn_boxscores(since_date, yesterday)
+        print(f'Fetching ESPN box scores/venues/periods: {fetch_from} exclusive through {yesterday} (re-covering the last 2 days as a safety overlap, not just the new gap)...')
+        new_box_df, new_venues_df, new_periods = fetch_recent_espn_boxscores(fetch_from, yesterday)
         print(f'Got {len(new_box_df)} new player-rows, {len(new_venues_df)} venue updates, {len(new_periods)} games\' periods.')
 
     # ---- Step 2: merge and persist box scores (accumulate, dedupe on game_id+athlete_id) ----
