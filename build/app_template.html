@@ -4324,7 +4324,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       return c;
     }
     const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
-    const gameDate = (ev.commence_time||'').slice(0,10);
+    const gameDate = toEasternDateStr(ev.commence_time);
     if(isTotal){
       const over = dkOutcome(market,'Over'); const under = dkOutcome(market,'Under');
       const point = over ? over.point : (under ? under.point : undefined);
@@ -4377,7 +4377,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       return row;
     }
     const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
-    const gameDate = (ev.commence_time||'').slice(0,10);
+    const gameDate = toEasternDateStr(ev.commence_time);
     [ev.away_team, ev.home_team].forEach((teamFullName, idx)=>{
       const shortName = idx===0 ? awayShort : homeShort;
       const oppShort = idx===0 ? homeShort : awayShort;
@@ -4510,7 +4510,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         const overBtn = makeTrackAndHistoryButtons({
           label:`${pname} Over ${line} ${marketLabel}`, price:overO.price, betType:'player_prop',
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'over',
-          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10), eventId: ev.id,
+          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id,
         }, 10);
         // Relabel only the inner Track button (first child) \u2014 setting .textContent on the
         // whole wrapper would also wipe out the \ud83d\udcc8 history button living inside it as its second child.
@@ -4521,7 +4521,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         const underBtn = makeTrackAndHistoryButtons({
           label:`${pname} Under ${line} ${marketLabel}`, price:underO.price, betType:'player_prop',
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'under',
-          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10), eventId: ev.id,
+          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id,
         }, 10);
         underBtn.children[0].textContent = '+U'; underBtn.children[0].title = 'Track the Under';
         trackCell.appendChild(underBtn);
@@ -4616,7 +4616,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         const trackBtn = team ? makeTrackAndHistoryButtons({
           label:`${pname} Over ${lvl.point} ${marketLabel}`, price:lvl.price, betType:'player_prop_alt',
           team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line:lvl.point, side:'over',
-          thresholdToHit: lvl.point, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:(ev.commence_time||'').slice(0,10), eventId: ev.id,
+          thresholdToHit: lvl.point, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id,
         }, 10) : null;
 
         const opponentTeam = team===homeShort?awayShort:homeShort;
@@ -4691,7 +4691,7 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   // independent of the page-level hit-rate selector above) to be eligible.
   const candidates = []; // {label, price, rate10, rate15, ...structured fields for the bet tracker}
   const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
-  const gameDate = (ev.commence_time||'').slice(0,10);
+  const gameDate = toEasternDateStr(ev.commence_time);
 
   // Moneyline (own-side only; the opposing team's high win rate already shows up as their own ML leg)
   [{short:awayShort, full:ev.away_team, opp:homeShort, outcome:dkOutcome(gameMarkets['h2h'], ev.away_team)},
@@ -4819,7 +4819,13 @@ function findHistoricalGame(team, opponent, gameDate){
 // Grades a single leg (works the same whether it's a standalone straight bet or one leg
 // of a parlay). Returns 'won' | 'lost' | 'push' | null (null = can't grade yet).
 function gradeLeg(leg){
-  const g = findHistoricalGame(leg.team, leg.opponent, leg.gameDate);
+  // Prefer recomputing the game date fresh from the raw commenceTime timestamp (now using the
+  // correct Eastern-time conversion) over trusting leg.gameDate as stored -- picks snapshotted
+  // before that fix was in place have a gameDate that's wrong by exactly one day for any late
+  // (8pm ET or later) game, which silently blocked them from ever matching. Recomputing here
+  // heals every already-stored pick automatically, with no need to touch what's in KV.
+  const gameDate = leg.commenceTime ? toEasternDateStr(leg.commenceTime) : leg.gameDate;
+  const g = findHistoricalGame(leg.team, leg.opponent, gameDate);
   if(!g) return null;
   const isHome = g.home === leg.team;
   const teamPts = isHome ? g.homeScore : g.awayScore;
@@ -5048,6 +5054,24 @@ async function appTrackerDelete(id){
 
 // Current date/time in US Eastern, regardless of the viewer's own timezone \u2014 "12:00pm ET"
 // needs to mean the same moment for everyone, not 12pm in whatever timezone the browser is in.
+// Converts a game's commence_time (a UTC ISO timestamp) to the calendar date it actually
+// falls on in US Eastern time -- the convention this app's own game data (and ESPN's) uses.
+// Naively slicing the first 10 characters of a UTC timestamp gets the UTC date instead, which
+// is WRONG for any game starting at 8pm ET or later: that's already past midnight UTC, landing
+// on the next calendar day. That mismatch was silently storing tomorrow's date on tonight's
+// late games, making findHistoricalGame() treat an already-finished game as "not played yet"
+// forever, since it never matched DATA.games' actual (correct) date for that game.
+function toEasternDateStr(isoString){
+  if(!isoString) return '';
+  const d = new Date(isoString);
+  if(isNaN(d)) return '';
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit',
+  }).formatToParts(d);
+  const get = t => parts.find(p=>p.type===t).value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
 function nowInEastern(){
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit',
@@ -7048,7 +7072,7 @@ async function renderBetTrackerPage(){
     Object.values(byEvent).forEach(entry=>{
       const ev = entry.meta.data;
       const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
-      const gameDate = (ev.commence_time||'').slice(0,10);
+      const gameDate = toEasternDateStr(ev.commence_time);
       const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
       const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
       const card = document.createElement('div'); card.className='table-wrap'; card.style.cssText='padding:12px;margin-bottom:12px;';
