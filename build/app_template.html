@@ -1828,9 +1828,15 @@ function buildTopLinks(){
   tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn); tl.appendChild(appTrackerBtn);
 }
 async function initApp(){
-  const resetToken = new URLSearchParams(window.location.search).get('resetToken');
+  const urlParams = new URLSearchParams(window.location.search);
+  const resetToken = urlParams.get('resetToken');
   if(resetToken){
     renderResetPasswordPage(resetToken);
+    return;
+  }
+  const verifyToken = urlParams.get('verifyToken');
+  if(verifyToken){
+    renderVerifyEmailPage(verifyToken);
     return;
   }
   try {
@@ -2689,15 +2695,24 @@ const DEFAULT_WORKER_URL = 'https://odds-api-proxy.allyearball.workers.dev';
 // and is sent only to your own Worker over HTTPS, never anywhere else.
 const AUTH_TOKEN_LS_KEY = 'wnba_auth_token';
 const AUTH_EMAIL_LS_KEY = 'wnba_auth_email';
+const AUTH_VERIFIED_LS_KEY = 'wnba_auth_verified';
 function getAuthToken(){ return localStorage.getItem(AUTH_TOKEN_LS_KEY); }
 function getAuthEmail(){ return localStorage.getItem(AUTH_EMAIL_LS_KEY); }
-function setAuthSession(token, email){
+function isEmailVerified(){ return localStorage.getItem(AUTH_VERIFIED_LS_KEY) === '1'; }
+function setAuthSession(token, email, emailVerified){
   localStorage.setItem(AUTH_TOKEN_LS_KEY, token);
   localStorage.setItem(AUTH_EMAIL_LS_KEY, email);
+  // emailVerified is optional (some callers, like changePassword, don't know/change it) --
+  // when omitted, leave whatever verification status was already stored alone rather than
+  // silently reset it to false.
+  if(emailVerified !== undefined){
+    localStorage.setItem(AUTH_VERIFIED_LS_KEY, emailVerified ? '1' : '0');
+  }
 }
 function clearAuthSession(){
   localStorage.removeItem(AUTH_TOKEN_LS_KEY);
   localStorage.removeItem(AUTH_EMAIL_LS_KEY);
+  localStorage.removeItem(AUTH_VERIFIED_LS_KEY);
 }
 function isLoggedIn(){ return !!getAuthToken(); }
 // Merges an Authorization header onto whatever headers a call already wants to send --
@@ -3313,8 +3328,8 @@ function computeRowSignal(pname, team, opponent, statKey, line){
   const agreement = windows.filter(w => direction==='over' ? w.ema>line : w.ema<line).length / windows.length;
   if(agreement < 0.75) return null;
 
-  const edgeMagnitude = Math.abs(avgEma - line) / Math.max(line, 1);
-  const volatilityDamp = mw.iqrL10!==null ? 1/(1 + mw.iqrL10/Math.max(line,1)) : 0.85;
+  const edgeMagnitude = Math.abs(avgEma - line) / Math.max(line, 1); // kept for the "why" tooltip display -- see note below on why it's excluded from score
+  const volatilityDamp = mw.iqrL10!==null ? 1/(1 + mw.iqrL10/Math.max(line,1)) : 0.85; // same -- displayed, not scored
 
   const bucket = positionBucket(getPlayerPosition(pname, team));
   const dvp = bucket ? dvpIndex(opponent, statKey, bucket) : null;
@@ -3335,11 +3350,32 @@ function computeRowSignal(pname, team, opponent, statKey, line){
     }
   }
 
-  const usgMultiplier = usgTrendMultiplier(pname, team, direction);
+  // Backtest (111 graded Advanced picks, snapshotted daily then graded against actual results):
+  // isolating each factor and ranking picks by it ALONE showed DvP as by far the strongest
+  // standalone signal (63.3% top-30 win rate vs 43.3% bottom-30 -- a 20pt spread), while
+  // edgeMagnitude and volatilityDamp both tested NEGATIVE standalone, and stayed net-harmful
+  // even capped/included at reduced weight -- removing them from the score (not just dialing
+  // them down) is what actually unlocked the best result tested: 66.7% top-30 vs 43.3%
+  // bottom-30, a 23.4pt spread, vs the original formula's -3.3pt spread (its top picks were
+  // performing WORSE than its bottom picks). Squaring dvpMultiplier reflects it now carrying
+  // most of the real signal. Both factors are still computed and shown in the "why" tooltip --
+  // they're informative to look at, they just don't reliably predict outcomes in this sample,
+  // so they no longer drive the ranking. This isn't a promise of any specific future hit rate --
+  // 111 picks is a small sample -- but the DIRECTION (trust DvP heavily, trust the EMA-gap-size
+  // and volatility machinery much less) is what the backtest actually supports.
+  const dvpWeighted = Math.pow(dvpMultiplier, 2);
+
+  const usgMultiplierRaw = usgTrendMultiplier(pname, team, direction);
+  // Severely dampened, not removed or inverted: the backtest showed this factor's effect on
+  // actual outcomes running backwards from what it assumes (chasing a recent usage uptick
+  // underperformed, consistent with usage trends mean-reverting rather than persisting) -- but
+  // 111 picks isn't enough to confidently bet on the exact INVERSE being reliable either, so
+  // this shrinks its pull toward 1.0 (neutral) by 80% rather than flipping its sign outright.
+  const usgMultiplier = 1 + (usgMultiplierRaw - 1) * 0.2;
 
   return {
-    direction, score: agreement * edgeMagnitude * volatilityDamp * dvpMultiplier * usgMultiplier,
-    agreement, avgEma, dvp,
+    direction, score: agreement * dvpWeighted * usgMultiplier,
+    agreement, avgEma, dvp, edgeMagnitude, volatilityDamp,
     l5: mw.l5.ema, l10: mw.l10.ema, l15: mw.l15.ema, full: mw.full.ema, iqrL10: mw.iqrL10,
   };
 }
@@ -3375,7 +3411,7 @@ function edgeWhyText(pname, sig, line, marketLabel){
     return `${pname} \u2014 ${marketLabel} line ${line}: not enough agreement across the L5/L10/L15/season EMA windows to call a direction here (need at least 3 of 4 pointing the same way), or the matchup (DvP Index) flatly contradicts the direction the numbers point \u2014 in that case this is deliberately excluded rather than shown with a discount.`;
   }
   const dirWord = sig.direction==='over' ? 'Over' : 'Under';
-  return `${pname} \u2014 ${marketLabel} line ${line}. EMA: L5 ${fmtEma(sig.l5)}, L10 ${fmtEma(sig.l10)}, L15 ${fmtEma(sig.l15)}, Season ${fmtEma(sig.full)} \u2014 ${Math.round(sig.agreement*4)}/4 windows favor the ${dirWord}. DvP Index for her position: ${sig.dvp!==null?sig.dvp.toFixed(2):'n/a'} (>1.05 favors Over, <0.95 favors Under \u2014 a mismatch beyond 0.85/1.15 against the pick's direction excludes it entirely rather than just discounting it). L10 volatility (IQR): ${sig.iqrL10!==null?sig.iqrL10.toFixed(1):'n/a'} \u2014 higher means less consistent, so this signal is discounted accordingly. Usage Rate (USG%) trend (last 5 games vs. season) also nudges the score \u00b115% max, based on whether her recent involvement is rising or falling in the direction that supports this pick.`;
+  return `${pname} \u2014 ${marketLabel} line ${line}. EMA: L5 ${fmtEma(sig.l5)}, L10 ${fmtEma(sig.l10)}, L15 ${fmtEma(sig.l15)}, Season ${fmtEma(sig.full)} \u2014 ${Math.round(sig.agreement*4)}/4 windows favor the ${dirWord}. DvP Index for her position: ${sig.dvp!==null?sig.dvp.toFixed(2):'n/a'} (>1.05 favors Over, <0.95 favors Under \u2014 a mismatch beyond 0.85/1.15 against the pick's direction excludes it entirely rather than just discounting it) \u2014 this is now the dominant factor in the ranking, based on a backtest against 111 graded picks showing it as by far the strongest real predictor. L10 volatility (IQR): ${sig.iqrL10!==null?sig.iqrL10.toFixed(1):'n/a'} and the EMA-vs-line gap size are shown for reference but no longer drive the ranking \u2014 that same backtest showed both were net-negative predictors here, not just weak ones. Usage Rate (USG%) trend nudges the score only slightly (\u00b13% max, down from \u00b115%), since rising usage tested as backwards from what you'd expect (consistent with usage upticks tending to mean-revert rather than persist).`;
 }
 
 // The reusable Edge cell for the Player Props / Alt Lines tables: a tap-for-why verdict badge,
@@ -4994,6 +5030,70 @@ function renderResetPasswordPage(token){
   main.appendChild(wrap);
 }
 
+// Shown when the app loads with a ?verifyToken= URL param -- the user clicked the link from a
+// verification email. Unlike reset-password, there's no input needed here (the token alone is
+// enough), so this just submits immediately and shows the result. Runs before DATA loads, same
+// constraint as renderResetPasswordPage.
+// Shown atop Bet Tracker and Account Settings whenever the logged-in user hasn't verified
+// their email yet. Not a hard gate (they can still use the app) -- just a persistent, easy-to-
+// dismiss-mentally reminder with a working resend button, since the original email can get
+// lost, land in spam, or simply expire (24hr token) before someone gets to it.
+function renderVerifyEmailBanner(container){
+  if(!isLoggedIn() || isEmailVerified()) return;
+  const banner = document.createElement('div'); banner.className = 'banner'; banner.style.marginBottom = '14px';
+  const text = document.createElement('span');
+  text.textContent = `Please verify your email (${getAuthEmail()}) \u2014 check your inbox for a verification link. `;
+  const resendLink = document.createElement('a'); resendLink.href = 'javascript:void(0)'; resendLink.className = 'player-link'; resendLink.textContent = 'Resend verification email';
+  resendLink.addEventListener('click', async ()=>{
+    resendLink.textContent = 'Sending\u2026';
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      await fetchJson(`${workerBase}/auth/resend-verification`, {method:'POST', headers: authHeaders()});
+      resendLink.textContent = 'Sent! Check your inbox.';
+    }catch(e){
+      resendLink.textContent = 'Resend verification email';
+      const match = String(e.message||'').match(/\{.*\}/);
+      let msg = e.message;
+      if(match){ try{ const parsed = JSON.parse(match[0]); if(parsed.error) msg = parsed.error; }catch(_){} }
+      alert(msg);
+    }
+  });
+  banner.appendChild(text); banner.appendChild(resendLink);
+  container.appendChild(banner);
+}
+
+function renderVerifyEmailPage(token){
+  main.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'max-width:380px;margin:60px auto;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);text-align:center;';
+  const status = document.createElement('div'); status.className = 'footnote';
+  status.textContent = 'Verifying\u2026';
+  wrap.appendChild(status);
+  main.appendChild(wrap);
+
+  (async ()=>{
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      await fetchJson(`${workerBase}/auth/verify-email`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({token})});
+      if(isLoggedIn()) setAuthSession(getAuthToken(), getAuthEmail(), true); // update local status if this is the same browser/session that signed up
+      wrap.innerHTML = '';
+      const title = document.createElement('h2'); title.style.cssText = 'margin:0 0 8px;font-size:19px;'; title.textContent = 'Email verified \u2705';
+      const sub = document.createElement('div'); sub.className = 'footnote';
+      const link = document.createElement('a'); link.href = window.location.origin + window.location.pathname; link.className = 'player-link'; link.textContent = 'Continue to the app';
+      sub.appendChild(link);
+      wrap.appendChild(title); wrap.appendChild(sub);
+    }catch(e){
+      const match = String(e.message||'').match(/\{.*\}/);
+      let msg = e.message;
+      if(match){ try{ const parsed = JSON.parse(match[0]); if(parsed.error) msg = parsed.error; }catch(_){} }
+      wrap.innerHTML = '';
+      const title = document.createElement('h2'); title.style.cssText = 'margin:0 0 8px;font-size:19px;color:#b3261e;'; title.textContent = 'Verification failed';
+      const sub = document.createElement('div'); sub.className = 'footnote'; sub.textContent = msg;
+      wrap.appendChild(title); wrap.appendChild(sub);
+    }
+  })();
+}
+
 function renderAuthGate(container, onSuccess){
   const wrap = document.createElement('div');
   wrap.style.cssText = 'max-width:380px;margin:40px auto;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);';
@@ -5047,7 +5147,7 @@ function renderAuthGate(container, onSuccess){
     try{
       const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
       const result = await fetchJson(`${workerBase}${path}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password})});
-      setAuthSession(result.token, result.email);
+      setAuthSession(result.token, result.email, result.emailVerified);
       onSuccess();
       return;
     }catch(e){
@@ -5128,6 +5228,7 @@ function renderAccountSettingsPage(){
   backLink.textContent = '\u2190 Back to Bet Tracker';
   backLink.addEventListener('click', ()=>renderBetTrackerPage());
   main.appendChild(backLink);
+  renderVerifyEmailBanner(main);
 
   function extractErrorMessage(err){
     const match = String(err.message||'').match(/\{.*\}/);
@@ -5159,7 +5260,7 @@ function renderAccountSettingsPage(){
     try{
       const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
       const result = await fetchJson(`${workerBase}/auth/change-email`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({newEmail: newEmailInput.value.trim(), currentPassword: emailPwInput.value})});
-      setAuthSession(getAuthToken(), result.email);
+      setAuthSession(getAuthToken(), result.email, result.emailVerified);
       emailStatus.style.color = 'var(--green)'; emailStatus.textContent = 'Email updated.';
       emailCurrent.textContent = `Current: ${result.email}`;
       newEmailInput.value = ''; emailPwInput.value = '';
@@ -5534,11 +5635,36 @@ function showTrackModal(legLikeObject, defaultStake, onConfirm){
   stakeInput.focus();
 }
 
+// Shown wherever a logged-out user tries to do something that requires an account (currently
+// just the "+ Track" quick-add button). Reuses renderAuthGate's own login/signup form inside a
+// modal overlay, so instead of a dead-end error, logging in right here seamlessly continues
+// whatever action they were trying to do -- onSuccess fires the same as if they'd been logged
+// in from the start.
+function showLoginRequiredModal(onSuccess){
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  const modalBox = document.createElement('div');
+  modalBox.style.cssText = 'max-width:380px;width:100%;position:relative;';
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '\u2715';
+  closeBtn.style.cssText = 'position:absolute;top:-36px;right:0;background:none;border:none;font-size:20px;cursor:pointer;color:#fff;';
+  closeBtn.addEventListener('click', ()=>overlay.remove());
+  modalBox.appendChild(closeBtn);
+  renderAuthGate(modalBox, ()=>{ overlay.remove(); onSuccess(); });
+  overlay.appendChild(modalBox);
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
 function makeTrackButton(legLikeObject, defaultStake){
   const btn = document.createElement('button');
   btn.textContent = '+ Track';
   btn.style.cssText = 'padding:3px 8px;border-radius:4px;border:1px solid var(--navy2);background:var(--panel);color:var(--navy2);font-size:11px;cursor:pointer;font-family:var(--sans);margin-left:6px;';
   btn.addEventListener('click', ()=>{
+    if(!isLoggedIn()){
+      showLoginRequiredModal(()=>btn.click()); // re-fires this same click handler once logged in, now passing the isLoggedIn() check
+      return;
+    }
     showTrackModal(legLikeObject, defaultStake, async ({stake, price, placedAt, newLine})=>{
       // Timing (pregame/live) determined from the game's actual start time vs. the time you
       // said you placed it, not vs. right now -- if you're backfilling a bet from earlier,
@@ -6335,6 +6461,7 @@ async function renderBetTrackerPage(){
   });
   acctRow.appendChild(acctLabel); acctRow.appendChild(settingsLink); acctRow.appendChild(logoutLink);
   main.appendChild(acctRow);
+  renderVerifyEmailBanner(main);
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
   statusDiv.textContent = 'Loading your tracked bets\u2026';
