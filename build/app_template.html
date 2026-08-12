@@ -4274,6 +4274,45 @@ function renderTopBets(container, cachedFetch, topN, selectedBook){
   container.appendChild(grid);
 }
 
+// Fetches live in-game stats for one game and populates whatever [data-live-*] placeholder
+// spans (built by cell()/teamTotalsRow()/the player props table above) are present in `wrap`.
+// Each value is formatted to be DIRECTLY comparable to its own line -- spread shows the
+// current score MARGIN (not the raw score), since that's what's actually comparable to a
+// spread number; total shows the current COMBINED score; player props show that player's
+// current value for that specific stat. No-op (leaves the placeholders empty/invisible) for
+// games that haven't started, have no ESPN match, or errored -- never shows a wrong or
+// misleading number.
+async function applyLiveAmounts(wrap, ev){
+  let live;
+  try{
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    live = await fetchJson(`${workerBase}/livestats?away=${encodeURIComponent(ev.away_team)}&home=${encodeURIComponent(ev.home_team)}`);
+  }catch(e){ return; }
+  if(!live || live.status === 'not_live' || live.awayScore===null || live.homeScore===null) return;
+
+  const setKey = (key, text)=>{
+    wrap.querySelectorAll(`[data-live-key="${key}"]`).forEach(el=>{ el.textContent = `(Now: ${text})`; });
+  };
+  setKey('ml-away', `${live.awayScore}-${live.homeScore}`);
+  setKey('ml-home', `${live.homeScore}-${live.awayScore}`);
+  setKey('spread-away', (live.awayScore-live.homeScore)>=0?`+${live.awayScore-live.homeScore}`:`${live.awayScore-live.homeScore}`);
+  setKey('spread-home', (live.homeScore-live.awayScore)>=0?`+${live.homeScore-live.awayScore}`:`${live.homeScore-live.awayScore}`);
+  const combined = live.awayScore + live.homeScore;
+  setKey('total-over', combined); setKey('total-under', combined);
+  setKey(`teamtotal-${SHORT_TEAM_NAME[ev.away_team] || ev.away_team}`, live.awayScore);
+  setKey(`teamtotal-${SHORT_TEAM_NAME[ev.home_team] || ev.home_team}`, live.homeScore);
+
+  if(live.players && live.players.length){
+    wrap.querySelectorAll('[data-live-player]').forEach(el=>{
+      const pname = el.getAttribute('data-live-player'), statKey = el.getAttribute('data-live-stat');
+      const row = live.players.find(p => p.player.toLowerCase() === pname.toLowerCase());
+      if(row && row[statKey] !== undefined){
+        el.textContent = `Now: ${row[statKey]}`;
+      }
+    });
+  }
+}
+
 function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, startCollapsed, uiState, selectedBook){
   windowSize = windowSize===undefined ? 10 : windowSize;
   selectedBook = selectedBook || 'draftkings';
@@ -4408,7 +4447,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       row.appendChild(na);
       return row;
     }
-    function cell(text, hr5, hr10, hr15, trackBtn, vsinSplit, linkTeam, linkText, sportsbookLabel){
+    function cell(text, hr5, hr10, hr15, trackBtn, vsinSplit, linkTeam, linkText, sportsbookLabel, liveKey){
       const c = document.createElement('div');
       const span = document.createElement('span');
       if(linkTeam && linkText && text.indexOf(linkText)===0){
@@ -4418,6 +4457,16 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         span.textContent = text;
       }
       c.appendChild(span);
+      if(liveKey){
+        // Empty until the async live-stats fetch (kicked off elsewhere, once per game) resolves
+        // and populates it -- see applyLiveAmounts(). Stays empty/invisible for games that
+        // haven't started or where live data isn't available, so nothing shows for those.
+        const liveSpan = document.createElement('span');
+        liveSpan.className = 'live-amount';
+        liveSpan.setAttribute('data-live-key', liveKey);
+        liveSpan.style.cssText = 'font-size:11px;font-weight:700;color:var(--red);margin-left:6px;';
+        c.appendChild(liveSpan);
+      }
       if(sportsbookLabel){
         c.appendChild(document.createElement('br'));
         const sb = document.createElement('span'); sb.style.cssText='font-size:11px;color:var(--sub);';
@@ -4443,8 +4492,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const hr5 = withHitRate ? hrFn(5) : null, hr10 = withHitRate ? hrFn(10) : null, hr15 = withHitRate ? hrFn(15) : null;
       const overTrack = (!half && over) ? makeTrackAndHistoryButtons({label:`Game Total Over ${point}`, price:over.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'over', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
       const underTrack = (!half && under) ? makeTrackAndHistoryButtons({label:`Game Total Under ${point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
-      row.appendChild(cell(over ? `Over ${over.point} (${over.price>0?'+':''}${over.price})` : '\u2014', hr5, hr10, hr15, overTrack, vsinSplitFor(awayShort, 'total'), null, null, bookSourceLabel(over, selectedBook)));
-      row.appendChild(cell(under ? `Under ${under.point} (${under.price>0?'+':''}${under.price})` : '\u2014', null, null, null, underTrack, vsinSplitFor(homeShort, 'total'), null, null, bookSourceLabel(under, selectedBook)));
+      row.appendChild(cell(over ? `Over ${over.point} (${over.price>0?'+':''}${over.price})` : '\u2014', hr5, hr10, hr15, overTrack, vsinSplitFor(awayShort, 'total'), null, null, bookSourceLabel(over, selectedBook), half ? null : 'total-over'));
+      row.appendChild(cell(under ? `Under ${under.point} (${under.price>0?'+':''}${under.price})` : '\u2014', null, null, null, underTrack, vsinSplitFor(homeShort, 'total'), null, null, bookSourceLabel(under, selectedBook), half ? null : 'total-under'));
     } else {
       const away = dkOutcome(market, ev.away_team); const home = dkOutcome(market, ev.home_team);
       function fmtSide(o){
@@ -4470,8 +4519,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const awayTrack = (!half && away) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.away_team}${isSpread?' '+(away.point>0?'+':'')+away.point:' Moneyline'}`, price:away.price, betType, team:awayShort, opponent:homeShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, isSpread?{line:away.point}:{}), 10) : null;
       const homeTrack = (!half && home) ? makeTrackAndHistoryButtons(Object.assign({label:`${ev.home_team}${isSpread?' '+(home.point>0?'+':'')+home.point:' Moneyline'}`, price:home.price, betType, team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, isSpread?{line:home.point}:{}), 10) : null;
       const vsinMarketKey = isSpread ? 'spread' : 'ml';
-      row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr5, awayHr10, awayHr15, awayTrack, vsinSplitFor(awayShort, vsinMarketKey), awayShort, ev.away_team, bookSourceLabel(away, selectedBook)));
-      row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr5, homeHr10, homeHr15, homeTrack, vsinSplitFor(homeShort, vsinMarketKey), homeShort, ev.home_team, bookSourceLabel(home, selectedBook)));
+      row.appendChild(cell(`${ev.away_team}: ${fmtSide(away)}`, awayHr5, awayHr10, awayHr15, awayTrack, vsinSplitFor(awayShort, vsinMarketKey), awayShort, ev.away_team, bookSourceLabel(away, selectedBook), half ? null : (isSpread ? 'spread-away' : 'ml-away')));
+      row.appendChild(cell(`${ev.home_team}: ${fmtSide(home)}`, homeHr5, homeHr10, homeHr15, homeTrack, vsinSplitFor(homeShort, vsinMarketKey), homeShort, ev.home_team, bookSourceLabel(home, selectedBook), half ? null : (isSpread ? 'spread-home' : 'ml-home')));
     }
     return row;
   }
@@ -4496,6 +4545,13 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const line1 = document.createElement('div');
       line1.appendChild(teamLinkEl(shortName, teamFullName));
       line1.appendChild(document.createTextNode(over ? ` Over ${over.point} (${over.price>0?'+':''}${over.price})` : ': \u2014'));
+      if(over){
+        const liveSpan = document.createElement('span');
+        liveSpan.className = 'live-amount';
+        liveSpan.setAttribute('data-live-key', `teamtotal-${shortName}`);
+        liveSpan.style.cssText = 'font-size:11px;font-weight:700;color:var(--red);margin-left:6px;';
+        line1.appendChild(liveSpan);
+      }
       c.appendChild(line1);
       if(over && bookSourceLabel(over, selectedBook)){
         const sbOver = document.createElement('div'); sbOver.style.cssText='font-size:11px;color:var(--sub);';
@@ -4642,6 +4698,17 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const posText = team ? (getPlayerPosition(pname, team) || '\u2014') : '\u2014';
       const edgeCell = team ? buildEdgeCell(pname, team, opponentTeam, statKey, line, marketLabel) : document.createTextNode('\u2014');
 
+      const lineCell = document.createElement('span');
+      lineCell.appendChild(document.createTextNode(line!==undefined?line:'\u2014'));
+      if(line!==undefined && team){
+        const liveSpan = document.createElement('span');
+        liveSpan.className = 'live-amount';
+        liveSpan.setAttribute('data-live-player', pname);
+        liveSpan.setAttribute('data-live-stat', statKey);
+        liveSpan.style.cssText = 'display:block;font-size:10.5px;font-weight:700;color:var(--red);';
+        lineCell.appendChild(liveSpan);
+      }
+
       propDataRows.push({
         filterValues: {
           pos: posText, player: pname, market: marketLabel, line: line,
@@ -4650,7 +4717,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
           hitRate10: (hr10 && hr10.found) ? Math.round(hr10.rate*100) : null,
           hitRate15: (hr15 && hr15.found) ? Math.round(hr15.rate*100) : null,
         },
-        cells: [posText, nameCell, edgeCell, marketLabel, line!==undefined?line:'\u2014',
+        cells: [posText, nameCell, edgeCell, marketLabel, lineCell,
                 overO ? fmtAmerican(overO.price) : '\u2014', underO ? fmtAmerican(underO.price) : '\u2014',
                 propSportsbookText(overO, underO, selectedBook),
                 singleWindowChip(null, hr5), singleWindowChip(null, hr10), singleWindowChip(null, hr15), defCell, defAllowed, trackCell],
@@ -4773,6 +4840,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   buildParlaySection(sec6Content, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.70, selectedBook);
 
   container.appendChild(wrap);
+  if(dt <= new Date()){
+    applyLiveAmounts(wrap, ev); // fire-and-forget -- populates the empty [data-live-*] placeholder spans once the fetch resolves, no-op for games with no live data available
+  }
 }
 
 // Extracts which book(s) an outcome's price actually came from -- populated by
