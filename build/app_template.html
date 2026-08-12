@@ -4903,6 +4903,21 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
 
 // ================= Mock Bet Tracker =================
 
+// Derives opponent, a proper "Away @ Home" label, and venue/location from just a team name
+// and a date -- used to backfill bets that are missing this info (e.g. imported from a
+// spreadsheet that only recorded the player and line, not who they were playing). Returns null
+// if no game is found for that team on that date.
+function deriveGameInfo(team, gameDate){
+  if(!team || !gameDate || !DATA || !DATA.games) return null;
+  const g = Object.values(DATA.games).find(gm => gm.date===gameDate && (gm.home===team || gm.away===team));
+  if(!g) return null;
+  const opponent = g.home===team ? g.away : g.home;
+  const gameLabel = `${g.away} @ ${g.home}`;
+  const venue = (DATA.teamVenues && DATA.teamVenues[g.home]) || null;
+  const location = venue ? [venue.name, [venue.city, venue.state].filter(Boolean).join(', ')].filter(Boolean).join(' \u2014 ') : null;
+  return { opponent, gameLabel, location, homeTeam: g.home, awayTeam: g.away };
+}
+
 function findHistoricalGame(team, opponent, gameDate){
   const candidates = Object.values(DATA.games).filter(g=>
     (g.home===team||g.away===team) && (opponent ? (g.home===opponent||g.away===opponent) : true)
@@ -6825,10 +6840,11 @@ async function renderBetTrackerPage(){
   const importBtn = document.createElement('button'); importBtn.className='addbtn'; importBtn.textContent = '\u2b07 Import From Odds History';
   const screenshotBtn = document.createElement('button'); screenshotBtn.className='addbtn'; screenshotBtn.textContent = '\ud83d\udcf7 Upload Bet Screenshot(s)';
   const bulkJsonBtn = document.createElement('button'); bulkJsonBtn.className='addbtn'; bulkJsonBtn.textContent = '\ud83d\udcc4 Bulk Import JSON';
+  const repairBtn = document.createElement('button'); repairBtn.className='addbtn'; repairBtn.textContent = '\ud83e\uddf9 Repair Missing Game Info';
   const deleteAllBtn = document.createElement('button'); deleteAllBtn.textContent = '\ud83d\uddd1\ufe0f Delete All Tracked Bets';
   deleteAllBtn.style.cssText = 'padding:8px 14px;border-radius:6px;border:1px solid var(--red);background:var(--panel);color:var(--red);font-size:13px;cursor:pointer;font-family:var(--sans);font-weight:700;';
   actionsRow.appendChild(refreshBtn); actionsRow.appendChild(gradeBtn); actionsRow.appendChild(addFormBtn); actionsRow.appendChild(importBtn);
-  actionsRow.appendChild(screenshotBtn); actionsRow.appendChild(bulkJsonBtn); actionsRow.appendChild(deleteAllBtn);
+  actionsRow.appendChild(screenshotBtn); actionsRow.appendChild(bulkJsonBtn); actionsRow.appendChild(repairBtn); actionsRow.appendChild(deleteAllBtn);
   main.appendChild(actionsRow);
 
   // Reloads the tracked-bets list from your Worker (so it picks up anything added elsewhere
@@ -6927,7 +6943,11 @@ async function renderBetTrackerPage(){
     return list.filter(bet=>{
       if(filters.dateFrom && bet.gameDate && bet.gameDate < filters.dateFrom) return false;
       if(filters.dateTo && bet.gameDate && bet.gameDate > filters.dateTo) return false;
-      if(filters.game && !(bet.gameLabel||'').toLowerCase().includes(filters.game.toLowerCase())) return false;
+      if(filters.game){
+        const needle = filters.game.toLowerCase();
+        const gameText = bet.gameLabel || (bet.team && bet.gameDate ? (deriveGameInfo(bet.team, bet.gameDate)||{}).gameLabel : null) || '';
+        if(!gameText.toLowerCase().includes(needle)) return false;
+      }
       if(filters.result!=='all'){
         const r = bet.result || 'pending';
         if(r!==filters.result) return false;
@@ -7283,7 +7303,7 @@ async function renderBetTrackerPage(){
       tableDiv.appendChild(na);
       return;
     }
-    const sorted = applyFilters(bets).sort((a,b)=> (b.gameDate||'').localeCompare(a.gameDate||''));
+    const sorted = applyFilters(bets).sort((a,b)=> (betGameDate(b)||'').localeCompare(betGameDate(a)||''));
     if(sorted.length===0){
       const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-top:16px;';
       na.textContent = 'No tracked bets match the current filters.';
@@ -7302,27 +7322,49 @@ async function renderBetTrackerPage(){
     // props across 3 different matchups) has no single "the game" to show, and showing the
     // first leg's game as if it applied to the whole ticket was actively wrong, not just
     // incomplete -- shows a dash instead when legs don't all agree.
-    function legGameKey(leg){
-      if(leg.gameLabel) return leg.gameLabel;
-      if(leg.team && leg.opponent) return [leg.team, leg.opponent].sort().join('|'); // order-independent: "A vs B" and "B vs A" are the same game
+    //
+    // Also derives opponent/venue live via deriveGameInfo() whenever a leg has a team and date
+    // but is missing its opponent -- this backfills bets that were imported without complete
+    // game info (e.g. from a spreadsheet that only recorded the player and line) instead of
+    // just showing a dash for something that's actually knowable from the season's own data.
+    function legGameInfo(leg){
+      if(leg.opponent && leg.team) return { opponent: leg.opponent, gameLabel: leg.gameLabel || null, team: leg.team };
+      if(leg.team && leg.gameDate){
+        const derived = deriveGameInfo(leg.team, leg.gameDate);
+        if(derived) return { opponent: derived.opponent, gameLabel: derived.gameLabel, location: derived.location, team: leg.team };
+      }
       return null;
+    }
+    function legGameKey(info){
+      if(!info) return null;
+      return [info.team, info.opponent].sort().join('|'); // order-independent: "A vs B" and "B vs A" are the same game
     }
     function gameMatchupText(bet){
       if(!bet.isParlay){
-        if(bet.gameLabel && bet.gameLabel.includes('@')) return bet.gameLabel;
-        if(bet.gameLabel) return bet.gameLabel;
-        if(bet.team && bet.opponent) return `${bet.team} vs ${bet.opponent}`;
-        return '\u2014';
+        const info = legGameInfo(bet);
+        if(!info) return { text: '\u2014', location: null };
+        const text = info.gameLabel || `${info.team} vs ${info.opponent}`;
+        return { text, location: info.location || null };
       }
-      if(!Array.isArray(bet.legs) || !bet.legs.length) return '\u2014';
-      const keys = bet.legs.map(legGameKey);
-      if(keys.some(k=>!k)) return '\u2014'; // at least one leg's game isn't known -- can't confirm they all match, so don't guess
+      if(!Array.isArray(bet.legs) || !bet.legs.length) return { text: '\u2014', location: null };
+      const infos = bet.legs.map(legGameInfo);
+      if(infos.some(info=>!info)) return { text: '\u2014', location: null }; // at least one leg's game isn't known -- can't confirm they all match, so don't guess
+      const keys = infos.map(legGameKey);
       const allSame = keys.every(k=>k===keys[0]);
-      if(!allSame) return '\u2014';
-      const refLeg = bet.legs[0];
-      if(refLeg.gameLabel && refLeg.gameLabel.includes('@')) return refLeg.gameLabel;
-      if(refLeg.gameLabel) return refLeg.gameLabel;
-      return `${refLeg.team} vs ${refLeg.opponent}`;
+      if(!allSame) return { text: '\u2014', location: null };
+      const refInfo = infos[0];
+      const text = refInfo.gameLabel || `${refInfo.team} vs ${refInfo.opponent}`;
+      return { text, location: refInfo.location || null };
+    }
+    // Same live-derivation fallback for the Date column specifically -- a parlay imported
+    // without a top-level gameDate (only per-leg) used to show a blank date and sort to the
+    // very bottom of the table (empty string sorts first in a descending compare). Falls back
+    // to the first leg's date, then to when the bet was actually placed.
+    function betGameDate(bet){
+      if(bet.gameDate) return bet.gameDate;
+      if(bet.isParlay && Array.isArray(bet.legs) && bet.legs[0] && bet.legs[0].gameDate) return bet.legs[0].gameDate;
+      if(bet.placedAt) return bet.placedAt.slice(0,10);
+      return null;
     }
 
     sorted.forEach(bet=>{
@@ -7338,10 +7380,11 @@ async function renderBetTrackerPage(){
       // entries that predate placedAt existing, so something still shows rather than a blank.
       const refTime = bet.placedAt || bet.commenceTime || (bet.isParlay && bet.legs && bet.legs[0] ? bet.legs[0].commenceTime : null);
 
+      const gameInfo = gameMatchupText(bet);
       const cells = [
-        bet.gameDate || '\u2014',
+        betGameDate(bet) || '\u2014',
         fmtGameTimeOnly(refTime),
-        gameMatchupText(bet),
+        gameInfo.text,
         fmtAmerican(bet.price),
         '$'+stake.toFixed(2),
         (bet.result==='won'||bet.result==='lost') ? (pl>=0?'+':'')+'$'+pl.toFixed(2) : '\u2014',
@@ -7350,7 +7393,13 @@ async function renderBetTrackerPage(){
         const td = document.createElement('td');
         if(i===0 || i===2) td.classList.add('left');
         td.style.cssText = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;'+(i!==0 && i!==2 ?'text-align:center;':'');
-        td.textContent = c;
+        if(i===2 && gameInfo.location){
+          const main = document.createElement('div'); main.textContent = c;
+          const loc = document.createElement('div'); loc.style.cssText = 'font-size:10.5px;color:var(--sub);'; loc.textContent = gameInfo.location;
+          td.appendChild(main); td.appendChild(loc);
+        } else {
+          td.textContent = c;
+        }
         tr.appendChild(td);
       });
 
@@ -7477,6 +7526,52 @@ async function renderBetTrackerPage(){
     const gradedCount = await autoGradeAll();
     gradeBtn.disabled = false; gradeBtn.textContent = '\u2705 Auto-Grade Pending Bets';
     statusDiv.textContent = `Graded ${gradedCount} bet(s). Refreshing\u2026`;
+    await refresh();
+  });
+
+  // Backfills opponent/gameLabel (and, for parlays, a top-level gameDate) on any bet that's
+  // missing them but has enough info to derive them (team + gameDate) -- fixes bets imported
+  // without complete game info, e.g. from a spreadsheet that only recorded the player and line.
+  // Safe to run repeatedly: skips anything that's already complete.
+  async function repairMissingGameInfo(){
+    let repairedCount = 0, uncertainCount = 0;
+    for(const bet of bets){
+      let needsUpdate = false;
+      const patch = {};
+
+      if(bet.isParlay && Array.isArray(bet.legs)){
+        let legsChanged = false;
+        const newLegs = bet.legs.map(leg=>{
+          if(leg.opponent && leg.gameLabel) return leg;
+          if(!leg.team || !leg.gameDate) return leg;
+          const derived = deriveGameInfo(leg.team, leg.gameDate);
+          if(!derived) return leg;
+          legsChanged = true;
+          return Object.assign({}, leg, {opponent: derived.opponent, gameLabel: derived.gameLabel});
+        });
+        if(legsChanged){ patch.legs = newLegs; needsUpdate = true; }
+        if(!bet.gameDate && bet.legs[0] && bet.legs[0].gameDate){ patch.gameDate = bet.legs[0].gameDate; needsUpdate = true; }
+      } else {
+        if((!bet.opponent || !bet.gameLabel) && bet.team && bet.gameDate){
+          const derived = deriveGameInfo(bet.team, bet.gameDate);
+          if(derived){ patch.opponent = derived.opponent; patch.gameLabel = derived.gameLabel; needsUpdate = true; }
+        }
+      }
+
+      if(needsUpdate){
+        try{ await trackerUpdate(bet.id, patch); repairedCount++; }
+        catch(e){ console.warn('Repair failed for one bet (continuing):', bet.label, e); }
+      } else if((bet.isParlay ? !bet.gameDate : (!bet.opponent || !bet.gameLabel)) && !(bet.team||(bet.legs&&bet.legs[0]&&bet.legs[0].team))){
+        uncertainCount++; // genuinely nothing to derive from (no team on any leg) -- can't fix these
+      }
+    }
+    return {repairedCount, uncertainCount};
+  }
+  repairBtn.addEventListener('click', async ()=>{
+    repairBtn.disabled = true; repairBtn.textContent = 'Repairing\u2026';
+    const {repairedCount, uncertainCount} = await repairMissingGameInfo();
+    repairBtn.disabled = false; repairBtn.textContent = '\ud83e\uddf9 Repair Missing Game Info';
+    statusDiv.textContent = `Repaired ${repairedCount} bet(s).` + (uncertainCount ? ` ${uncertainCount} couldn't be fixed (no team info to work from).` : '') + ' Refreshing\u2026';
     await refresh();
   });
 
