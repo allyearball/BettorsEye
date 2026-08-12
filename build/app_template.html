@@ -1793,6 +1793,49 @@ function buildNav(){
   });
   leagueBtn.click();
 }
+// Rebuildable so login/logout can refresh just this piece without touching the page nav
+// buttons. Lives in its own small container appended after the page nav buttons inside
+// #toplinks, which naturally puts it furthest right (toplinks is a flex row).
+function renderAccountControls(){
+  let container = document.getElementById('accountControls');
+  if(!container){
+    container = document.createElement('div');
+    container.id = 'accountControls';
+    container.style.cssText = 'display:flex;gap:6px;margin-left:10px;padding-left:10px;border-left:1px solid rgba(255,255,255,.25);';
+    document.getElementById('toplinks').appendChild(container);
+  }
+  container.innerHTML = '';
+
+  const settingsBtn = document.createElement('button');
+  settingsBtn.textContent = '\u2699\ufe0f Settings';
+  settingsBtn.addEventListener('click', ()=>{
+    if(!isLoggedIn()){
+      showLoginRequiredModal(()=>{ renderAccountControls(); renderSettingsPage(); });
+      return;
+    }
+    renderSettingsPage();
+  });
+
+  const authBtn = document.createElement('button');
+  if(isLoggedIn()){
+    authBtn.textContent = 'Log Out';
+    authBtn.addEventListener('click', async ()=>{
+      try{ await fetchJson(`${(await loadSavedUrl()) || DEFAULT_WORKER_URL}/auth/logout`, {method:'POST', headers: authHeaders()}); }catch(e){ /* best-effort */ }
+      clearAuthSession();
+      renderAccountControls();
+      if(lastRender) lastRender(); // refresh whatever page is currently showing, in case it shows account-specific content
+    });
+  } else {
+    authBtn.textContent = 'Login / Sign-Up';
+    authBtn.addEventListener('click', ()=>{
+      showLoginRequiredModal(()=>{ renderAccountControls(); if(lastRender) lastRender(); });
+    });
+  }
+
+  container.appendChild(settingsBtn);
+  container.appendChild(authBtn);
+}
+
 function buildTopLinks(){
   const tl = document.getElementById('toplinks');
   const homeBtn = document.createElement('button'); homeBtn.textContent='Top Bets'; homeBtn.classList.add('active');
@@ -1826,6 +1869,7 @@ function buildTopLinks(){
     renderAppTrackerPage();
   });
   tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn); tl.appendChild(appTrackerBtn);
+  renderAccountControls();
 }
 async function initApp(){
   const urlParams = new URLSearchParams(window.location.search);
@@ -2696,23 +2740,47 @@ const DEFAULT_WORKER_URL = 'https://odds-api-proxy.allyearball.workers.dev';
 const AUTH_TOKEN_LS_KEY = 'wnba_auth_token';
 const AUTH_EMAIL_LS_KEY = 'wnba_auth_email';
 const AUTH_VERIFIED_LS_KEY = 'wnba_auth_verified';
+const AUTH_ADMIN_LS_KEY = 'wnba_auth_admin';
+const AUTH_USERNAME_LS_KEY = 'wnba_auth_username';
+const AUTH_FIRSTNAME_LS_KEY = 'wnba_auth_firstname';
+const AUTH_LASTNAME_LS_KEY = 'wnba_auth_lastname';
+const AUTH_BIRTHDAY_LS_KEY = 'wnba_auth_birthday';
 function getAuthToken(){ return localStorage.getItem(AUTH_TOKEN_LS_KEY); }
 function getAuthEmail(){ return localStorage.getItem(AUTH_EMAIL_LS_KEY); }
 function isEmailVerified(){ return localStorage.getItem(AUTH_VERIFIED_LS_KEY) === '1'; }
-function setAuthSession(token, email, emailVerified){
+function isAdminUser(){ return localStorage.getItem(AUTH_ADMIN_LS_KEY) === '1'; }
+function getAuthUsername(){ return localStorage.getItem(AUTH_USERNAME_LS_KEY); }
+function getAuthFirstName(){ return localStorage.getItem(AUTH_FIRSTNAME_LS_KEY); }
+function getAuthLastName(){ return localStorage.getItem(AUTH_LASTNAME_LS_KEY); }
+function getAuthBirthday(){ return localStorage.getItem(AUTH_BIRTHDAY_LS_KEY); }
+function setAuthSession(token, email, emailVerified, isAdmin, profile){
   localStorage.setItem(AUTH_TOKEN_LS_KEY, token);
   localStorage.setItem(AUTH_EMAIL_LS_KEY, email);
-  // emailVerified is optional (some callers, like changePassword, don't know/change it) --
-  // when omitted, leave whatever verification status was already stored alone rather than
-  // silently reset it to false.
+  // emailVerified/isAdmin/profile are optional (some callers, like changePassword, don't know/
+  // change them) -- when omitted, leave whatever was already stored alone rather than silently
+  // resetting it.
   if(emailVerified !== undefined){
     localStorage.setItem(AUTH_VERIFIED_LS_KEY, emailVerified ? '1' : '0');
+  }
+  if(isAdmin !== undefined){
+    localStorage.setItem(AUTH_ADMIN_LS_KEY, isAdmin ? '1' : '0');
+  }
+  if(profile){
+    if(profile.username !== undefined) localStorage.setItem(AUTH_USERNAME_LS_KEY, profile.username || '');
+    if(profile.firstName !== undefined) localStorage.setItem(AUTH_FIRSTNAME_LS_KEY, profile.firstName || '');
+    if(profile.lastName !== undefined) localStorage.setItem(AUTH_LASTNAME_LS_KEY, profile.lastName || '');
+    if(profile.birthday !== undefined) localStorage.setItem(AUTH_BIRTHDAY_LS_KEY, profile.birthday || '');
   }
 }
 function clearAuthSession(){
   localStorage.removeItem(AUTH_TOKEN_LS_KEY);
   localStorage.removeItem(AUTH_EMAIL_LS_KEY);
   localStorage.removeItem(AUTH_VERIFIED_LS_KEY);
+  localStorage.removeItem(AUTH_ADMIN_LS_KEY);
+  localStorage.removeItem(AUTH_USERNAME_LS_KEY);
+  localStorage.removeItem(AUTH_FIRSTNAME_LS_KEY);
+  localStorage.removeItem(AUTH_LASTNAME_LS_KEY);
+  localStorage.removeItem(AUTH_BIRTHDAY_LS_KEY);
 }
 function isLoggedIn(){ return !!getAuthToken(); }
 // Merges an Authorization header onto whatever headers a call already wants to send --
@@ -5117,14 +5185,53 @@ function renderAuthGate(container, onSuccess){
   pwInput.type = 'password'; pwInput.placeholder = 'Password (min 8 characters)'; pwInput.autocomplete = 'current-password';
   pwInput.style.cssText = emailInput.style.cssText;
 
+  // Signup-only fields, hidden while in "Log In" mode -- Username is immutable once set
+  // (enforced server-side too), Last Name is the only one of these that's optional.
+  const signupFieldsWrap = document.createElement('div');
+  signupFieldsWrap.style.cssText = 'display:none;';
+  const usernameInput = document.createElement('input');
+  usernameInput.type = 'text'; usernameInput.placeholder = 'Username (3-20 characters, can\u2019t be changed later)'; usernameInput.autocomplete = 'username';
+  usernameInput.style.cssText = emailInput.style.cssText;
+  const firstNameInput = document.createElement('input');
+  firstNameInput.type = 'text'; firstNameInput.placeholder = 'First Name'; firstNameInput.autocomplete = 'given-name';
+  firstNameInput.style.cssText = emailInput.style.cssText;
+  const lastNameInput = document.createElement('input');
+  lastNameInput.type = 'text'; lastNameInput.placeholder = 'Last Name (optional)'; lastNameInput.autocomplete = 'family-name';
+  lastNameInput.style.cssText = emailInput.style.cssText;
+  const birthdayInput = document.createElement('input');
+  birthdayInput.type = 'date'; birthdayInput.autocomplete = 'bday';
+  birthdayInput.style.cssText = emailInput.style.cssText;
+  const birthdayLabel = document.createElement('div');
+  birthdayLabel.className = 'footnote'; birthdayLabel.style.cssText = 'margin:-4px 0 8px;';
+  birthdayLabel.textContent = 'Birthday';
+  signupFieldsWrap.appendChild(usernameInput);
+  signupFieldsWrap.appendChild(firstNameInput);
+  signupFieldsWrap.appendChild(lastNameInput);
+  signupFieldsWrap.appendChild(birthdayLabel);
+  signupFieldsWrap.appendChild(birthdayInput);
+
   const errorDiv = document.createElement('div');
   errorDiv.style.cssText = 'color:#b3261e;font-size:12.5px;margin-bottom:10px;min-height:16px;';
 
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:10px;';
-  const loginBtn = document.createElement('button'); loginBtn.className='addbtn'; loginBtn.textContent='Log In';
-  const signupBtn = document.createElement('button'); signupBtn.className='addbtn'; signupBtn.textContent='Sign Up';
-  btnRow.appendChild(loginBtn); btnRow.appendChild(signupBtn);
+  const primaryBtn = document.createElement('button'); primaryBtn.className='addbtn'; primaryBtn.textContent='Log In';
+  btnRow.appendChild(primaryBtn);
+
+  const toggleLink = document.createElement('a');
+  toggleLink.href = 'javascript:void(0)'; toggleLink.className = 'player-link';
+  toggleLink.textContent = 'New here? Sign Up';
+  toggleLink.style.cssText = 'display:inline-block;margin-top:12px;font-size:12.5px;';
+
+  let mode = 'login'; // 'login' | 'signup'
+  function setMode(newMode){
+    mode = newMode;
+    signupFieldsWrap.style.display = mode==='signup' ? 'block' : 'none';
+    primaryBtn.textContent = mode==='signup' ? 'Sign Up' : 'Log In';
+    toggleLink.textContent = mode==='signup' ? 'Already have an account? Log In' : 'New here? Sign Up';
+    errorDiv.textContent = '';
+  }
+  toggleLink.addEventListener('click', ()=>setMode(mode==='login' ? 'signup' : 'login'));
 
   // fetchJson throws on non-2xx responses (both login's 401 and signup's 400 use non-2xx for
   // real errors), so the actual "{"error":"..."}" body ends up embedded in the thrown Error's
@@ -5138,27 +5245,73 @@ function renderAuthGate(container, onSuccess){
     return err.message || 'Something went wrong.';
   }
 
-  async function attempt(path, btn){
+  // Shown in place of the normal form when login reports needsPasswordSetup -- a seeded-but-
+  // unclaimed account (e.g. the admin account) exists for this email but has no password yet.
+  function showPasswordSetupPrompt(email){
+    wrap.innerHTML = '';
+    const t = document.createElement('h2'); t.style.cssText = 'margin:0 0 8px;font-size:19px;'; t.textContent = 'Set your password';
+    const s = document.createElement('div'); s.className = 'footnote'; s.style.marginBottom = '18px';
+    s.textContent = `An account for ${email} exists but doesn\u2019t have a password yet. Set one now to claim it.`;
+    const pw1 = document.createElement('input'); pw1.type='password'; pw1.placeholder='New password (min 8 characters)'; pw1.autocomplete='new-password';
+    pw1.style.cssText = emailInput.style.cssText;
+    const pw2 = document.createElement('input'); pw2.type='password'; pw2.placeholder='Confirm password'; pw2.autocomplete='new-password';
+    pw2.style.cssText = emailInput.style.cssText;
+    const err = document.createElement('div'); err.style.cssText = errorDiv.style.cssText;
+    const btn = document.createElement('button'); btn.className='addbtn'; btn.textContent='Set Password';
+    btn.addEventListener('click', async ()=>{
+      err.textContent = '';
+      if(pw1.value.length < 8){ err.textContent = 'Password must be at least 8 characters.'; return; }
+      if(pw1.value !== pw2.value){ err.textContent = 'Passwords don\u2019t match.'; return; }
+      btn.disabled = true; btn.textContent = 'Please wait\u2026';
+      try{
+        const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+        const result = await fetchJson(`${workerBase}/auth/set-initial-password`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, newPassword: pw1.value})});
+        setAuthSession(result.token, result.email);
+        onSuccess();
+      }catch(e){
+        err.textContent = extractErrorMessage(e);
+        btn.disabled = false; btn.textContent = 'Set Password';
+      }
+    });
+    wrap.appendChild(t); wrap.appendChild(s); wrap.appendChild(pw1); wrap.appendChild(pw2); wrap.appendChild(err); wrap.appendChild(btn);
+  }
+
+  async function attempt(){
     errorDiv.textContent = '';
     const email = emailInput.value.trim();
     const password = pwInput.value;
     if(!email || !password){ errorDiv.textContent = 'Enter an email and password.'; return; }
-    btn.disabled = true; const origText = btn.textContent; btn.textContent = 'Please wait\u2026';
+    primaryBtn.disabled = true; const origText = primaryBtn.textContent; primaryBtn.textContent = 'Please wait\u2026';
     try{
       const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-      const result = await fetchJson(`${workerBase}${path}`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password})});
-      setAuthSession(result.token, result.email, result.emailVerified);
-      onSuccess();
-      return;
+      if(mode==='signup'){
+        const body = {
+          email, password,
+          username: usernameInput.value.trim(), firstName: firstNameInput.value.trim(),
+          lastName: lastNameInput.value.trim(), birthday: birthdayInput.value,
+        };
+        const result = await fetchJson(`${workerBase}/auth/signup`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        setAuthSession(result.token, result.email, result.emailVerified, result.isAdmin, {username: result.username, firstName: result.firstName, lastName: result.lastName, birthday: result.birthday});
+        onSuccess();
+        return;
+      } else {
+        const result = await fetchJson(`${workerBase}/auth/login`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password})});
+        if(result.needsPasswordSetup){
+          showPasswordSetupPrompt(result.email);
+          return;
+        }
+        setAuthSession(result.token, result.email, result.emailVerified, result.isAdmin, {username: result.username, firstName: result.firstName, lastName: result.lastName, birthday: result.birthday});
+        onSuccess();
+        return;
+      }
     }catch(e){
       errorDiv.textContent = extractErrorMessage(e);
     }
-    btn.disabled = false; btn.textContent = origText;
+    primaryBtn.disabled = false; primaryBtn.textContent = origText;
   }
 
-  loginBtn.addEventListener('click', ()=>attempt('/auth/login', loginBtn));
-  signupBtn.addEventListener('click', ()=>attempt('/auth/signup', signupBtn));
-  pwInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter') attempt('/auth/login', loginBtn); });
+  primaryBtn.addEventListener('click', attempt);
+  pwInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter') attempt(); });
 
   const forgotLink = document.createElement('a');
   forgotLink.href = 'javascript:void(0)'; forgotLink.className = 'player-link';
@@ -5203,32 +5356,159 @@ function renderAuthGate(container, onSuccess){
 
   wrap.appendChild(emailInput);
   wrap.appendChild(pwInput);
+  wrap.appendChild(signupFieldsWrap);
   wrap.appendChild(errorDiv);
   wrap.appendChild(btnRow);
+  wrap.appendChild(toggleLink);
+  wrap.appendChild(document.createElement('br'));
   wrap.appendChild(forgotLink);
   wrap.appendChild(forgotWrap);
   container.appendChild(wrap);
 }
 
-function renderAccountSettingsPage(){
-  lastRender = () => renderAccountSettingsPage();
+function renderAdminPage(){
+  lastRender = () => renderAdminPage();
   main.innerHTML = '';
   removeGameWindowStickyBar();
 
   if(!isLoggedIn()){
-    renderAuthGate(main, ()=>renderAccountSettingsPage());
+    renderAuthGate(main, ()=>renderAdminPage());
+    return;
+  }
+  if(!isAdminUser()){
+    main.innerHTML = '<div style="padding:24px;color:#b3261e;">Admin access required. If you believe this is wrong, log out and back in \u2014 admin status is only refreshed on login.</div>';
     return;
   }
 
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>\u2699\ufe0f Account Settings</h2><div class="meta">Update your login email or password.</div>`;
+  head.innerHTML = `<h2>\ud83d\udee1\ufe0f Admin</h2><div class="meta">Manage user accounts.</div>`;
   main.appendChild(head);
 
   const backLink = document.createElement('a'); backLink.href='javascript:void(0)'; backLink.className='backbtn';
   backLink.textContent = '\u2190 Back to Bet Tracker';
   backLink.addEventListener('click', ()=>renderBetTrackerPage());
   main.appendChild(backLink);
+
+  const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
+  statusDiv.textContent = 'Loading users\u2026';
+  main.appendChild(statusDiv);
+
+  const tableDiv = document.createElement('div');
+  main.appendChild(tableDiv);
+
+  function extractErrorMessage(err){
+    const match = String(err.message||'').match(/\{.*\}/);
+    if(match){ try{ const parsed = JSON.parse(match[0]); if(parsed.error) return parsed.error; }catch(_){} }
+    return err.message || 'Something went wrong.';
+  }
+
+  async function refresh(){
+    statusDiv.textContent = 'Loading users\u2026';
+    let users;
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      const result = await fetchJson(`${workerBase}/admin/users`, {headers: authHeaders()});
+      users = result.users || [];
+    }catch(e){
+      statusDiv.textContent = `Couldn\u2019t load users: ${extractErrorMessage(e)}`;
+      return;
+    }
+    statusDiv.textContent = `${users.length} user(s).`;
+
+    tableDiv.innerHTML = '';
+    const wrap = document.createElement('div'); wrap.className='table-wrap';
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th class="left">Email</th><th class="left">Username</th><th class="left">Name</th><th class="left">Created</th><th>Verified</th><th>Admin</th><th class="left">Locked?</th><th></th></tr>';
+    const tbody = document.createElement('tbody');
+    table.appendChild(thead); table.appendChild(tbody);
+    wrap.appendChild(table); tableDiv.appendChild(wrap);
+
+    const myEmail = getAuthEmail();
+    users.forEach(u=>{
+      const tr = document.createElement('tr');
+      const tdEmail = document.createElement('td'); tdEmail.className='left'; tdEmail.textContent = u.email + (u.email===myEmail ? ' (you)' : '');
+      const tdUsername = document.createElement('td'); tdUsername.className='left'; tdUsername.textContent = u.username || '\u2014';
+      const tdName = document.createElement('td'); tdName.className='left'; tdName.textContent = [u.first_name, u.last_name].filter(Boolean).join(' ') || '\u2014';
+      const tdCreated = document.createElement('td'); tdCreated.className='left'; tdCreated.textContent = (u.created_at||'').slice(0,10);
+      const tdVerified = document.createElement('td'); tdVerified.textContent = u.email_verified ? '\u2705' : '\u2014';
+      const tdAdmin = document.createElement('td'); tdAdmin.textContent = u.is_admin ? '\ud83d\udee1\ufe0f' : '\u2014';
+      const tdLocked = document.createElement('td'); tdLocked.className='left';
+      tdLocked.textContent = (u.locked_until && new Date(u.locked_until) > new Date()) ? `Locked until ${new Date(u.locked_until).toLocaleTimeString()}` : '\u2014';
+
+      const tdActions = document.createElement('td'); tdActions.style.cssText='display:flex;gap:8px;';
+      const isSelf = u.email === myEmail;
+
+      const adminToggleBtn = document.createElement('button');
+      adminToggleBtn.textContent = u.is_admin ? 'Remove Admin' : 'Make Admin';
+      adminToggleBtn.style.cssText = 'padding:4px 8px;border-radius:4px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:11px;cursor:pointer;font-family:var(--sans);';
+      if(isSelf && u.is_admin){ adminToggleBtn.disabled = true; adminToggleBtn.title = 'You can\u2019t remove your own admin status.'; }
+      adminToggleBtn.addEventListener('click', async ()=>{
+        const makeAdmin = !u.is_admin;
+        if(!confirm(`${makeAdmin ? 'Grant' : 'Remove'} admin access ${makeAdmin?'to':'from'} ${u.email}?`)) return;
+        try{
+          const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+          const result = await fetchJson(`${workerBase}/admin/set-admin`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({userId: u.id, makeAdmin})});
+          if(result.error) throw new Error(result.error);
+          await refresh();
+        }catch(e){ alert(extractErrorMessage(e)); }
+      });
+
+      const deleteBtn = document.createElement('button'); deleteBtn.className='rmbtn'; deleteBtn.textContent = '\ud83d\uddd1\ufe0f';
+      deleteBtn.title = 'Delete this user and all their data';
+      if(isSelf){ deleteBtn.disabled = true; deleteBtn.title = 'You can\u2019t delete your own account here.'; }
+      deleteBtn.addEventListener('click', async ()=>{
+        if(!confirm(`Permanently delete ${u.email}? This removes their account, sessions, and all tracked bets. This can\u2019t be undone.`)) return;
+        try{
+          const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+          const result = await fetchJson(`${workerBase}/admin/delete-user`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({userId: u.id})});
+          if(result.error) throw new Error(result.error);
+          await refresh();
+        }catch(e){ alert(extractErrorMessage(e)); }
+      });
+
+      tdActions.appendChild(adminToggleBtn); tdActions.appendChild(deleteBtn);
+      [tdEmail, tdUsername, tdName, tdCreated, tdVerified, tdAdmin, tdLocked, tdActions].forEach(td=>tr.appendChild(td));
+      tbody.appendChild(tr);
+    });
+  }
+
+  refresh();
+}
+
+function renderSettingsPage(activeTab){
+  activeTab = activeTab || 'account';
+  lastRender = () => renderSettingsPage(activeTab);
+  main.innerHTML = '';
+  removeGameWindowStickyBar();
+
+  if(!isLoggedIn()){
+    renderAuthGate(main, ()=>renderSettingsPage(activeTab));
+    return;
+  }
+
+  const head = document.createElement('div'); head.className='pagehead';
+  head.innerHTML = `<h2>\u2699\ufe0f Settings</h2><div class="meta">Manage your account.</div>`;
+  main.appendChild(head);
   renderVerifyEmailBanner(main);
+
+  // ---- Tab menu ----
+  const tabBar = document.createElement('div');
+  tabBar.style.cssText = 'display:flex;gap:8px;margin:14px 0 20px;border-bottom:1px solid var(--line);';
+  const tabs = [
+    {key:'account', label:'Account Info'},
+    {key:'email', label:'Change Email'},
+    {key:'password', label:'Change Password'},
+  ];
+  tabs.forEach(t=>{
+    const btn = document.createElement('button');
+    btn.textContent = t.label;
+    const isActive = t.key === activeTab;
+    btn.style.cssText = `padding:9px 16px;border:none;border-bottom:3px solid ${isActive?'var(--navy2)':'transparent'};background:none;cursor:pointer;font-family:var(--sans);font-size:13.5px;font-weight:${isActive?'700':'500'};color:${isActive?'var(--navy2)':'var(--sub)'};`;
+    btn.addEventListener('click', ()=>renderSettingsPage(t.key));
+    tabBar.appendChild(btn);
+  });
+  main.appendChild(tabBar);
 
   function extractErrorMessage(err){
     const match = String(err.message||'').match(/\{.*\}/);
@@ -5237,78 +5517,129 @@ function renderAccountSettingsPage(){
   }
   function styledInput(type, placeholder, autocomplete){
     const inp = document.createElement('input');
-    inp.type = type; inp.placeholder = placeholder; if(autocomplete) inp.autocomplete = autocomplete;
+    inp.type = type; if(placeholder) inp.placeholder = placeholder; if(autocomplete) inp.autocomplete = autocomplete;
     inp.style.cssText = 'width:100%;max-width:340px;padding:10px;margin-bottom:10px;border:1px solid var(--line);border-radius:6px;font-size:14px;font-family:var(--sans);box-sizing:border-box;display:block;';
     return inp;
   }
+  function sectionBox(){
+    const el = document.createElement('div');
+    el.style.cssText = 'max-width:400px;padding:20px;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:20px;';
+    return el;
+  }
 
-  // ---- Change email ----
-  const emailSec = document.createElement('div');
-  emailSec.style.cssText = 'max-width:400px;padding:20px;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:20px;';
-  const emailTitle = document.createElement('div'); emailTitle.style.cssText = 'font-weight:800;font-size:15px;margin-bottom:4px;';
-  emailTitle.textContent = 'Change Email';
-  const emailCurrent = document.createElement('div'); emailCurrent.className = 'footnote'; emailCurrent.style.marginBottom = '14px';
-  emailCurrent.textContent = `Current: ${getAuthEmail()}`;
-  const newEmailInput = styledInput('email', 'New email', 'email');
-  const emailPwInput = styledInput('password', 'Current password (to confirm)', 'current-password');
-  const emailStatus = document.createElement('div'); emailStatus.style.cssText = 'font-size:12.5px;margin-bottom:10px;min-height:16px;';
-  const emailBtn = document.createElement('button'); emailBtn.className = 'addbtn'; emailBtn.textContent = 'Update Email';
-  emailBtn.addEventListener('click', async ()=>{
-    emailStatus.style.color = '#b3261e'; emailStatus.textContent = '';
-    if(!newEmailInput.value.trim() || !emailPwInput.value){ emailStatus.textContent = 'Enter a new email and your current password.'; return; }
-    emailBtn.disabled = true; emailBtn.textContent = 'Updating\u2026';
-    try{
-      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-      const result = await fetchJson(`${workerBase}/auth/change-email`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({newEmail: newEmailInput.value.trim(), currentPassword: emailPwInput.value})});
-      setAuthSession(getAuthToken(), result.email, result.emailVerified);
-      emailStatus.style.color = 'var(--green)'; emailStatus.textContent = 'Email updated.';
-      emailCurrent.textContent = `Current: ${result.email}`;
-      newEmailInput.value = ''; emailPwInput.value = '';
-    }catch(e){
-      emailStatus.style.color = '#b3261e';
-      emailStatus.textContent = extractErrorMessage(e);
-    }
-    emailBtn.disabled = false; emailBtn.textContent = 'Update Email';
-  });
-  emailSec.appendChild(emailTitle); emailSec.appendChild(emailCurrent);
-  emailSec.appendChild(newEmailInput); emailSec.appendChild(emailPwInput);
-  emailSec.appendChild(emailStatus); emailSec.appendChild(emailBtn);
-  main.appendChild(emailSec);
+  if(activeTab === 'account'){
+    const sec = sectionBox();
+    const fields = [
+      {label:'Username', locked:true, value: getAuthUsername() || ''},
+      {label:'First Name', key:'firstName', value: getAuthFirstName() || ''},
+      {label:'Last Name', key:'lastName', value: getAuthLastName() || '', optional:true},
+      {label:'Email', locked:true, value: getAuthEmail() || '', note:'Change this on the "Change Email" tab.'},
+      {label:'Birthday', key:'birthday', value: getAuthBirthday() || '', type:'date'},
+    ];
+    const inputs = {};
+    fields.forEach(f=>{
+      const label = document.createElement('div');
+      label.className = 'footnote'; label.style.cssText = 'margin:0 0 4px;font-weight:700;';
+      label.textContent = f.label + (f.optional ? ' (optional)' : '') + (f.locked ? ' \ud83d\udd12' : '');
+      sec.appendChild(label);
+      if(f.locked){
+        const val = document.createElement('div');
+        val.style.cssText = 'padding:10px;margin-bottom:4px;background:#f4f5f7;border-radius:6px;color:var(--sub);font-size:14px;';
+        val.textContent = f.value || '\u2014';
+        sec.appendChild(val);
+        if(f.note){ const n = document.createElement('div'); n.className='footnote'; n.style.marginBottom='10px'; n.textContent = f.note; sec.appendChild(n); }
+      } else {
+        const inp = styledInput(f.type||'text', '', '');
+        inp.value = f.value;
+        inputs[f.key] = inp;
+        sec.appendChild(inp);
+      }
+    });
+    const status = document.createElement('div'); status.style.cssText = 'font-size:12.5px;margin-bottom:10px;min-height:16px;';
+    const saveBtn = document.createElement('button'); saveBtn.className = 'addbtn'; saveBtn.textContent = 'Save Changes';
+    saveBtn.addEventListener('click', async ()=>{
+      status.style.color = '#b3261e'; status.textContent = '';
+      if(!inputs.firstName.value.trim()){ status.textContent = 'First name is required.'; return; }
+      if(!inputs.birthday.value){ status.textContent = 'Birthday is required.'; return; }
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving\u2026';
+      try{
+        const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+        const result = await fetchJson(`${workerBase}/auth/update-profile`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({firstName: inputs.firstName.value.trim(), lastName: inputs.lastName.value.trim(), birthday: inputs.birthday.value})});
+        setAuthSession(getAuthToken(), getAuthEmail(), undefined, undefined, {firstName: result.firstName, lastName: result.lastName, birthday: result.birthday});
+        status.style.color = 'var(--green)'; status.textContent = 'Saved.';
+      }catch(e){
+        status.style.color = '#b3261e';
+        status.textContent = extractErrorMessage(e);
+      }
+      saveBtn.disabled = false; saveBtn.textContent = 'Save Changes';
+    });
+    sec.appendChild(status); sec.appendChild(saveBtn);
+    main.appendChild(sec);
+  }
 
-  // ---- Change password ----
-  const pwSec = document.createElement('div');
-  pwSec.style.cssText = emailSec.style.cssText;
-  const pwTitle = document.createElement('div'); pwTitle.style.cssText = emailTitle.style.cssText;
-  pwTitle.textContent = 'Change Password';
-  const pwNote = document.createElement('div'); pwNote.className = 'footnote'; pwNote.style.marginBottom = '14px';
-  pwNote.textContent = 'Changing your password logs you out everywhere else \u2014 this device stays logged in.';
-  const currentPwInput = styledInput('password', 'Current password', 'current-password');
-  const newPwInput = styledInput('password', 'New password (min 8 characters)', 'new-password');
-  const newPwConfirm = styledInput('password', 'Confirm new password', 'new-password');
-  const pwStatus = document.createElement('div'); pwStatus.style.cssText = 'font-size:12.5px;margin-bottom:10px;min-height:16px;';
-  const pwBtn = document.createElement('button'); pwBtn.className = 'addbtn'; pwBtn.textContent = 'Update Password';
-  pwBtn.addEventListener('click', async ()=>{
-    pwStatus.style.color = '#b3261e'; pwStatus.textContent = '';
-    if(!currentPwInput.value || !newPwInput.value){ pwStatus.textContent = 'Fill in all fields.'; return; }
-    if(newPwInput.value.length < 8){ pwStatus.textContent = 'New password must be at least 8 characters.'; return; }
-    if(newPwInput.value !== newPwConfirm.value){ pwStatus.textContent = 'New passwords don\u2019t match.'; return; }
-    pwBtn.disabled = true; pwBtn.textContent = 'Updating\u2026';
-    try{
-      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-      const result = await fetchJson(`${workerBase}/auth/change-password`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({currentPassword: currentPwInput.value, newPassword: newPwInput.value})});
-      setAuthSession(result.token, getAuthEmail()); // server issued a fresh token since all other sessions were just invalidated
-      pwStatus.style.color = 'var(--green)'; pwStatus.textContent = 'Password updated.';
-      currentPwInput.value = ''; newPwInput.value = ''; newPwConfirm.value = '';
-    }catch(e){
-      pwStatus.style.color = '#b3261e';
-      pwStatus.textContent = extractErrorMessage(e);
-    }
-    pwBtn.disabled = false; pwBtn.textContent = 'Update Password';
-  });
-  pwSec.appendChild(pwTitle); pwSec.appendChild(pwNote);
-  pwSec.appendChild(currentPwInput); pwSec.appendChild(newPwInput); pwSec.appendChild(newPwConfirm);
-  pwSec.appendChild(pwStatus); pwSec.appendChild(pwBtn);
-  main.appendChild(pwSec);
+  if(activeTab === 'email'){
+    const emailSec = sectionBox();
+    const emailCurrent = document.createElement('div'); emailCurrent.className = 'footnote'; emailCurrent.style.marginBottom = '14px';
+    emailCurrent.textContent = `Current: ${getAuthEmail()}`;
+    const newEmailInput = styledInput('email', 'New email', 'email');
+    const emailPwInput = styledInput('password', 'Current password (to confirm)', 'current-password');
+    const emailStatus = document.createElement('div'); emailStatus.style.cssText = 'font-size:12.5px;margin-bottom:10px;min-height:16px;';
+    const emailBtn = document.createElement('button'); emailBtn.className = 'addbtn'; emailBtn.textContent = 'Update Email';
+    emailBtn.addEventListener('click', async ()=>{
+      emailStatus.style.color = '#b3261e'; emailStatus.textContent = '';
+      if(!newEmailInput.value.trim() || !emailPwInput.value){ emailStatus.textContent = 'Enter a new email and your current password.'; return; }
+      emailBtn.disabled = true; emailBtn.textContent = 'Updating\u2026';
+      try{
+        const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+        const result = await fetchJson(`${workerBase}/auth/change-email`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({newEmail: newEmailInput.value.trim(), currentPassword: emailPwInput.value})});
+        setAuthSession(getAuthToken(), result.email, result.emailVerified);
+        emailStatus.style.color = 'var(--green)'; emailStatus.textContent = 'Email updated.';
+        emailCurrent.textContent = `Current: ${result.email}`;
+        newEmailInput.value = ''; emailPwInput.value = '';
+      }catch(e){
+        emailStatus.style.color = '#b3261e';
+        emailStatus.textContent = extractErrorMessage(e);
+      }
+      emailBtn.disabled = false; emailBtn.textContent = 'Update Email';
+    });
+    emailSec.appendChild(emailCurrent);
+    emailSec.appendChild(newEmailInput); emailSec.appendChild(emailPwInput);
+    emailSec.appendChild(emailStatus); emailSec.appendChild(emailBtn);
+    main.appendChild(emailSec);
+  }
+
+  if(activeTab === 'password'){
+    const pwSec = sectionBox();
+    const pwNote = document.createElement('div'); pwNote.className = 'footnote'; pwNote.style.marginBottom = '14px';
+    pwNote.textContent = 'Changing your password logs you out everywhere else \u2014 this device stays logged in.';
+    const currentPwInput = styledInput('password', 'Current password', 'current-password');
+    const newPwInput = styledInput('password', 'New password (min 8 characters)', 'new-password');
+    const newPwConfirm = styledInput('password', 'Confirm new password', 'new-password');
+    const pwStatus = document.createElement('div'); pwStatus.style.cssText = 'font-size:12.5px;margin-bottom:10px;min-height:16px;';
+    const pwBtn = document.createElement('button'); pwBtn.className = 'addbtn'; pwBtn.textContent = 'Update Password';
+    pwBtn.addEventListener('click', async ()=>{
+      pwStatus.style.color = '#b3261e'; pwStatus.textContent = '';
+      if(!currentPwInput.value || !newPwInput.value){ pwStatus.textContent = 'Fill in all fields.'; return; }
+      if(newPwInput.value.length < 8){ pwStatus.textContent = 'New password must be at least 8 characters.'; return; }
+      if(newPwInput.value !== newPwConfirm.value){ pwStatus.textContent = 'New passwords don\u2019t match.'; return; }
+      pwBtn.disabled = true; pwBtn.textContent = 'Updating\u2026';
+      try{
+        const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+        const result = await fetchJson(`${workerBase}/auth/change-password`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({currentPassword: currentPwInput.value, newPassword: newPwInput.value})});
+        setAuthSession(result.token, getAuthEmail());
+        pwStatus.style.color = 'var(--green)'; pwStatus.textContent = 'Password updated.';
+        currentPwInput.value = ''; newPwInput.value = ''; newPwConfirm.value = '';
+      }catch(e){
+        pwStatus.style.color = '#b3261e';
+        pwStatus.textContent = extractErrorMessage(e);
+      }
+      pwBtn.disabled = false; pwBtn.textContent = 'Update Password';
+    });
+    pwSec.appendChild(pwNote);
+    pwSec.appendChild(currentPwInput); pwSec.appendChild(newPwInput); pwSec.appendChild(newPwConfirm);
+    pwSec.appendChild(pwStatus); pwSec.appendChild(pwBtn);
+    main.appendChild(pwSec);
+  }
 }
 
 async function trackerAdd(bet){
@@ -6468,15 +6799,12 @@ async function renderBetTrackerPage(){
 
   const acctRow = document.createElement('div'); acctRow.style.cssText='display:flex;align-items:center;gap:12px;margin-bottom:14px;font-size:12.5px;color:var(--sub);';
   const acctLabel = document.createElement('span'); acctLabel.textContent = `Logged in as ${getAuthEmail()}`;
-  const settingsLink = document.createElement('a'); settingsLink.href='javascript:void(0)'; settingsLink.className='player-link'; settingsLink.textContent='\u2699\ufe0f Account Settings';
-  settingsLink.addEventListener('click', ()=>renderAccountSettingsPage());
-  const logoutLink = document.createElement('a'); logoutLink.href='javascript:void(0)'; logoutLink.className='player-link'; logoutLink.textContent='Log Out';
-  logoutLink.addEventListener('click', async ()=>{
-    try{ await fetchJson(`${(await loadSavedUrl()) || DEFAULT_WORKER_URL}/auth/logout`, {method:'POST', headers: authHeaders()}); }catch(e){ /* best-effort -- clear locally regardless */ }
-    clearAuthSession();
-    renderBetTrackerPage();
-  });
-  acctRow.appendChild(acctLabel); acctRow.appendChild(settingsLink); acctRow.appendChild(logoutLink);
+  acctRow.appendChild(acctLabel);
+  if(isAdminUser()){
+    const adminLink = document.createElement('a'); adminLink.href='javascript:void(0)'; adminLink.className='player-link'; adminLink.textContent='\ud83d\udee1\ufe0f Admin';
+    adminLink.addEventListener('click', ()=>renderAdminPage());
+    acctRow.appendChild(adminLink);
+  }
   main.appendChild(acctRow);
   renderVerifyEmailBanner(main);
 
