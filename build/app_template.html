@@ -2204,9 +2204,26 @@ function injuryStatusSeverity(status){
 }
 const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', questionable:'#b8860b', other:'var(--sub)', unknown:'var(--sub)'};
 
-// Small always-visible banner (shown even while a game card is collapsed) listing any KEY
-// player on either team with a reported injury \u2014 the full team injury report (everyone,
-// not just key players) lives on each team's own page instead, to keep this one uncluttered.
+// Distinct from injuryStatusSeverity (used elsewhere for general color-coding of any status) --
+// this specifically identifies the two statuses that should make the injury indicator show up
+// at all: officially ruled OUT for the game, or day-to-day. A merely "probable"/"questionable"
+// note doesn't surface the indicator, per how this is meant to be used (a heads-up worth
+// interrupting a bet decision for, not every minor note).
+function noteworthyInjuryStatus(status){
+  if(!status) return null;
+  const s = String(status).toLowerCase();
+  if(s.includes('out') || s.includes('injured reserve') || s.includes('suspension')) return 'out';
+  if(s.includes('day-to-day') || s.includes('day to day')) return 'dayToDay';
+  return null;
+}
+
+// Returns {preview, full} or null. `preview` is a minimal, always-visible indicator (no player
+// names or status text -- just enough to flag "check this before betting it") meant to sit next
+// to the game header without competing for tap space with the expand triangle. `full` is the
+// complete detail (same content as before) meant to only show once the card is expanded. Every
+// text-bearing element gets an explicit font-size rather than relying on inheritance, since iOS
+// Safari does not always scale emoji glyphs to match surrounding text size the way it scales
+// regular characters, which was making the emoji render visibly larger than the rest of the line.
 function buildInjuryBanner(awayShort, homeShort){
   const relevant = [];
   [awayShort, homeShort].forEach(team=>{
@@ -2214,15 +2231,43 @@ function buildInjuryBanner(awayShort, homeShort){
       if(isKeyPlayer(inj.player, team)) relevant.push(Object.assign({}, inj, {team}));
     });
   });
-  if(!relevant.length) return null;
-  const banner = document.createElement('div');
-  banner.style.cssText = 'background:var(--panel)4e5;border:1px solid #f0b83c;border-radius:6px;padding:8px 12px;margin:8px 0 4px;font-size:12.5px;color:#7a5200;';
-  const parts = relevant.map(inj=>{
+  const noteworthy = relevant.filter(inj => noteworthyInjuryStatus(inj.status));
+  if(!noteworthy.length) return null;
+  const hasOut = noteworthy.some(inj => noteworthyInjuryStatus(inj.status)==='out');
+
+  const preview = document.createElement('div');
+  preview.style.cssText = 'background:var(--panel)4e5;border:1px solid #f0b83c;border-radius:6px;padding:6px 12px;margin:8px 0 4px;';
+  const previewLabel = document.createElement('span');
+  previewLabel.style.cssText = 'font-size:12.5px;font-weight:700;color:#7a5200;';
+  previewLabel.textContent = 'Watch:';
+  const previewIcon = document.createElement('span');
+  previewIcon.style.cssText = 'font-size:12.5px;margin-left:6px;';
+  previewIcon.textContent = hasOut ? '\u26a0\ufe0f \ud83d\uded1' : '\u26a0\ufe0f';
+  preview.appendChild(previewLabel); preview.appendChild(previewIcon);
+
+  const full = document.createElement('div');
+  full.style.cssText = 'background:var(--panel)4e5;border:1px solid #f0b83c;border-radius:6px;padding:8px 12px;margin:0 0 12px;';
+  const fullLabel = document.createElement('span');
+  fullLabel.style.cssText = 'font-size:12.5px;font-weight:700;color:#7a5200;';
+  fullLabel.textContent = 'Key Player Injury Watch:';
+  full.appendChild(fullLabel);
+  relevant.forEach((inj, i)=>{
+    const sep = document.createElement('span');
+    sep.style.cssText = 'font-size:12.5px;color:#7a5200;';
+    sep.innerHTML = i>0 ? '&nbsp;&middot;&nbsp;' : '&nbsp;';
+    full.appendChild(sep);
     const color = INJURY_SEVERITY_COLOR[injuryStatusSeverity(inj.status)] || '#7a5200';
-    return `<b style="color:${color}">${inj.player}</b> (${inj.team}${inj.position?', '+inj.position:''}) \u2014 ${inj.status||'Status unclear'}`;
+    const nameSpan = document.createElement('b');
+    nameSpan.style.cssText = `font-size:12.5px;color:${color};`;
+    nameSpan.textContent = inj.player;
+    full.appendChild(nameSpan);
+    const restSpan = document.createElement('span');
+    restSpan.style.cssText = 'font-size:12.5px;color:#7a5200;';
+    restSpan.textContent = ` (${inj.team}${inj.position?', '+inj.position:''}) \u2014 ${inj.status||'Status unclear'}`;
+    full.appendChild(restSpan);
   });
-  banner.innerHTML = `\u26a0\ufe0f <b>Key Player Injury Watch:</b> ${parts.join(' &nbsp;\u00b7&nbsp; ')}`;
-  return banner;
+
+  return {preview, full};
 }
 
 
@@ -2968,55 +3013,6 @@ function renderOddsPage(){
   rememberLabel.appendChild(rememberCb); rememberLabel.appendChild(document.createTextNode('Remember my Worker URL on this device'));
   const clearLink = document.createElement('a'); clearLink.href='javascript:void(0)'; clearLink.className='player-link'; clearLink.textContent='Forget saved URL';
   rememberRow.appendChild(rememberLabel); rememberRow.appendChild(clearLink);
-
-  // ---- Push notifications: gold-tier (96%+) bets with 10+ games of history behind them ----
-  const pushRow = document.createElement('div');
-  pushRow.style.cssText = 'display:flex;align-items:center;gap:14px;margin-bottom:16px;padding:10px 14px;background:var(--goldbg);border:1px solid var(--gold);border-radius:6px;flex-wrap:wrap;';
-  const pushBtn = document.createElement('button'); pushBtn.className='addbtn'; pushBtn.style.background='var(--gold)';
-  pushBtn.textContent = '\ud83d\udd14 Enable Gold-Tier Bet Alerts';
-  const pushStatus = document.createElement('div'); pushStatus.style.cssText = 'font-size:12.5px;color:var(--ink);';
-  pushStatus.textContent = 'Get a push notification the moment a bet clears 96% with at least 10 games of history behind it, at odds of -165 or better. Requires adding this app to your Home Screen first (Share \u2192 Add to Home Screen), then opening it from that icon.';
-  pushRow.appendChild(pushBtn); pushRow.appendChild(pushStatus);
-  main.appendChild(pushRow);
-
-  pushBtn.addEventListener('click', async ()=>{
-    const workerBase = urlInput.value.trim().replace(/\/$/, '') || DEFAULT_WORKER_URL;
-    if(!('serviceWorker' in navigator) || !('PushManager' in window)){
-      pushStatus.textContent = 'Push notifications aren\u2019t supported in this browser/view. On iPhone: add this app to your Home Screen first, then open it from that icon (not from Safari directly).';
-      return;
-    }
-    try{
-      pushStatus.textContent = 'Setting up notifications\u2026';
-      const reg = await navigator.serviceWorker.register('/sw.js');
-      await navigator.serviceWorker.ready;
-      const permission = await Notification.requestPermission();
-      if(permission !== 'granted'){
-        pushStatus.textContent = 'Notification permission was not granted \u2014 check your iPhone\u2019s Settings > Notifications for this app if you want to enable it later.';
-        return;
-      }
-      let sub = await reg.pushManager.getSubscription();
-      if(!sub){
-        sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-        });
-      }
-      const resp = await fetch(`${workerBase}/push/subscribe`, {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(sub),
-      });
-      if(resp.ok){
-        pushStatus.textContent = '\u2705 Notifications enabled! You\u2019ll get a push whenever a gold-tier (96%+, 10+ games of history, -165 or better) bet appears on today\u2019s slate.';
-      } else {
-        let detail = '';
-        try{ const body = await resp.json(); detail = body && body.error ? body.error : ''; }catch(e){}
-        pushStatus.textContent = `Saved the subscription locally, but the Worker returned an error (${resp.status})${detail ? ': '+detail : ''} \u2014 double-check the Worker URL above and that it\u2019s been redeployed with push support.`;
-      }
-    }catch(e){
-      pushStatus.textContent = `Couldn\u2019t enable notifications: ${e.message}. On iPhone this only works after adding the app to your Home Screen and opening it from that icon, not from a regular Safari tab.`;
-    }
-  });
 
   const WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
 
@@ -4345,7 +4341,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   const titleRow = document.createElement('div'); titleRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
   const gameArrow = document.createElement('span');
   gameArrow.textContent = startCollapsed ? '\u25b8' : '\u25be';
-  gameArrow.style.cssText = 'font-size:24px;color:var(--navy2);cursor:pointer;user-select:none;display:inline-block;width:26px;flex-shrink:0;line-height:1;';
+  gameArrow.style.cssText = 'font-size:38px;color:var(--navy2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;flex-shrink:0;line-height:1;';
   titleRow.appendChild(gameArrow);
 
   const dt = new Date(ev.commence_time);
@@ -4382,11 +4378,12 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   wrap.appendChild(titleRow);
 
   const injuryBanner = buildInjuryBanner(awayShort, homeShort);
-  if(injuryBanner) wrap.appendChild(injuryBanner);
+  if(injuryBanner) wrap.appendChild(injuryBanner.preview);
 
   const gameContentDiv = document.createElement('div'); gameContentDiv.style.marginTop = '6px';
   if(startCollapsed) gameContentDiv.style.display = 'none';
   wrap.appendChild(gameContentDiv);
+  if(injuryBanner) gameContentDiv.appendChild(injuryBanner.full);
   gameArrow.addEventListener('click', ()=>{
     const isExpanded = gameContentDiv.style.display !== 'none';
     gameContentDiv.style.display = isExpanded ? 'none' : '';
