@@ -4310,6 +4310,59 @@ async function applyLiveAmounts(wrap, ev){
       }
     });
   }
+
+  const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+  const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+
+  // Resolves the correct away/home score pair for a verdict element's half (full game, 1st, or
+  // 2nd) -- half-specific scores are best-effort (see the Worker's own comment on this) and
+  // simply aren't available if ESPN's linescores didn't come through as expected, in which case
+  // this returns null and the element is left showing nothing rather than a guessed number.
+  function scoresFor(half){
+    if(!half) return {away: live.awayScore, home: live.homeScore};
+    if(String(half)==='1'){
+      if(live.awayFirstHalf==null || live.homeFirstHalf==null) return null;
+      return {away: live.awayFirstHalf, home: live.homeFirstHalf};
+    }
+    if(String(half)==='2'){
+      if(live.awaySecondHalf==null || live.homeSecondHalf==null) return null;
+      return {away: live.awaySecondHalf, home: live.homeSecondHalf};
+    }
+    return null;
+  }
+
+  wrap.querySelectorAll('.live-verdict').forEach(el=>{
+    const type = el.getAttribute('data-verdict-type');
+    const side = el.getAttribute('data-verdict-side');
+    const point = el.hasAttribute('data-verdict-point') ? parseFloat(el.getAttribute('data-verdict-point')) : null;
+    const half = el.getAttribute('data-verdict-half');
+    const scores = scoresFor(half);
+    if(!scores) return; // half-specific data not available -- leave blank rather than guess
+
+    if(type==='ml'){
+      const own = side==='away' ? scores.away : scores.home;
+      const opp = side==='away' ? scores.home : scores.away;
+      const verdict = own>opp ? 'W' : (own<opp ? 'L' : 'T');
+      el.textContent = `${verdict} ${own}-${opp}`;
+      el.style.color = verdict==='W' ? 'var(--green)' : (verdict==='L' ? 'var(--red)' : 'var(--sub)');
+    } else if(type==='spread'){
+      const own = side==='away' ? scores.away : scores.home;
+      const opp = side==='away' ? scores.home : scores.away;
+      const covering = (own - opp + point) > 0;
+      el.textContent = `${covering?'W':'L'} ${point>0?'+':''}${point}`;
+      el.style.color = covering ? 'var(--green)' : 'var(--red)';
+    } else if(type==='total'){
+      const combined = scores.away + scores.home;
+      const hitting = side==='over' ? (combined > point) : (combined < point);
+      el.textContent = String(combined);
+      el.style.color = hitting ? 'var(--green)' : 'var(--red)';
+    } else if(type==='teamtotal'){
+      const own = (el.getAttribute('data-verdict-team')===awayShort) ? scores.away : scores.home;
+      const hitting = side==='over' ? (own > point) : (own < point);
+      el.textContent = String(own);
+      el.style.color = hitting ? 'var(--green)' : 'var(--red)';
+    }
+  });
 }
 
 function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, startCollapsed, uiState, selectedBook){
@@ -4441,17 +4494,32 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   // Shared table renderer for Full Game / 1st Half / 2nd Half / Team Totals -- one row per
   // team/side (not the old side-by-side away|home grid), with a consistent column set across
   // every section so the layout reads the same regardless of which market you're looking at.
-  function buildOddsTable(container, rows){
+  function buildOddsTable(container, rows, opts){
+    opts = opts || {};
+    const includeVsin = opts.includeVsin !== false;
     const wrap = document.createElement('div'); wrap.style.cssText = 'overflow-x:auto;margin:4px 0 12px;';
     const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12.5px;';
     const thead = document.createElement('thead');
-    const headers = ['Bet Type','Team','Odds','Via','L5','L10','L15','VSiN','Track',''];
-    thead.innerHTML = '<tr>' + headers.map(h=>`<th style="text-align:left;padding:6px 8px;border-bottom:2px solid var(--line);white-space:nowrap;color:var(--sub);font-size:11px;text-transform:uppercase;">${h}</th>`).join('') + '</tr>';
+    const headers = ['Bet Type','Live Total','Team','Odds','Via','L5','L10','L15'].concat(includeVsin?['VSiN']:[]).concat(['Track','']);
+    thead.innerHTML = '<tr>' + headers.map(h=>`<th style="text-align:right;padding:6px 8px;border-bottom:2px solid var(--line);white-space:nowrap;color:var(--sub);font-size:11px;text-transform:uppercase;">${h}</th>`).join('') + '</tr>';
     const tbody = document.createElement('tbody');
     rows.forEach(r=>{
       const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
 
       const tdType = document.createElement('td'); tdType.style.cssText='padding:7px 8px;color:var(--sub);white-space:nowrap;'; tdType.textContent = r.betType;
+
+      const tdLiveTotal = document.createElement('td'); tdLiveTotal.style.cssText='padding:7px 8px;white-space:nowrap;font-weight:700;';
+      if(r.liveVerdict){
+        const lv = document.createElement('span'); lv.className='live-verdict';
+        lv.setAttribute('data-verdict-type', r.liveVerdict.type);
+        lv.setAttribute('data-verdict-side', r.liveVerdict.side);
+        if(r.liveVerdict.point!==undefined && r.liveVerdict.point!==null) lv.setAttribute('data-verdict-point', r.liveVerdict.point);
+        if(r.liveVerdict.half) lv.setAttribute('data-verdict-half', r.liveVerdict.half);
+        if(r.liveVerdict.team) lv.setAttribute('data-verdict-team', r.liveVerdict.team);
+        tdLiveTotal.appendChild(lv);
+      } else {
+        tdLiveTotal.textContent = '\u2014'; tdLiveTotal.style.color = 'var(--sub)'; tdLiveTotal.style.fontWeight = '400';
+      }
 
       const tdTeam = document.createElement('td'); tdTeam.style.cssText='padding:7px 8px;font-weight:700;white-space:nowrap;';
       if(r.teamShort && r.teamFull){ tdTeam.appendChild(teamLinkEl(r.teamShort, r.teamFull)); tdTeam.appendChild(document.createTextNode(r.sideSuffix||'')); }
@@ -4473,8 +4541,13 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         return td;
       }
 
-      const tdVsin = document.createElement('td'); tdVsin.style.cssText='padding:7px 8px;white-space:nowrap;';
-      tdVsin.innerHTML = r.vsinSplit ? vsinCellHtml(r.vsinSplit) : '<span style="color:var(--sub);font-size:11px;">\u2014</span>';
+      const cellsSoFar = [tdType, tdLiveTotal, tdTeam, tdOdds, tdVia, hrCell(r.hr5), hrCell(r.hr10), hrCell(r.hr15)];
+
+      if(includeVsin){
+        const tdVsin = document.createElement('td'); tdVsin.style.cssText='padding:7px 8px;white-space:nowrap;';
+        tdVsin.innerHTML = r.vsinSplit ? vsinCellHtml(r.vsinSplit) : '<span style="color:var(--sub);font-size:11px;">\u2014</span>';
+        cellsSoFar.push(tdVsin);
+      }
 
       const tdTrack = document.createElement('td'); tdTrack.style.cssText='padding:7px 8px;';
       if(r.trackBtn) tdTrack.appendChild(r.trackBtn); else tdTrack.textContent = '\u2014';
@@ -4482,7 +4555,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const tdHist = document.createElement('td'); tdHist.style.cssText='padding:7px 8px;';
       if(r.historyBtn) tdHist.appendChild(r.historyBtn); else tdHist.textContent = '\u2014';
 
-      [tdType, tdTeam, tdOdds, tdVia, hrCell(r.hr5), hrCell(r.hr10), hrCell(r.hr15), tdVsin, tdTrack, tdHist].forEach(td=>tr.appendChild(td));
+      cellsSoFar.push(tdTrack, tdHist);
+      cellsSoFar.forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
     });
     table.appendChild(thead); table.appendChild(tbody);
@@ -4511,8 +4585,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const homeTrack = (!half && home) ? makeTrackButton({label:`${ev.home_team} Moneyline`, price:home.price, betType:'moneyline', team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
       const awayHist = (!half && away) ? makeHistoryButton({label:`${ev.away_team} Moneyline`, betType:'moneyline', team:awayShort, opponent:homeShort, gameLabel, eventId: ev.id}) : null;
       const homeHist = (!half && home) ? makeHistoryButton({label:`${ev.home_team} Moneyline`, betType:'moneyline', team:homeShort, opponent:awayShort, gameLabel, eventId: ev.id}) : null;
-      rows.push({betType:'Moneyline', teamShort:awayShort, teamFull:ev.away_team, oddsText: away?`${away.price>0?'+':''}${away.price}`:null, viaText: bookSourceLabel(away, selectedBook), hr5:awayHr5, hr10:awayHr10, hr15:awayHr15, vsinSplit: half?null:vsinSplitFor(awayShort,'ml'), trackBtn:awayTrack, historyBtn:awayHist, liveKey: half?null:'ml-away'});
-      rows.push({betType:'Moneyline', teamShort:homeShort, teamFull:ev.home_team, oddsText: home?`${home.price>0?'+':''}${home.price}`:null, viaText: bookSourceLabel(home, selectedBook), hr5:homeHr5, hr10:homeHr10, hr15:homeHr15, vsinSplit: half?null:vsinSplitFor(homeShort,'ml'), trackBtn:homeTrack, historyBtn:homeHist, liveKey: half?null:'ml-home'});
+      rows.push({betType:'Moneyline', teamShort:awayShort, teamFull:ev.away_team, oddsText: away?`${away.price>0?'+':''}${away.price}`:null, viaText: bookSourceLabel(away, selectedBook), hr5:awayHr5, hr10:awayHr10, hr15:awayHr15, vsinSplit: half?null:vsinSplitFor(awayShort,'ml'), trackBtn:awayTrack, historyBtn:awayHist, liveKey: half?null:'ml-away', liveVerdict:{type:'ml', side:'away', half}});
+      rows.push({betType:'Moneyline', teamShort:homeShort, teamFull:ev.home_team, oddsText: home?`${home.price>0?'+':''}${home.price}`:null, viaText: bookSourceLabel(home, selectedBook), hr5:homeHr5, hr10:homeHr10, hr15:homeHr15, vsinSplit: half?null:vsinSplitFor(homeShort,'ml'), trackBtn:homeTrack, historyBtn:homeHist, liveKey: half?null:'ml-home', liveVerdict:{type:'ml', side:'home', half}});
     }
 
     // Spread
@@ -4529,8 +4603,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const homeTrack = (!half && home) ? makeTrackButton({label:`${ev.home_team} ${home.point>0?'+':''}${home.point}`, price:home.price, betType:'spread', team:homeShort, opponent:awayShort, side:'team', line:home.point, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
       const awayHist = (!half && away) ? makeHistoryButton({label:`${ev.away_team} Spread`, betType:'spread', team:awayShort, opponent:homeShort, gameLabel, eventId: ev.id}) : null;
       const homeHist = (!half && home) ? makeHistoryButton({label:`${ev.home_team} Spread`, betType:'spread', team:homeShort, opponent:awayShort, gameLabel, eventId: ev.id}) : null;
-      rows.push({betType:'Spread', teamShort:awayShort, teamFull:ev.away_team, oddsText: away?`${away.point>0?'+':''}${away.point} (${away.price>0?'+':''}${away.price})`:null, viaText: bookSourceLabel(away, selectedBook), hr5:awayHr5, hr10:awayHr10, hr15:awayHr15, vsinSplit: half?null:vsinSplitFor(awayShort,'spread'), trackBtn:awayTrack, historyBtn:awayHist, liveKey: half?null:'spread-away'});
-      rows.push({betType:'Spread', teamShort:homeShort, teamFull:ev.home_team, oddsText: home?`${home.point>0?'+':''}${home.point} (${home.price>0?'+':''}${home.price})`:null, viaText: bookSourceLabel(home, selectedBook), hr5:homeHr5, hr10:homeHr10, hr15:homeHr15, vsinSplit: half?null:vsinSplitFor(homeShort,'spread'), trackBtn:homeTrack, historyBtn:homeHist, liveKey: half?null:'spread-home'});
+      rows.push({betType:'Spread', teamShort:awayShort, teamFull:ev.away_team, oddsText: away?`${away.point>0?'+':''}${away.point} (${away.price>0?'+':''}${away.price})`:null, viaText: bookSourceLabel(away, selectedBook), hr5:awayHr5, hr10:awayHr10, hr15:awayHr15, vsinSplit: half?null:vsinSplitFor(awayShort,'spread'), trackBtn:awayTrack, historyBtn:awayHist, liveKey: half?null:'spread-away', liveVerdict: away?{type:'spread', side:'away', point:away.point, half}:null});
+      rows.push({betType:'Spread', teamShort:homeShort, teamFull:ev.home_team, oddsText: home?`${home.point>0?'+':''}${home.point} (${home.price>0?'+':''}${home.price})`:null, viaText: bookSourceLabel(home, selectedBook), hr5:homeHr5, hr10:homeHr10, hr15:homeHr15, vsinSplit: half?null:vsinSplitFor(homeShort,'spread'), trackBtn:homeTrack, historyBtn:homeHist, liveKey: half?null:'spread-home', liveVerdict: home?{type:'spread', side:'home', point:home.point, half}:null});
     }
 
     // Total
@@ -4543,11 +4617,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const underTrack = (!half && under) ? makeTrackButton({label:`Game Total Under ${point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
       const overHist = (!half && over) ? makeHistoryButton({label:'Game Total Over', betType:'total', team:awayShort, opponent:homeShort, side:'over', gameLabel, eventId: ev.id}) : null;
       const underHist = (!half && under) ? makeHistoryButton({label:'Game Total Under', betType:'total', team:awayShort, opponent:homeShort, side:'under', gameLabel, eventId: ev.id}) : null;
-      rows.push({betType:'Total', teamLabel: over?`Over ${over.point}`:'Over', oddsText: over?`${over.price>0?'+':''}${over.price}`:null, viaText: bookSourceLabel(over, selectedBook), hr5, hr10, hr15, vsinSplit: half?null:vsinSplitFor(awayShort,'total'), trackBtn:overTrack, historyBtn:overHist, liveKey: half?null:'total-over'});
-      rows.push({betType:'Total', teamLabel: under?`Under ${under.point}`:'Under', oddsText: under?`${under.price>0?'+':''}${under.price}`:null, viaText: bookSourceLabel(under, selectedBook), hr5, hr10, hr15, vsinSplit: half?null:vsinSplitFor(homeShort,'total'), trackBtn:underTrack, historyBtn:underHist, liveKey: half?null:'total-under'});
+      rows.push({betType:'Total', teamLabel: over?`Over ${over.point}`:'Over', oddsText: over?`${over.price>0?'+':''}${over.price}`:null, viaText: bookSourceLabel(over, selectedBook), hr5, hr10, hr15, vsinSplit: half?null:vsinSplitFor(awayShort,'total'), trackBtn:overTrack, historyBtn:overHist, liveKey: half?null:'total-over', liveVerdict: over?{type:'total', side:'over', point:over.point, half}:null});
+      rows.push({betType:'Total', teamLabel: under?`Under ${under.point}`:'Under', oddsText: under?`${under.price>0?'+':''}${under.price}`:null, viaText: bookSourceLabel(under, selectedBook), hr5, hr10, hr15, vsinSplit: half?null:vsinSplitFor(homeShort,'total'), trackBtn:underTrack, historyBtn:underHist, liveKey: half?null:'total-under', liveVerdict: under?{type:'total', side:'under', point:under.point, half}:null});
     }
 
-    buildOddsTable(container, rows);
+    buildOddsTable(container, rows, {includeVsin: !half});
   }
 
   function buildTeamTotalsTable(container, market, withHitRate, half){
@@ -4581,10 +4655,10 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const overHist = (!half && over) ? makeHistoryButton({label:`${teamFullName} Team Total Over`, betType:'team_total', team:shortName, opponent:oppShort, side:'over', gameLabel, eventId: ev.id}) : null;
       const underHist = (!half && under) ? makeHistoryButton({label:`${teamFullName} Team Total Under`, betType:'team_total', team:shortName, opponent:oppShort, side:'under', gameLabel, eventId: ev.id}) : null;
 
-      rows.push({betType:'Team Total', teamShort:shortName, teamFull:teamFullName, sideSuffix:' Over', oddsText: over?`${over.point} (${over.price>0?'+':''}${over.price})`:null, viaText: bookSourceLabel(over, selectedBook), hr5:overHr5, hr10:overHr10, hr15:overHr15, vsinSplit:null, trackBtn:overTrack, historyBtn:overHist, liveKey: half?null:`teamtotal-${shortName}`});
-      rows.push({betType:'Team Total', teamShort:shortName, teamFull:teamFullName, sideSuffix:' Under', oddsText: under?`${under.point} (${under.price>0?'+':''}${under.price})`:null, viaText: bookSourceLabel(under, selectedBook), hr5:underHr5, hr10:underHr10, hr15:underHr15, vsinSplit:null, trackBtn:underTrack, historyBtn:underHist});
+      rows.push({betType:'Team Total', teamShort:shortName, teamFull:teamFullName, sideSuffix:' Over', oddsText: over?`${over.point} (${over.price>0?'+':''}${over.price})`:null, viaText: bookSourceLabel(over, selectedBook), hr5:overHr5, hr10:overHr10, hr15:overHr15, vsinSplit:null, trackBtn:overTrack, historyBtn:overHist, liveKey: half?null:`teamtotal-${shortName}`, liveVerdict: over?{type:'teamtotal', side:'over', team:shortName, point:over.point, half}:null});
+      rows.push({betType:'Team Total', teamShort:shortName, teamFull:teamFullName, sideSuffix:' Under', oddsText: under?`${under.point} (${under.price>0?'+':''}${under.price})`:null, viaText: bookSourceLabel(under, selectedBook), hr5:underHr5, hr10:underHr10, hr15:underHr15, vsinSplit:null, trackBtn:underTrack, historyBtn:underHist, liveVerdict: under?{type:'teamtotal', side:'under', team:shortName, point:under.point, half}:null});
     });
-    buildOddsTable(container, rows);
+    buildOddsTable(container, rows, {includeVsin: false});
   }
 
   const windowLabelText = windowSize==='all' ? 'Full Season' : `Last ${windowSize}`;
