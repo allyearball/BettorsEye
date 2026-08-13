@@ -243,6 +243,12 @@ def generate(box_csv_path, ros_csv_path, out_json_path, pbp_csv_path=None, injur
     for t in TEAMS:
         sub_full = box[box['team_name'] == t].copy().sort_values('game_date')
         for aid, prow in sub_full.groupby('athlete_id'):
+            # Defensive dedup on game_id, on top of whatever build.py already did upstream --
+            # a genuine duplicate row here (same game, same player) previously showed up as the
+            # same game appearing twice in "Vs Opponent This Season" and similar columns. This
+            # is a second layer, not a replacement for fixing the actual upstream cause.
+            if 'game_id' in prow.columns:
+                prow = prow.drop_duplicates(subset=['game_id'], keep='last')
             name = prow['athlete_display_name'].iloc[0]
             key = f"{name}|{t}"
             log = []
