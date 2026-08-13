@@ -159,6 +159,14 @@ def main():
     if combined.empty:
         print('ERROR: no box score data at all (neither existing nor newly fetched) -- cannot proceed.', file=sys.stderr)
         sys.exit(1)
+    # Force a consistent dtype on the dedup key columns before dropping duplicates -- existing_box_df
+    # (loaded from CSV) and new_box_df (freshly fetched this run) can end up with game_id as
+    # different pandas dtypes (e.g. int64 vs object/str) even though the underlying value is the
+    # same game. drop_duplicates does NOT treat 401799115 and "401799115" as equal across dtypes,
+    # so a type mismatch here was silently letting the same game+player survive as two rows
+    # instead of being deduped into one -- exactly what produced duplicate game log entries.
+    combined['game_id'] = combined['game_id'].astype(str)
+    combined['athlete_id'] = combined['athlete_id'].astype(str)
     combined = combined.drop_duplicates(subset=['game_id', 'athlete_id'], keep='last')
     combined.to_csv(box_csv, index=False)
     print(f'Box scores: {len(combined)} total player-rows across {combined["game_id"].nunique()} games, written to {box_csv}')
