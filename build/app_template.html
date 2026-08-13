@@ -1250,6 +1250,32 @@ function dvpIndex(opponentTeam, statKey, bucket){
   if(!base) return null;
   return Math.round((r.perGame / base) * 1000) / 1000;
 }
+// Same as dvpIndex, but built on each team's last-5-games defensive numbers instead of the
+// full season -- catches a defense that's recently tightened up or fallen off.
+const _dvpBaselineL5Cache = {};
+function computeDvpBaselineL5(){
+  if(_dvpBaselineL5Cache.value) return _dvpBaselineL5Cache.value;
+  const ranks = computeDefenseVsPositionL5();
+  const baseline = {};
+  ['G','F','C'].forEach(b=>{
+    baseline[b] = {};
+    ['pts','reb','ast','tpm','pra'].forEach(k=>{
+      const vals = TEAM_NAMES.map(t => ranks[t] && ranks[t][b] && ranks[t][b][k] ? ranks[t][b][k].perGame : null).filter(v=>v!==null);
+      baseline[b][k] = vals.length ? vals.reduce((a,b2)=>a+b2,0)/vals.length : null;
+    });
+  });
+  _dvpBaselineL5Cache.value = baseline;
+  return baseline;
+}
+function dvpIndexL5(opponentTeam, statKey, bucket){
+  if(!bucket) return null;
+  const r = getDefenseRankL5(opponentTeam, statKey, bucket);
+  if(!r) return null;
+  const baseline = computeDvpBaselineL5();
+  const base = baseline[bucket] && baseline[bucket][statKey];
+  if(!base) return null;
+  return Math.round((r.perGame / base) * 1000) / 1000;
+}
 
 const TEAM_ADV_COLS = [
   {key:'player', label:'Player', left:true}, {key:'gp', label:'GP'},
@@ -3653,6 +3679,26 @@ function worstCaseRate(bet){
   return Math.min(...rates);
 }
 
+// L10 EMA tiebreaker -- only meaningful for player props (team-level bets like moneyline/
+// spread/total have no individual player to compute this from, so this returns null for those,
+// same as it always has for any per-player metric on a team bet).
+function betTiebreakEma(bet){
+  if(bet.betType!=='player_prop' && bet.betType!=='player_prop_alt') return null;
+  const mw = multiWindowStats(bet.player, bet.team, bet.statKey);
+  if(!mw || mw.l10.ema===null) return null;
+  return mw.l10.ema;
+}
+// Directional distance of the L10 EMA from the actual line, in THIS bet's favorable direction
+// -- e.g. an Over bet on a 15.5 line with an 18 EMA is +2.5 "ahead" of the number, an Under bet
+// on the same numbers would be -2.5 (already unfavorable). Using this signed edge rather than
+// the raw EMA value is what makes it consistently orderable (bigger = more room to spare)
+// across a mix of Over and Under bets, which a raw EMA number by itself isn't.
+function betTiebreakEdge(bet){
+  const ema = betTiebreakEma(bet);
+  if(ema===null || bet.line===undefined || bet.line===null) return null;
+  return bet.side==='over' ? (ema - bet.line) : (bet.line - ema);
+}
+
 function hitCountFor(leg, windowSize){
   const r = hitRateFor(leg.player, leg.team, leg.statKey, leg.line, windowSize);
   if(!r || r.gp===0) return null;
@@ -3986,7 +4032,24 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
     const seen = new Set(pool.map(c=>c.game+'|'+c.label));
     widerPool.forEach(c=>{ const key = c.game+'|'+c.label; if(!seen.has(key)){ pool.push(c); seen.add(key); } });
   }
-  pool.sort((a,b)=> worstCaseRate(b) - worstCaseRate(a));
+  // Ranked primarily by worst-case (min of L5/L10/L15) hit rate. When that ties -- which it
+  // regularly does, since hit rates are quantized to whole game counts -- falls back to season
+  // rate, and if THAT also ties, to the L10 EMA's directional distance from the line (player
+  // props only; team-level bets have no per-player EMA, so they stay tied at that level and
+  // just keep whatever order they were gathered in). Previously ties fell through to array
+  // insertion order with nothing deliberate deciding between them -- this replaces that with an
+  // actual, explainable tiebreak chain.
+  pool.sort((a,b)=>{
+    const wcDiff = worstCaseRate(b) - worstCaseRate(a);
+    if(wcDiff !== 0) return wcDiff;
+    const seasonDiff = (b.rateAll||0) - (a.rateAll||0);
+    if(seasonDiff !== 0) return seasonDiff;
+    const edgeA = betTiebreakEdge(a), edgeB = betTiebreakEdge(b);
+    if(edgeA===null && edgeB===null) return 0;
+    if(edgeA===null) return 1;
+    if(edgeB===null) return -1;
+    return edgeB - edgeA;
+  });
   return { todaysGames, topBets: pool.slice(0, topN) };
 }
 
@@ -4018,7 +4081,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   }
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows \u2014 see the "Overall %" column for the exact number driving the rank. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`;
+  note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows (see "Overall %"); ties on that fall back to Season %, and further ties fall back to the L10 EMA's distance from the line (player props only \u2014 team-level bets have no per-player EMA, so they stay tied at that level). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`;
   container.appendChild(note);
 
   if(topBets.length === 0){
@@ -4089,11 +4152,13 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="th-overall">Overall %</th>'
-    +'<th class="th-l5">L5%</th><th class="th-l10">L10%</th><th class="th-l15">L15%</th><th class="th-season">Season%</th>'
+    +'<th class="th-l5">L5%</th><th class="th-l10">L10%</th><th class="th-l15">L15%</th><th class="th-season">Season%</th><th class="th-l10ema">L10 EMA</th>'
     +'<th class="left">Game</th><th class="left">Vs Opponent This Season</th>'
     +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="left th-simdef">Vs Similar Defenses</th>'
-    +'<th class="left th-simdefl5">Vs Similar Defenses (L5)</th><th class="left defcol th-defrankl5">Opp Def Rank (L5)</th>'
+    +'<th class="left th-simdefl5">Vs Similar Defenses (L5)</th><th class="left defcol th-defrankl5">Opp Def Rank (L5)</th><th class="left defcol th-dvpl5">DvP Index (L5)</th>'
     +'<th>Price</th><th class="left">Sportsbook</th><th class="defcol th-defallowed">Allowed/Gm</th><th></th></tr>';
+  appendDefIcon(thead.querySelector('.th-l10ema'), 'Her exponential moving average (recent games weighted more heavily) over her last 10 games played, for this exact stat \u2014 used as the second tiebreaker when Overall % and Season % are both tied (the actual number this drives is the signed distance from the line in this bet\u2019s favor, so it\u2019s directly comparable across Over and Under bets).');
+  appendDefIcon(thead.querySelector('.th-dvpl5'), 'Same idea as DvP Index, but built on the opponent\u2019s defense over just their last 5 games instead of the full season \u2014 1.05+ favors the Over, 0.95 or below favors the Under.');
   appendDefIcon(thead.querySelector('.th-simdef'), 'How this player has done against every team whose defensive rank (for this exact stat and position) falls within a few spots of today\u2019s opponent \u2014 a wider, more reliable sample than a single head-to-head history when there\u2019s only been one or two meetings this season.');
   appendDefIcon(thead.querySelector('.th-simdefl5'), 'Same idea as Vs Similar Defenses, but \u201csimilarly ranked\u201d is based on each team\u2019s defense over just their last 5 games, not the full season \u2014 catches recent form the season-long window would smooth over.');
   appendDefIcon(thead.querySelector('.th-overall'), 'The actual number this table is ranked by: the worst-case (minimum) hit rate across whichever of L5/L10/L15 are available for this bet. A bet only ranks as high as its weakest window \u2014 one great window can\u2019t hide a mediocre one.');
@@ -4179,6 +4244,13 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     const tdL10 = mkRate(bet.rate10, bet.gp10, isProp ? hitCountFor(bet,10) : null);
     const tdL15 = mkRate(bet.rate15, bet.gp15, isProp ? hitCountFor(bet,15) : null);
     const tdSeason = mkRate(bet.rateAll, bet.gpAll, isProp ? hitCountFor(bet,'all') : null);
+    const tdL10Ema = document.createElement('td'); tdL10Ema.style.cssText = cellStyle;
+    if(isProp){
+      const ema = betTiebreakEma(bet);
+      tdL10Ema.textContent = ema!==null ? Math.round(ema*10)/10 : '\u2014';
+    } else {
+      tdL10Ema.textContent = '\u2014';
+    }
 
     const tdGame = document.createElement('td'); tdGame.className='left';
     tdGame.style.cssText = cellStyle.replace('text-align:center;','') + 'color:var(--sub);';
@@ -4210,19 +4282,24 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
 
     const tdDef = document.createElement('td'); tdDef.className='left defcol'; tdDef.style.cssText = cellStyle.replace('text-align:center;','');
     const tdDefL5 = document.createElement('td'); tdDefL5.className='left defcol'; tdDefL5.style.cssText = cellStyle.replace('text-align:center;','');
+    const tdDvpL5 = document.createElement('td'); tdDvpL5.className='left defcol'; tdDvpL5.style.cssText = cellStyle.replace('text-align:center;','');
     const tdAllowed = document.createElement('td'); tdAllowed.className='defcol'; tdAllowed.style.cssText = cellStyle;
     if(isProp && bet.opponent){
       tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
       tdDefL5.appendChild(defRankL5Cell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
       tdAllowed.appendChild(defAllowedCell(bet.opponent, bet.statKey, bet.player, bet.team));
+      const bucket = positionBucket(getPlayerPosition(bet.player, bet.team));
+      const dvpL5 = bucket ? dvpIndexL5(bet.opponent, bet.statKey, bucket) : null;
+      tdDvpL5.textContent = dvpL5!==null ? dvpL5.toFixed(3) : '\u2014';
     } else {
       tdDef.textContent = '\u2014';
       tdDefL5.textContent = '\u2014';
+      tdDvpL5.textContent = '\u2014';
       tdAllowed.textContent = '\u2014';
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar, tdRank, tdPos, tdLabel, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdGame, tdVsOpp, tdDef, tdSimDef, tdSimDefL5, tdDefL5, tdPrice, tdSportsbook, tdAllowed, tdTrack].forEach(td=>tr.appendChild(td));
+    [tdStar, tdRank, tdPos, tdLabel, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdL10Ema, tdGame, tdVsOpp, tdDef, tdSimDef, tdSimDefL5, tdDefL5, tdDvpL5, tdPrice, tdSportsbook, tdAllowed, tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
     });
   }
