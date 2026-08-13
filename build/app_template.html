@@ -2066,6 +2066,78 @@ function getDefenseRank(opponentTeam, statKey, bucket){
   const ranks = computeDefenseVsPosition();
   return (ranks[opponentTeam] && ranks[opponentTeam][bucket] && ranks[opponentTeam][bucket][statKey]) || null;
 }
+
+// Same idea as computeDefenseVsPosition, but each team's "games played" is its own last 5
+// games specifically (not the full season) -- catches teams whose defense has gotten notably
+// better or worse recently, which a season-long average would smooth over. A team with fewer
+// than 5 games played uses however many it has. cutoffDate (optional) restricts to that team's
+// 5 most recent games strictly BEFORE that date -- for showing what a defense's L5 rank
+// actually was right before some specific past game, not leaking in games that happened after.
+const _defenseVsPositionL5Cache = {};
+function computeDefenseVsPositionL5(cutoffDate){
+  const cacheKey = cutoffDate || '__current__';
+  if(_defenseVsPositionL5Cache[cacheKey]) return _defenseVsPositionL5Cache[cacheKey];
+  const STAT_KEYS = ['pts','reb','ast','tpm','pra'];
+  const BUCKETS = ['G','F','C'];
+
+  const teamGames = {};
+  TEAM_NAMES.forEach(t=>{ teamGames[t] = []; });
+  Object.values(DATA.games).forEach(g=>{
+    if(cutoffDate && g.date >= cutoffDate) return; // point-in-time: strictly before the cutoff
+    if(teamGames[g.home]) teamGames[g.home].push(g);
+    if(teamGames[g.away]) teamGames[g.away].push(g);
+  });
+  TEAM_NAMES.forEach(t=>{ teamGames[t].sort((a,b)=> b.date.localeCompare(a.date)); });
+
+  const allowed = {};
+  const gpUsed = {};
+  TEAM_NAMES.forEach(team=>{
+    allowed[team] = {};
+    BUCKETS.forEach(b=>{ allowed[team][b] = {pts:0,reb:0,ast:0,tpm:0,pra:0}; });
+    const last5 = teamGames[team].slice(0,5);
+    gpUsed[team] = last5.length;
+    last5.forEach(g=>{
+      g.rows.forEach(r=>{
+        if(r.dnp) return;
+        const bucket = positionBucket(r.pos);
+        if(!bucket) return;
+        const defTeam = r.team===g.home ? g.away : g.home;
+        if(defTeam !== team) return; // only stats scored AGAINST this team, in this team's own last-5 window
+        const acc = allowed[team][bucket];
+        acc.pts += r.pts||0; acc.reb += r.reb||0; acc.ast += r.ast||0; acc.tpm += r.tpm||0;
+        acc.pra += (r.pts||0)+(r.reb||0)+(r.ast||0);
+      });
+    });
+  });
+
+  const perGame = {};
+  TEAM_NAMES.forEach(team=>{
+    perGame[team] = {};
+    BUCKETS.forEach(b=>{
+      perGame[team][b] = {};
+      STAT_KEYS.forEach(k=>{ perGame[team][b][k] = gpUsed[team] ? allowed[team][b][k]/gpUsed[team] : null; });
+    });
+  });
+
+  const ranks = {};
+  TEAM_NAMES.forEach(team=>{ ranks[team] = {G:{},F:{},C:{}}; });
+  BUCKETS.forEach(bucket=>{
+    STAT_KEYS.forEach(statKey=>{
+      const withData = TEAM_NAMES.filter(t=> perGame[t][bucket][statKey]!==null);
+      const sorted = withData.slice().sort((a,b)=> perGame[a][bucket][statKey]-perGame[b][bucket][statKey]);
+      sorted.forEach((team,i)=>{
+        ranks[team][bucket][statKey] = { rank: i+1, of: sorted.length, perGame: Math.round(perGame[team][bucket][statKey]*10)/10, gp: gpUsed[team] };
+      });
+    });
+  });
+  _defenseVsPositionL5Cache[cacheKey] = ranks;
+  return ranks;
+}
+function getDefenseRankL5(opponentTeam, statKey, bucket, cutoffDate){
+  if(!bucket) return null;
+  const ranks = computeDefenseVsPositionL5(cutoffDate);
+  return (ranks[opponentTeam] && ranks[opponentTeam][bucket] && ranks[opponentTeam][bucket][statKey]) || null;
+}
 const POSITION_LABEL = {G:'Guards', F:'Forwards', C:'Centers'};
 
 // Point-in-time variants of the DvP system above, used in player gamelogs so a historical
@@ -2150,15 +2222,77 @@ function dvpIndexAsOf(opponentTeam, statKey, bucket, cutoffDate){
 // Builds the small colored "rank/of" cell used in the player props tables. Green = worse
 // defense for that stat+position (more favorable matchup for an Over bet); red = tougher
 // defense (more favorable for an Under bet). Returns a dash if position/data isn't available.
+// Full league ranking table (1 to 15) for one stat+position bucket, either season-long or
+// last-5-games -- shown when clicking a rank number in the Opp Def Rank / Opp Def Rank L5
+// columns, so the single number can be checked against the full league context it came from.
+function showLeagueDefenseRankModal(statKey, bucket, marketLabel, isL5){
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--panel);border-radius:10px;padding:20px;max-width:420px;width:100%;max-height:80vh;overflow-y:auto;position:relative;box-shadow:0 8px 30px rgba(0,0,0,0.25);';
+  overlay.appendChild(card);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '\u2715';
+  closeBtn.style.cssText = 'position:absolute;top:10px;right:12px;background:none;border:none;font-size:18px;color:var(--sub);cursor:pointer;line-height:1;padding:4px;';
+  const close = ()=>{ document.body.removeChild(overlay); };
+  closeBtn.addEventListener('click', close);
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) close(); });
+  card.appendChild(closeBtn);
+
+  const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;color:var(--navy2);margin-bottom:4px;padding-right:20px;';
+  title.textContent = `${POSITION_LABEL[bucket]} Defense Ranking \u2014 ${marketLabel}${isL5 ? ' (Last 5 Games)' : ' (Full Season)'}`;
+  card.appendChild(title);
+
+  const ranks = isL5 ? computeDefenseVsPositionL5() : computeDefenseVsPosition();
+  const rows = TEAM_NAMES.map(t=>({team:t, r: ranks[t] && ranks[t][bucket] && ranks[t][bucket][statKey]})).filter(x=>x.r);
+  rows.sort((a,b)=>a.r.rank-b.r.rank);
+
+  const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-top:12px;font-size:12.5px;';
+  const thead = document.createElement('thead');
+  thead.innerHTML = `<tr><th style="text-align:right;padding:6px 4px;border-bottom:2px solid var(--line);color:var(--sub);font-size:11px;text-transform:uppercase;">Rank</th><th style="text-align:left;padding:6px 4px;border-bottom:2px solid var(--line);color:var(--sub);font-size:11px;text-transform:uppercase;">Team</th><th style="text-align:right;padding:6px 4px;border-bottom:2px solid var(--line);color:var(--sub);font-size:11px;text-transform:uppercase;">Allowed/Gm</th></tr>`;
+  const tbody = document.createElement('tbody');
+  rows.forEach(({team, r})=>{
+    const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
+    const tdRank = document.createElement('td'); tdRank.style.cssText = 'padding:6px 4px;text-align:right;font-weight:700;';
+    tdRank.textContent = `${r.rank}/${r.of}`;
+    const tdTeam = document.createElement('td'); tdTeam.style.cssText = 'padding:6px 4px;';
+    tdTeam.appendChild(teamLinkEl(team, FULL_TEAM_NAME[team]||team));
+    const tdAllowed = document.createElement('td'); tdAllowed.style.cssText = 'padding:6px 4px;text-align:right;';
+    tdAllowed.textContent = r.perGame + (isL5 && r.gp!==undefined ? ` (${r.gp} GP)` : '');
+    tr.appendChild(tdRank); tr.appendChild(tdTeam); tr.appendChild(tdAllowed);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(thead); table.appendChild(tbody);
+  card.appendChild(table);
+
+  document.body.appendChild(overlay);
+}
+
 function defRankCell(opponentTeam, statKey, pname, team, marketLabel){
   const bucket = positionBucket(getPlayerPosition(pname, team));
   const r = bucket ? getDefenseRank(opponentTeam, statKey, bucket) : null;
   if(!r) return document.createTextNode('\u2014');
   const span = document.createElement('span');
   const color = r.rank<=5 ? 'var(--red)' : r.rank<=10 ? '#000' : 'var(--green)';
-  span.style.cssText = `font-weight:700;font-size:12px;color:${color};cursor:help;`;
+  span.style.cssText = `font-weight:700;font-size:12px;color:${color};cursor:pointer;text-decoration:underline dotted;`;
   span.textContent = `${r.rank}/${r.of}`;
-  span.title = `${FULL_TEAM_NAME[opponentTeam]||opponentTeam} allows ${r.perGame} ${(marketLabel||'').toLowerCase()} per game to ${POSITION_LABEL[bucket]} this season \u2014 ranked ${r.rank} of ${r.of} (1 = stingiest defense, ${r.of} = most generous).`;
+  span.title = `${FULL_TEAM_NAME[opponentTeam]||opponentTeam} allows ${r.perGame} ${(marketLabel||'').toLowerCase()} per game to ${POSITION_LABEL[bucket]} this season \u2014 ranked ${r.rank} of ${r.of} (1 = stingiest defense, ${r.of} = most generous). Click to see the full league ranking.`;
+  span.addEventListener('click', ()=>showLeagueDefenseRankModal(statKey, bucket, marketLabel, false));
+  return span;
+}
+// Same as defRankCell but for the last-5-games version -- a separate column since a team's
+// defense recently can look meaningfully different from its full-season number.
+function defRankL5Cell(opponentTeam, statKey, pname, team, marketLabel){
+  const bucket = positionBucket(getPlayerPosition(pname, team));
+  const r = bucket ? getDefenseRankL5(opponentTeam, statKey, bucket) : null;
+  if(!r) return document.createTextNode('\u2014');
+  const span = document.createElement('span');
+  const color = r.rank<=5 ? 'var(--red)' : r.rank<=10 ? '#000' : 'var(--green)';
+  span.style.cssText = `font-weight:700;font-size:12px;color:${color};cursor:pointer;text-decoration:underline dotted;`;
+  span.textContent = `${r.rank}/${r.of}`;
+  span.title = `${FULL_TEAM_NAME[opponentTeam]||opponentTeam} has allowed ${r.perGame} ${(marketLabel||'').toLowerCase()} per game to ${POSITION_LABEL[bucket]} over their last ${r.gp} game(s) \u2014 ranked ${r.rank} of ${r.of}. Click to see the full league ranking.`;
+  span.addEventListener('click', ()=>showLeagueDefenseRankModal(statKey, bucket, marketLabel, true));
   return span;
 }
 // Companion to defRankCell \u2014 the raw "X per game allowed" number that's otherwise only
@@ -3529,6 +3663,36 @@ function hitCountFor(leg, windowSize){
 // Every game she's actually played against this specific opponent already THIS season, with
 // her value for this exact stat and her minutes in each \u2014 plus the average. Returns null if
 // they haven't met yet this season (most common case early in a season/for new matchups).
+// Population variance of a set of values -- these are always small, complete samples (every
+// game that happened to qualify for a given cell), not a sample drawn from a larger population,
+// so population variance (divide by n) is the more natural fit here than sample variance.
+function computeVariance(values){
+  if(!values || values.length < 2) return null; // variance of a single point isn't meaningful
+  const mean = values.reduce((a,b)=>a+b,0)/values.length;
+  const sq = values.reduce((a,b)=>a+(b-mean)*(b-mean),0)/values.length;
+  return Math.round(sq*100)/100;
+}
+
+// One clickable line: "16 pts (33 mins) @ #10 (New York Liberty) - 2026-05-10" -- bold value,
+// bold rank, everything else plain, whole line links to that game's box score. `g` needs value,
+// min, isHome, oppRank ({rank,of} or null), oppFull, date, gameId.
+function buildStatLine(g, statLabel){
+  const a = document.createElement('a'); a.href = 'javascript:void(0)'; a.className = 'player-link';
+  a.style.cssText = 'display:block;font-size:11px;color:inherit;text-decoration:none;';
+  const bVal = document.createElement('b'); bVal.textContent = String(g.value);
+  a.appendChild(bVal);
+  a.appendChild(document.createTextNode(` ${statLabel} (${g.min!==null&&g.min!==undefined?g.min:'\u2014'} mins) ${g.isHome?'vs':'@'} `));
+  const bRank = document.createElement('b'); bRank.textContent = g.oppRank ? `#${g.oppRank.rank}` : '#\u2014';
+  a.appendChild(bRank);
+  a.appendChild(document.createTextNode(` (${g.oppFull}) - ${g.date}`));
+  if(g.gameId){
+    a.addEventListener('click', ()=>goToGameBox(g.gameId));
+  } else {
+    a.style.cursor = 'default';
+  }
+  return a;
+}
+
 function vsOpponentStatsForLeg(leg){
   if(leg.betType!=='player_prop' && leg.betType!=='player_prop_alt') return null;
   const rec = DATA.fullPlayerLogs[leg.player+'|'+leg.team];
@@ -3536,9 +3700,17 @@ function vsOpponentStatsForLeg(leg){
   const oppFull = FULL_TEAM_NAME[leg.opponent] || leg.opponent;
   const games = rec.log.filter(g => !g.dnp && (g.opp===leg.opponent || g.opp===oppFull));
   if(!games.length) return null;
+  const bucket = positionBucket(getPlayerPosition(leg.player, leg.team));
   const values = games.map(g => leg.statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[leg.statKey]||0));
   const avg = Math.round((values.reduce((a,b)=>a+b,0)/values.length)*10)/10;
-  return { n: games.length, avg, games: games.map((g,i)=>({date:g.date, value:values[i], min:g.min, gameId: findGameIdForTeamDate(leg.team, g.date)})) };
+  const variance = computeVariance(values);
+  return { n: games.length, avg, variance, games: games.map((g,i)=>{
+    const gameId = findGameIdForTeamDate(leg.team, g.date);
+    const gameRec = gameId ? DATA.games[gameId] : null;
+    const isHome = gameRec ? gameRec.home===leg.team : null;
+    const oppRank = bucket ? getDefenseRankAsOf(leg.opponent, leg.statKey, bucket, g.date) : null;
+    return {date:g.date, value:values[i], min:g.min, gameId, isHome, oppRank, oppFull};
+  }) };
 }
 // Small green-circle/red-\u2715 marker, same visual language as the Bet Tracker's win/loss
 // circles \u2014 indicates whether THIS specific historical game would have hit the bet currently
@@ -3598,15 +3770,15 @@ function similarDefenseWindow(rank, of){
 // opponent" -- same underlying idea as vsOpponentStatsForLeg (one specific opponent) but pooled
 // across every team whose defensive rank for this exact stat+position bucket falls in the
 // similarDefenseWindow() around today's opponent's own rank.
-function similarDefenseStatsForLeg(leg){
+function similarDefenseStatsForLeg(leg, useL5){
   if(leg.betType!=='player_prop' && leg.betType!=='player_prop_alt') return null;
   const bucket = positionBucket(getPlayerPosition(leg.player, leg.team));
   if(!bucket) return null;
-  const oppRank = getDefenseRank(leg.opponent, leg.statKey, bucket);
+  const oppRank = useL5 ? getDefenseRankL5(leg.opponent, leg.statKey, bucket) : getDefenseRank(leg.opponent, leg.statKey, bucket);
   if(!oppRank) return null;
   const {lo, hi} = similarDefenseWindow(oppRank.rank, oppRank.of);
 
-  const ranks = computeDefenseVsPosition();
+  const ranks = useL5 ? computeDefenseVsPositionL5() : computeDefenseVsPosition();
   const similarTeams = TEAM_NAMES.filter(t=>{
     const r = ranks[t] && ranks[t][bucket] && ranks[t][bucket][leg.statKey];
     return r && r.rank>=lo && r.rank<=hi;
@@ -3614,30 +3786,38 @@ function similarDefenseStatsForLeg(leg){
   const similarTeamsFull = similarTeams.map(t=>FULL_TEAM_NAME[t]||t);
 
   const rec = DATA.fullPlayerLogs[leg.player+'|'+leg.team];
-  if(!rec) return {oppRank, lo, hi, n:0, avg:null, games:[]};
+  if(!rec) return {oppRank, lo, hi, n:0, avg:null, variance:null, games:[]};
   const games = rec.log.filter(g => !g.dnp && (similarTeams.includes(g.opp) || similarTeamsFull.includes(g.opp)));
-  if(!games.length) return {oppRank, lo, hi, n:0, avg:null, games:[]};
+  if(!games.length) return {oppRank, lo, hi, n:0, avg:null, variance:null, games:[]};
 
   const values = games.map(g => leg.statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[leg.statKey]||0));
   const avg = Math.round((values.reduce((a,b)=>a+b,0)/values.length)*10)/10;
+  const variance = computeVariance(values);
   const gamesOut = games.map((g,i)=>{
     const oppShort = TEAM_NAMES.includes(g.opp) ? g.opp : (SHORT_TEAM_NAME[g.opp]||g.opp);
-    const r = ranks[oppShort] && ranks[oppShort][bucket] && ranks[oppShort][bucket][leg.statKey];
-    return {date:g.date, value:values[i], min:g.min, opp:oppShort, oppRankOfGame:r, gameId: findGameIdForTeamDate(leg.team, g.date)};
+    const oppFull = FULL_TEAM_NAME[oppShort] || oppShort;
+    const gameId = findGameIdForTeamDate(leg.team, g.date);
+    const gameRec = gameId ? DATA.games[gameId] : null;
+    const isHome = gameRec ? gameRec.home===leg.team : null;
+    // Point-in-time rank for THIS specific historical game -- what the matchup actually looked
+    // like right before it tipped off, not today's (or today's L5) snapshot rank.
+    const oppRankOfGame = useL5 ? getDefenseRankL5(oppShort, leg.statKey, bucket, g.date) : getDefenseRankAsOf(oppShort, leg.statKey, bucket, g.date);
+    return {date:g.date, value:values[i], min:g.min, opp:oppShort, oppFull, oppRank: oppRankOfGame, isHome, gameId};
   });
-  return {oppRank, lo, hi, n: games.length, avg, games: gamesOut};
+  return {oppRank, lo, hi, n: games.length, avg, variance, games: gamesOut};
 }
 
-// Same visual language as buildVsOpponentCell (hit/miss dot, date, value, link to the box
-// score, Avg summary row) -- plus a header line naming the rank window itself, and each game
-// row shows THAT specific opponent's own defensive rank so it's clear why it qualified.
-function buildSimilarDefenseCell(leg){
+// Same visual language as buildVsOpponentCell (hit/miss dot, one clickable line per game, Avg
+// summary) -- plus a header line naming the rank window itself. useL5 switches the ranking
+// basis (and thus which teams count as "similar") to each defense's last-5-games rank instead
+// of season-long.
+function buildSimilarDefenseCell(leg, useL5){
   if(leg.betType!=='player_prop' && leg.betType!=='player_prop_alt') return document.createTextNode('\u2014');
-  const stats = similarDefenseStatsForLeg(leg);
+  const stats = similarDefenseStatsForLeg(leg, useL5);
   if(!stats) return document.createTextNode('\u2014 (position unavailable)');
   const wrap = document.createElement('div');
   const header = document.createElement('div'); header.style.cssText = 'font-size:10.5px;color:var(--sub);margin-bottom:2px;';
-  header.textContent = `Vs Def Rank ${stats.lo}-${stats.hi}/${stats.oppRank.of} (today\u2019s opp: ${stats.oppRank.rank}/${stats.oppRank.of})`;
+  header.textContent = `Vs Def Rank ${stats.lo}-${stats.hi}/${stats.oppRank.of}${useL5?' (L5)':''} (today\u2019s opp: ${stats.oppRank.rank}/${stats.oppRank.of})`;
   wrap.appendChild(header);
   if(!stats.games.length){
     const none = document.createElement('div'); none.style.cssText = 'font-size:11px;color:var(--sub);';
@@ -3647,30 +3827,24 @@ function buildSimilarDefenseCell(leg){
   }
   const threshold = leg.thresholdToHit!==undefined && leg.thresholdToHit!==null ? leg.thresholdToHit : leg.line;
   const hasLine = threshold!==undefined && threshold!==null;
+  const statLabel = (STAT_SHORT_LABEL[leg.statKey]||leg.statKey).toLowerCase();
   stats.games.forEach(g=>{
-    const row = document.createElement('div'); row.style.cssText = 'font-size:11px;display:flex;align-items:center;gap:4px;';
+    const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:4px;';
     if(hasLine){
       const hit = leg.side==='under' ? g.value < threshold : g.value >= threshold;
       row.appendChild(vsOpponentHitIcon(hit));
     }
-    const rankText = g.oppRankOfGame ? ` (Rank ${g.oppRankOfGame.rank}/${g.oppRankOfGame.of})` : '';
-    const txtContent = `${g.date} vs ${g.opp}${rankText}: ${g.value} (${g.min!==null&&g.min!==undefined?g.min:'\u2014'} min)`;
-    if(g.gameId){
-      const a = document.createElement('a'); a.href='javascript:void(0)'; a.className='player-link';
-      a.textContent = txtContent;
-      a.title = 'View full box score';
-      a.addEventListener('click', ()=>goToGameBox(g.gameId));
-      row.appendChild(a);
-    } else {
-      const txt = document.createElement('span'); txt.textContent = txtContent;
-      row.appendChild(txt);
-    }
+    row.appendChild(buildStatLine(g, statLabel));
     wrap.appendChild(row);
   });
   const avgRow = document.createElement('div'); avgRow.style.cssText = 'font-size:11px;font-weight:700;margin-top:2px;';
-  avgRow.textContent = `Avg: ${stats.avg} (${stats.n} GP)`;
+  avgRow.textContent = `Avg: ${stats.avg} (${stats.n} GP)` + (stats.variance!==null ? `, Var: ${stats.variance}` : '');
   wrap.appendChild(avgRow);
   return wrap;
+}
+// Thin wrapper -- same cell, using each defense's last-5-games rank as the similarity basis.
+function buildSimilarDefenseCellL5(leg){
+  return buildSimilarDefenseCell(leg, true);
 }
 
 function computeTeamVsOpponentGames(leg){
@@ -3711,27 +3885,18 @@ function buildVsOpponentCell(leg){
     const wrap = document.createElement('div');
     const threshold = leg.thresholdToHit!==undefined && leg.thresholdToHit!==null ? leg.thresholdToHit : leg.line;
     const hasLine = threshold!==undefined && threshold!==null;
+    const statLabel = (STAT_SHORT_LABEL[leg.statKey]||leg.statKey).toLowerCase();
     stats.games.forEach(g=>{
-      const row = document.createElement('div'); row.style.cssText = 'font-size:11px;display:flex;align-items:center;gap:4px;';
+      const row = document.createElement('div'); row.style.cssText = 'display:flex;align-items:center;gap:4px;';
       if(hasLine){
         const hit = leg.side==='under' ? g.value < threshold : g.value >= threshold;
         row.appendChild(vsOpponentHitIcon(hit));
       }
-      const txtContent = `${g.date}: ${g.value} (${g.min!==null&&g.min!==undefined?g.min:'\u2014'} min)`;
-      if(g.gameId){
-        const a = document.createElement('a'); a.href='javascript:void(0)'; a.className='player-link';
-        a.textContent = txtContent;
-        a.title = 'View full box score';
-        a.addEventListener('click', ()=>goToGameBox(g.gameId));
-        row.appendChild(a);
-      } else {
-        const txt = document.createElement('span'); txt.textContent = txtContent;
-        row.appendChild(txt);
-      }
+      row.appendChild(buildStatLine(g, statLabel));
       wrap.appendChild(row);
     });
     const avgRow = document.createElement('div'); avgRow.style.cssText = 'font-size:11px;font-weight:700;margin-top:2px;';
-    avgRow.textContent = `Avg: ${stats.avg} (${stats.n} GP)`;
+    avgRow.textContent = `Avg: ${stats.avg} (${stats.n} GP)` + (stats.variance!==null ? `, Var: ${stats.variance}` : '');
     wrap.appendChild(avgRow);
     return wrap;
   }
@@ -3925,15 +4090,19 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="th-overall">Overall %</th>'
     +'<th class="th-l5">L5%</th><th class="th-l10">L10%</th><th class="th-l15">L15%</th><th class="th-season">Season%</th>'
-    +'<th class="left">Game</th><th class="left">Vs Opponent This Season</th><th class="left th-simdef">Vs Similar Defenses</th><th>Price</th><th class="left">Sportsbook</th>'
-    +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="defcol th-defallowed">Allowed/Gm</th><th></th></tr>';
+    +'<th class="left">Game</th><th class="left">Vs Opponent This Season</th>'
+    +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="left th-simdef">Vs Similar Defenses</th>'
+    +'<th class="left th-simdefl5">Vs Similar Defenses (L5)</th><th class="left defcol th-defrankl5">Opp Def Rank (L5)</th>'
+    +'<th>Price</th><th class="left">Sportsbook</th><th class="defcol th-defallowed">Allowed/Gm</th><th></th></tr>';
   appendDefIcon(thead.querySelector('.th-simdef'), 'How this player has done against every team whose defensive rank (for this exact stat and position) falls within a few spots of today\u2019s opponent \u2014 a wider, more reliable sample than a single head-to-head history when there\u2019s only been one or two meetings this season.');
+  appendDefIcon(thead.querySelector('.th-simdefl5'), 'Same idea as Vs Similar Defenses, but \u201csimilarly ranked\u201d is based on each team\u2019s defense over just their last 5 games, not the full season \u2014 catches recent form the season-long window would smooth over.');
   appendDefIcon(thead.querySelector('.th-overall'), 'The actual number this table is ranked by: the worst-case (minimum) hit rate across whichever of L5/L10/L15 are available for this bet. A bet only ranks as high as its weakest window \u2014 one great window can\u2019t hide a mediocre one.');
   appendDefIcon(thead.querySelector('.th-l5'), 'Hit rate over her last 5 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-l10'), 'Hit rate over her last 10 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-l15'), 'Hit rate over her last 15 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-season'), 'Hit rate over her full season, with the actual record (hits/games) in parentheses. Not part of the Overall % ranking calculation \u2014 shown for reference alongside L5/L10/L15.');
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
+  appendDefIcon(thead.querySelector('.th-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
   appendDefIcon(thead.querySelector('.th-defallowed'), STAT_DEFINITIONS.defAllowed);
   table.appendChild(thead);
   const tbody = document.createElement('tbody'); table.appendChild(tbody);
@@ -4030,23 +4199,30 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     tdSimDef.style.cssText = cellStyle.replace('text-align:center;','');
     tdSimDef.appendChild(buildSimilarDefenseCell(bet));
 
+    const tdSimDefL5 = document.createElement('td'); tdSimDefL5.className='left';
+    tdSimDefL5.style.cssText = cellStyle.replace('text-align:center;','');
+    tdSimDefL5.appendChild(buildSimilarDefenseCellL5(bet));
+
     const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
     tdPrice.textContent = fmtAmerican(bet.price);
     const tdSportsbook = document.createElement('td'); tdSportsbook.className='left'; tdSportsbook.style.cssText = cellStyle.replace('text-align:center;','');
     tdSportsbook.textContent = bet.sportsbook || '\u2014';
 
     const tdDef = document.createElement('td'); tdDef.className='left defcol'; tdDef.style.cssText = cellStyle.replace('text-align:center;','');
+    const tdDefL5 = document.createElement('td'); tdDefL5.className='left defcol'; tdDefL5.style.cssText = cellStyle.replace('text-align:center;','');
     const tdAllowed = document.createElement('td'); tdAllowed.className='defcol'; tdAllowed.style.cssText = cellStyle;
     if(isProp && bet.opponent){
       tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
+      tdDefL5.appendChild(defRankL5Cell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
       tdAllowed.appendChild(defAllowedCell(bet.opponent, bet.statKey, bet.player, bet.team));
     } else {
       tdDef.textContent = '\u2014';
+      tdDefL5.textContent = '\u2014';
       tdAllowed.textContent = '\u2014';
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar, tdRank, tdPos, tdLabel, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdGame, tdVsOpp, tdSimDef, tdPrice, tdSportsbook, tdDef, tdAllowed, tdTrack].forEach(td=>tr.appendChild(td));
+    [tdStar, tdRank, tdPos, tdLabel, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdGame, tdVsOpp, tdDef, tdSimDef, tdSimDefL5, tdDefL5, tdPrice, tdSportsbook, tdAllowed, tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
     });
   }
@@ -4153,10 +4329,11 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th class="left">Vs Opponent This Season</th><th>Price</th><th class="left">Sportsbook</th>'
-    +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="defcol th-defallowed">Allowed/Gm</th>'
+    +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="left defcol th-defrankl5">Opp Def Rank L5</th><th class="defcol th-defallowed">Allowed/Gm</th>'
     +'<th class="th-l5">L5</th><th class="th-l10b">L10</th><th class="th-l15b">L15</th><th class="th-full">Season</th>'
     +'<th class="th-agree">Agree</th><th class="th-dvp">DvP Idx</th><th class="left">Injury</th><th></th></tr>';
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
+  appendDefIcon(thead.querySelector('.th-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
   appendDefIcon(thead.querySelector('.th-defallowed'), STAT_DEFINITIONS.defAllowed);
   appendDefIcon(thead.querySelector('.th-l5'), 'EMA (exponential moving average) of this stat over her last 5 games played, plus how many of those 5 games actually cleared this specific line on this specific side (Over/Under) \u2014 e.g. "21.4 (4/5)" means an EMA of 21.4 and she hit this side in 4 of her last 5 games.');
   appendDefIcon(thead.querySelector('.th-l10b'), 'EMA over her last 10 games played, plus how many of those 10 actually cleared this line on this side.');
@@ -4235,12 +4412,15 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     const tdSportsbook = document.createElement('td'); tdSportsbook.className='left'; tdSportsbook.style.cssText = cellStyle.replace('text-align:center;','');
     tdSportsbook.textContent = bet.sportsbook || '\u2014';
     const tdDef = document.createElement('td'); tdDef.className='left defcol'; tdDef.style.cssText = cellStyle.replace('text-align:center;','');
+    const tdDefL5 = document.createElement('td'); tdDefL5.className='left defcol'; tdDefL5.style.cssText = cellStyle.replace('text-align:center;','');
     const tdAllowed = document.createElement('td'); tdAllowed.className='defcol'; tdAllowed.style.cssText = cellStyle;
     if(bet.opponent){
       tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
+      tdDefL5.appendChild(defRankL5Cell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
       tdAllowed.appendChild(defAllowedCell(bet.opponent, bet.statKey, bet.player, bet.team));
     } else {
       tdDef.textContent = '\u2014';
+      tdDefL5.textContent = '\u2014';
       tdAllowed.textContent = '\u2014';
     }
     const mk = (v, hc) => {
@@ -4261,7 +4441,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     else tdInjury.textContent = '\u2014';
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar,tdRank,tdPos,tdLabel,tdGame,tdVsOpp,tdPrice,tdSportsbook,tdDef,tdAllowed,tdL5,tdL10,tdL15,tdFull,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
+    [tdStar,tdRank,tdPos,tdLabel,tdGame,tdVsOpp,tdPrice,tdSportsbook,tdDef,tdDefL5,tdAllowed,tdL5,tdL10,tdL15,tdFull,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
     });
   }
@@ -4872,6 +5052,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
 
       const opponentTeam = team===homeShort?awayShort:homeShort;
       const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
+      const defCellL5 = team ? defRankL5Cell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
       const defAllowed = team ? defAllowedCell(opponentTeam, statKey, pname, team) : document.createTextNode('\u2014');
       const posText = team ? (getPlayerPosition(pname, team) || '\u2014') : '\u2014';
       const edgeCell = team ? buildEdgeCell(pname, team, opponentTeam, statKey, line, marketLabel) : document.createTextNode('\u2014');
