@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>betterseye</title>
+<title>bettorseye</title>
 <link rel="manifest" href="/manifest.json">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="bettersEye">
+<meta name="apple-mobile-web-app-title" content="bettorsEye">
 <meta name="theme-color" content="#000000">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <style>
@@ -21,7 +21,7 @@
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;}
   header{background:#000000;color:#fff;padding:16px 24px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;}
   header h1{font-size:18px;margin:0;font-weight:800;text-transform:lowercase;}
-  header h1 .brand-betters{color:#ffffff;}
+  header h1 .brand-bettors{color:#ffffff;}
   header h1 .brand-eye{color:var(--green);}
   header .tag{font-size:12px;color:#b9c4d9;}
   .toplinks{display:flex;gap:6px;margin-left:auto;}
@@ -90,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1><span class="brand-betters">betters</span><span class="brand-eye">eye</span></h1>
+  <h1><span class="brand-bettors">bettors</span><span class="brand-eye">eye</span></h1>
   <div class="tag">Data through <span id="asOf"></span></div>
   <div class="toplinks" id="toplinks"></div>
 </header>
@@ -1969,6 +1969,13 @@ function renderAccountControls(){
     renderSettingsPage();
   });
 
+  let adminBtn = null;
+  if(isLoggedIn() && isAdminUser()){
+    adminBtn = document.createElement('button');
+    adminBtn.textContent = '\ud83d\udee1\ufe0f Admin';
+    adminBtn.addEventListener('click', ()=>renderAdminPage());
+  }
+
   const authBtn = document.createElement('button');
   if(isLoggedIn()){
     authBtn.textContent = 'Log Out';
@@ -1986,6 +1993,7 @@ function renderAccountControls(){
   }
 
   container.appendChild(settingsBtn);
+  if(adminBtn) container.appendChild(adminBtn);
   container.appendChild(authBtn);
 }
 
