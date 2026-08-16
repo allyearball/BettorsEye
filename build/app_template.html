@@ -2034,6 +2034,11 @@ function buildTopLinks(){
 }
 async function initApp(){
   const urlParams = new URLSearchParams(window.location.search);
+  const setupToken = urlParams.get('setupToken');
+  if(setupToken){
+    renderAccountSetupPage(setupToken);
+    return;
+  }
   const resetToken = urlParams.get('resetToken');
   if(resetToken){
     renderResetPasswordPage(resetToken);
@@ -6016,6 +6021,68 @@ function americanPayoutProfit(price, stake){
 // Shown in place of the Bet Tracker page whenever there's no valid session. A shared function
 // (rather than living inside renderBetTrackerPage) so any other page that ends up needing the
 // same private-per-user treatment later can reuse it without duplicating this UI.
+// Shown when the app loads with a ?setupToken= URL param -- i.e. someone clicked the invite
+// link from an admin-created account's welcome email. Runs BEFORE DATA has loaded (initApp
+// checks for this token first), so this must not depend on DATA, TEAM_NAMES, or anything else
+// app-data-related. Mirrors renderResetPasswordPage almost exactly -- same shape of flow (set
+// a password, get logged in) -- just hitting the account-setup endpoint instead of reset.
+function renderAccountSetupPage(token){
+  main.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'max-width:380px;margin:60px auto;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);';
+
+  const title = document.createElement('h2');
+  title.textContent = 'Welcome \u2014 set your password';
+  title.style.cssText = 'margin:0 0 18px;font-size:19px;';
+  wrap.appendChild(title);
+
+  const pwInput = document.createElement('input');
+  pwInput.type = 'password'; pwInput.placeholder = 'Password (min 8 characters)'; pwInput.autocomplete = 'new-password';
+  pwInput.style.cssText = 'width:100%;padding:10px;margin-bottom:10px;border:1px solid var(--line);border-radius:6px;font-size:14px;font-family:var(--sans);box-sizing:border-box;';
+
+  const pwConfirm = document.createElement('input');
+  pwConfirm.type = 'password'; pwConfirm.placeholder = 'Confirm password'; pwConfirm.autocomplete = 'new-password';
+  pwConfirm.style.cssText = pwInput.style.cssText;
+
+  const errorDiv = document.createElement('div');
+  errorDiv.style.cssText = 'color:#b3261e;font-size:12.5px;margin-bottom:10px;min-height:16px;';
+
+  const submitBtn = document.createElement('button'); submitBtn.className = 'addbtn'; submitBtn.textContent = 'Set Password & Continue';
+
+  function extractErrorMessage(err){
+    const match = String(err.message||'').match(/\{.*\}/);
+    if(match){ try{ const parsed = JSON.parse(match[0]); if(parsed.error) return parsed.error; }catch(_){} }
+    return err.message || 'Something went wrong.';
+  }
+
+  submitBtn.addEventListener('click', async ()=>{
+    errorDiv.textContent = '';
+    if(pwInput.value.length < 8){ errorDiv.textContent = 'Password must be at least 8 characters.'; return; }
+    if(pwInput.value !== pwConfirm.value){ errorDiv.textContent = 'Passwords don\u2019t match.'; return; }
+    submitBtn.disabled = true; submitBtn.textContent = 'Please wait\u2026';
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      const result = await fetchJson(`${workerBase}/auth/complete-account-setup`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({token, newPassword: pwInput.value})});
+      setAuthSession(result.token, result.email || '');
+      wrap.innerHTML = '';
+      const doneTitle = document.createElement('h2'); doneTitle.style.cssText = 'margin:0 0 8px;font-size:19px;'; doneTitle.textContent = 'Password set \u2705';
+      const doneSub = document.createElement('div'); doneSub.className = 'footnote';
+      const link = document.createElement('a'); link.href = window.location.origin + window.location.pathname; link.className = 'player-link'; link.textContent = 'Continue to the app';
+      doneSub.appendChild(document.createTextNode('You\u2019re logged in. ')); doneSub.appendChild(link);
+      wrap.appendChild(doneTitle); wrap.appendChild(doneSub);
+    }catch(e){
+      errorDiv.textContent = extractErrorMessage(e);
+      submitBtn.disabled = false; submitBtn.textContent = 'Set Password & Continue';
+    }
+  });
+
+  wrap.appendChild(pwInput);
+  wrap.appendChild(pwConfirm);
+  wrap.appendChild(errorDiv);
+  wrap.appendChild(submitBtn);
+  main.appendChild(wrap);
+}
+
 // Shown when the app loads with a ?resetToken= URL param -- i.e. the user clicked the link
 // from a password-reset email. Runs BEFORE DATA has loaded (initApp checks for this token
 // first), so this must not depend on DATA, TEAM_NAMES, or anything else app-data-related.
@@ -6337,7 +6404,10 @@ function renderAuthGate(container, onSuccess){
   wrap.appendChild(signupFieldsWrap);
   wrap.appendChild(errorDiv);
   wrap.appendChild(btnRow);
-  wrap.appendChild(toggleLink);
+  // toggleLink (switches to Sign Up mode) intentionally not appended -- self-signup is hidden
+  // for now, per request. The form stays permanently in 'login' mode (its default), which also
+  // still correctly handles the "set your password" prompt for admin-created accounts. The
+  // signup backend endpoint itself is untouched, just unreachable from this UI.
   wrap.appendChild(document.createElement('br'));
   wrap.appendChild(forgotLink);
   wrap.appendChild(forgotWrap);
