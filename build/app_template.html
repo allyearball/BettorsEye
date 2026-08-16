@@ -6475,8 +6475,13 @@ function renderAdminPage(){
         email: cEmail.value.trim(), username: cUsername.value.trim(), firstName: cFirst.value.trim(), lastName: cLast.value.trim(), birthday: cBirthday.value,
       })});
       if(result.error) throw new Error(result.error);
-      createStatus.style.color = 'var(--green)';
-      createStatus.textContent = `Created. Tell them to log in with ${result.email} and any password to set their own.`;
+      if(result.emailSent){
+        createStatus.style.color = 'var(--green)';
+        createStatus.textContent = `Created and invite email sent to ${result.email}.`;
+      } else {
+        createStatus.style.color = '#b3261e';
+        createStatus.textContent = `Account created for ${result.email}, but the invite email failed to send: ${result.emailError || 'unknown error'}. They can still get in \u2014 have them go to the site, click Login/Sign-Up, enter that email and any password, and they\u2019ll be prompted to set their real one.`;
+      }
       cEmail.value=''; cUsername.value=''; cFirst.value=''; cLast.value=''; cBirthday.value='';
       await refresh();
     }catch(e){
