@@ -6478,6 +6478,20 @@ function renderAdminPage(){
       if(result.emailSent){
         createStatus.style.color = 'var(--green)';
         createStatus.textContent = `Created and invite email sent to ${result.email}.`;
+      } else if(result.setupUrl){
+        createStatus.style.color = '#b3261e';
+        createStatus.textContent = `Account created for ${result.email}, but the invite email failed to send (${result.emailError || 'unknown error'}). Copy the link below and send it to them yourself instead:`;
+        const linkRow = document.createElement('div'); linkRow.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:8px;';
+        const linkInput = document.createElement('input'); linkInput.type='text'; linkInput.readOnly = true; linkInput.value = result.setupUrl;
+        linkInput.style.cssText = 'flex:1;padding:8px;border:1px solid var(--line);border-radius:6px;font-size:12px;font-family:monospace;background:#f4f5f7;';
+        const copyBtn = document.createElement('button'); copyBtn.textContent = 'Copy'; copyBtn.className = 'addbtn';
+        copyBtn.addEventListener('click', async ()=>{
+          try{ await navigator.clipboard.writeText(result.setupUrl); copyBtn.textContent = 'Copied!'; setTimeout(()=>{ copyBtn.textContent = 'Copy'; }, 1500); }
+          catch(e){ linkInput.select(); }
+        });
+        linkRow.appendChild(linkInput); linkRow.appendChild(copyBtn);
+        createStatus.appendChild(document.createElement('br'));
+        createStatus.appendChild(linkRow);
       } else {
         createStatus.style.color = '#b3261e';
         createStatus.textContent = `Account created for ${result.email}, but the invite email failed to send: ${result.emailError || 'unknown error'}. They can still get in \u2014 have them go to the site, click Login/Sign-Up, enter that email and any password, and they\u2019ll be prompted to set their real one.`;
