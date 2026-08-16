@@ -2430,6 +2430,62 @@ function showLeagueDefenseRankModal(statKey, bucket, marketLabel, isL5){
 
 // Team-level analog of showLeagueDefenseRankModal -- overall points allowed per game, no
 // position bucket, for ML/Spread/Total/Team Total bets.
+// Admin-only, read-only view of a specific user's tracked bets -- deliberately no indicator
+// shown to the user themselves anywhere that this happened.
+async function showAdminUserBetTrackerModal(userId, userEmail){
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--panel);border-radius:10px;padding:20px;max-width:700px;width:100%;max-height:80vh;overflow-y:auto;position:relative;box-shadow:0 8px 30px rgba(0,0,0,0.25);';
+  overlay.appendChild(card);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '\u2715';
+  closeBtn.style.cssText = 'position:absolute;top:10px;right:12px;background:none;border:none;font-size:18px;color:var(--sub);cursor:pointer;line-height:1;padding:4px;';
+  const close = ()=>{ document.body.removeChild(overlay); };
+  closeBtn.addEventListener('click', close);
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) close(); });
+  card.appendChild(closeBtn);
+
+  const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;color:var(--navy2);margin-bottom:12px;padding-right:20px;';
+  title.textContent = `Bet Tracker \u2014 ${userEmail}`;
+  card.appendChild(title);
+
+  const status = document.createElement('div'); status.className = 'footnote'; status.textContent = 'Loading\u2026';
+  card.appendChild(status);
+  document.body.appendChild(overlay);
+
+  let bets;
+  try{
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    bets = await fetchJson(`${workerBase}/admin/user-bettracker?userId=${encodeURIComponent(userId)}`, {headers: authHeaders()});
+  }catch(e){
+    status.style.color = '#b3261e';
+    status.textContent = 'Couldn\u2019t load this user\u2019s tracked bets.';
+    return;
+  }
+  status.textContent = `${bets.length} tracked bet(s).`;
+  if(!bets.length) return;
+
+  const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-top:10px;font-size:12px;';
+  table.innerHTML = '<thead><tr><th style="text-align:left;padding:5px;border-bottom:2px solid var(--line);">Placed</th><th style="text-align:left;padding:5px;border-bottom:2px solid var(--line);">Bet</th><th style="text-align:right;padding:5px;border-bottom:2px solid var(--line);">Price</th><th style="text-align:right;padding:5px;border-bottom:2px solid var(--line);">Stake</th><th style="text-align:right;padding:5px;border-bottom:2px solid var(--line);">Result</th></tr></thead>';
+  const tbody = document.createElement('tbody');
+  bets.slice().reverse().forEach(b=>{
+    const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
+    const tdPlaced = document.createElement('td'); tdPlaced.style.cssText = 'padding:5px;'; tdPlaced.textContent = (b.placedAt||b.savedAt||'').slice(0,10);
+    const tdLabel = document.createElement('td'); tdLabel.style.cssText = 'padding:5px;'; tdLabel.textContent = b.label || (b.isParlay ? `${(b.legs||[]).length}-leg parlay` : 'Bet');
+    const tdPrice = document.createElement('td'); tdPrice.style.cssText = 'padding:5px;text-align:right;'; tdPrice.textContent = b.price!==undefined&&b.price!==null ? (b.price>0?'+':'')+b.price : '\u2014';
+    const tdStake = document.createElement('td'); tdStake.style.cssText = 'padding:5px;text-align:right;'; tdStake.textContent = b.stake!==undefined ? '$'+Number(b.stake).toFixed(2) : '\u2014';
+    const tdResult = document.createElement('td'); tdResult.style.cssText = 'padding:5px;text-align:right;font-weight:700;';
+    tdResult.textContent = (b.result||'pending').toUpperCase();
+    tdResult.style.color = b.result==='won' ? 'var(--green)' : (b.result==='lost' ? 'var(--red)' : 'var(--sub)');
+    [tdPlaced, tdLabel, tdPrice, tdStake, tdResult].forEach(td=>tr.appendChild(td));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  card.appendChild(table);
+}
+
 function showLeagueTeamDefenseRankModal(windowSize){
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
@@ -6307,6 +6363,53 @@ function renderAdminPage(){
   statusDiv.textContent = 'Loading users\u2026';
   main.appendChild(statusDiv);
 
+  // ---- Create User ----
+  const createSec = document.createElement('div');
+  createSec.style.cssText = 'max-width:420px;padding:20px;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:20px;';
+  const createTitle = document.createElement('div'); createTitle.style.cssText = 'font-weight:800;font-size:15px;margin-bottom:4px;';
+  createTitle.textContent = 'Create User';
+  const createNote = document.createElement('div'); createNote.className = 'footnote'; createNote.style.marginBottom = '14px';
+  createNote.textContent = 'No password needed here \u2014 they set their own the first time they log in with this email (any password value on that first attempt triggers a "create your password" prompt).';
+  function styledInput(placeholder, type){
+    const inp = document.createElement('input');
+    inp.type = type || 'text'; inp.placeholder = placeholder;
+    inp.style.cssText = 'width:100%;padding:10px;margin-bottom:10px;border:1px solid var(--line);border-radius:6px;font-size:14px;font-family:var(--sans);box-sizing:border-box;display:block;';
+    return inp;
+  }
+  const cEmail = styledInput('Email', 'email');
+  const cUsername = styledInput('Username (3-20 chars, letters/numbers/underscore)');
+  const cFirst = styledInput('First Name');
+  const cLast = styledInput('Last Name (optional)');
+  const cBirthdayLabel = document.createElement('div'); cBirthdayLabel.className='footnote'; cBirthdayLabel.style.cssText='margin:-4px 0 4px;';
+  cBirthdayLabel.textContent = 'Birthday';
+  const cBirthday = styledInput('', 'date');
+  const createStatus = document.createElement('div'); createStatus.style.cssText = 'font-size:12.5px;margin-bottom:10px;min-height:16px;';
+  const createBtn = document.createElement('button'); createBtn.className = 'addbtn'; createBtn.textContent = 'Create User';
+  createBtn.addEventListener('click', async ()=>{
+    createStatus.style.color = '#b3261e'; createStatus.textContent = '';
+    if(!cEmail.value.trim() || !cUsername.value.trim() || !cFirst.value.trim() || !cBirthday.value){
+      createStatus.textContent = 'Email, username, first name, and birthday are all required.'; return;
+    }
+    createBtn.disabled = true; createBtn.textContent = 'Creating\u2026';
+    try{
+      const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+      const result = await fetchJson(`${workerBase}/admin/create-user`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({
+        email: cEmail.value.trim(), username: cUsername.value.trim(), firstName: cFirst.value.trim(), lastName: cLast.value.trim(), birthday: cBirthday.value,
+      })});
+      if(result.error) throw new Error(result.error);
+      createStatus.style.color = 'var(--green)';
+      createStatus.textContent = `Created. Tell them to log in with ${result.email} and any password to set their own.`;
+      cEmail.value=''; cUsername.value=''; cFirst.value=''; cLast.value=''; cBirthday.value='';
+      await refresh();
+    }catch(e){
+      createStatus.style.color = '#b3261e';
+      createStatus.textContent = extractErrorMessage(e);
+    }
+    createBtn.disabled = false; createBtn.textContent = 'Create User';
+  });
+  [createTitle, createNote, cEmail, cUsername, cFirst, cLast, cBirthdayLabel, cBirthday, createStatus, createBtn].forEach(el=>createSec.appendChild(el));
+  main.appendChild(createSec);
+
   const tableDiv = document.createElement('div');
   main.appendChild(tableDiv);
 
@@ -6381,7 +6484,12 @@ function renderAdminPage(){
         }catch(e){ alert(extractErrorMessage(e)); }
       });
 
-      tdActions.appendChild(adminToggleBtn); tdActions.appendChild(deleteBtn);
+      const viewBtn = document.createElement('button');
+      viewBtn.textContent = '\ud83d\udc41\ufe0f View Data';
+      viewBtn.style.cssText = 'padding:4px 8px;border-radius:4px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:11px;cursor:pointer;font-family:var(--sans);';
+      viewBtn.addEventListener('click', ()=>showAdminUserBetTrackerModal(u.id, u.email));
+
+      tdActions.appendChild(adminToggleBtn); tdActions.appendChild(viewBtn); tdActions.appendChild(deleteBtn);
       [tdEmail, tdUsername, tdName, tdCreated, tdVerified, tdAdmin, tdLocked, tdActions].forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
     });
