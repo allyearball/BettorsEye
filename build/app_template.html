@@ -1901,7 +1901,9 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
 
   if(bio){
     const bioDiv = document.createElement('div'); bioDiv.className='player-bio';
+    const position = getPlayerPosition(playerName, team);
     bioDiv.innerHTML = `
+      <span><b>Position:</b> ${position ?? '\u2014'}</span>
       <span><b>Height:</b> ${bio.height ?? '\u2014'}</span>
       <span><b>Weight:</b> ${bio.weight ?? '\u2014'} lb</span>
       <span><b>Age:</b> ${bio.age ?? '\u2014'}</span>
@@ -3212,7 +3214,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   main.appendChild(tableHolder);
 
   function renderTable(){
-    head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket}s</h2><div class="meta">Cutoffs (full season, fixed): Shortest &lt; ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest &gt; ${heightData.p67.toFixed(1)}in. Uncheck a game to exclude it from the totals below.</div>`;
+    head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket}</h2><div class="meta">Cutoffs (full season, fixed): Shortest &lt; ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest &gt; ${heightData.p67.toFixed(1)}in. Uncheck a game to exclude it from the totals below.</div>`;
     tableHolder.innerHTML = '';
 
     const windowed = activeSize ? heightData.allGames.slice(-activeSize) : heightData.allGames;
