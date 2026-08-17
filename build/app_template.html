@@ -2976,7 +2976,7 @@ function computeHeightTierData(playerName, team){
     return lo===hi ? arr[lo] : arr[lo] + (arr[hi]-arr[lo])*(idx-lo);
   }
   const p33 = percentile(sortedHeights, 1/3), p67 = percentile(sortedHeights, 2/3);
-  gamesWithOppHeight.forEach(g=>{ g.tier = g.oppHeight<=p33 ? 'shortest' : (g.oppHeight<=p67 ? 'middle' : 'tallest'); });
+  gamesWithOppHeight.forEach(g=>{ g.tier = g.oppHeight<p33 ? 'shortest' : (g.oppHeight<=p67 ? 'middle' : 'tallest'); });
   gamesWithOppHeight.sort((a,b)=>a.date.localeCompare(b.date)); // oldest first, so .slice(-N) gets the most recent N
 
   return { bucket, p33, p67, allGames: gamesWithOppHeight };
@@ -3021,7 +3021,7 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
 
   function tierFor(heightIn){
     if(!heightTierData || heightIn===undefined || heightIn===null) return null;
-    if(heightIn <= heightTierData.p33) return 'Shortest';
+    if(heightIn < heightTierData.p33) return 'Shortest';
     if(heightIn <= heightTierData.p67) return 'Middle';
     return 'Tallest';
   }
@@ -3045,7 +3045,7 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
 
   container.innerHTML = '';
   const header = document.createElement('div'); header.className = 'footnote'; header.style.marginBottom = '8px';
-  header.textContent = `Next opponent: ${oppFull} \u2014 ${POSITION_LABEL[bucket]||bucket} on their roster (avg minutes over each player's last 15 games played).` + (heightTierData ? '' : ' Tier column unavailable \u2014 not enough of her own games to establish shortest/middle/tallest cutoffs yet.');
+  header.textContent = `Next opponent: ${oppFull} \u2014 ${POSITION_LABEL[bucket]||bucket} on their roster (avg minutes over each player's last 15 games played).` + (heightTierData ? ` Cutoffs: Shortest < ${heightTierData.p33.toFixed(1)}in, Middle ${heightTierData.p33.toFixed(1)}\u2013${heightTierData.p67.toFixed(1)}in (inclusive), Tallest > ${heightTierData.p67.toFixed(1)}in.` : ' Tier column unavailable \u2014 not enough of her own games to establish shortest/middle/tallest cutoffs yet.');
   container.appendChild(header);
   if(!rows.length){
     const none = document.createElement('div'); none.style.cssText = 'color:var(--sub);font-size:12.5px;';
@@ -3085,7 +3085,7 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
     const tdLabel = document.createElement('td'); tdLabel.style.cssText = 'padding:5px;'; tdLabel.textContent = 'Group (minutes-weighted)';
     const tdBlankMin = document.createElement('td'); tdBlankMin.style.cssText = 'padding:5px;';
     const tdGroupTier = document.createElement('td'); tdGroupTier.style.cssText = 'padding:5px;text-align:center;'; tdGroupTier.textContent = groupTier || '\u2014';
-    const tdGroupHeight = document.createElement('td'); tdGroupHeight.style.cssText = 'padding:5px;text-align:center;'; tdGroupHeight.textContent = inchesToHeightStr(weightedHeight) || '\u2014';
+    const tdGroupHeight = document.createElement('td'); tdGroupHeight.style.cssText = 'padding:5px;text-align:center;'; tdGroupHeight.textContent = `${inchesToHeightStr(weightedHeight) || '\u2014'} (${weightedHeight.toFixed(1)}in)`;
     const tdBlankStatus = document.createElement('td'); tdBlankStatus.style.cssText = 'padding:5px;';
     [tdLabel, tdBlankMin, tdGroupTier, tdGroupHeight, tdBlankStatus].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
@@ -3104,7 +3104,7 @@ function buildHeightTierSection(container, playerName, team){
     return null;
   }
   const disclaimer = document.createElement('div'); disclaimer.className = 'footnote'; disclaimer.style.marginBottom = '10px';
-  disclaimer.textContent = `Proxy, not real defensive matchup data \u2014 this app has no play-by-play tracking of who actually guarded whom. "Shortest/Middle/Tallest" compares her production against opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} groups (minutes-weighted average height of whichever of them played), grouped into thirds fixed from her full season so the tiers mean the same thing across every window below. Tier cutoffs: \u2264${inchesToHeightStr(heightData.p33)} shortest, \u2264${inchesToHeightStr(heightData.p67)} middle, taller = tallest.`;
+  disclaimer.textContent = `Proxy, not real defensive matchup data \u2014 this app has no play-by-play tracking of who actually guarded whom. "Shortest/Middle/Tallest" compares her production against opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} groups (minutes-weighted average height of whichever of them played), grouped into thirds fixed from her full season so the tiers mean the same thing across every window below. Cutoffs: Shortest < ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest > ${heightData.p67.toFixed(1)}in.`;
   container.appendChild(disclaimer);
 
   const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
@@ -3212,7 +3212,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   main.appendChild(tableHolder);
 
   function renderTable(){
-    head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket}s</h2><div class="meta">Tier cutoffs (full season, fixed): \u2264${inchesToHeightStr(heightData.p33)} shortest, \u2264${inchesToHeightStr(heightData.p67)} middle, taller = tallest. Uncheck a game to exclude it from the totals below.</div>`;
+    head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket}s</h2><div class="meta">Cutoffs (full season, fixed): Shortest &lt; ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest &gt; ${heightData.p67.toFixed(1)}in. Uncheck a game to exclude it from the totals below.</div>`;
     tableHolder.innerHTML = '';
 
     const windowed = activeSize ? heightData.allGames.slice(-activeSize) : heightData.allGames;
