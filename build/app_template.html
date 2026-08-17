@@ -350,7 +350,7 @@ const AVG_COLS = TOTALS_COLS.map(c=>{
   return c;
 });
 const OPP_COLS = [
-  {key:'date', label:'Date', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
+  {key:'date', label:'Date', left:true}, {key:'wl', label:'W/L', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
   {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'},
   {key:'oppFgm', label:'Opp FGM'}, {key:'oppFga', label:'Opp FGA'}, {key:'oppFgPct', label:'Opp FG%', pct:true},
   {key:'oppTpm', label:'Opp 3PM'}, {key:'oppTpa', label:'Opp 3PA'},
@@ -360,7 +360,7 @@ const OPP_COLS = [
   {key:'oppTo', label:'Opp TO'}, {key:'oppPf', label:'Opp PF'},
 ];
 const TEAM_GAME_COLS = [
-  {key:'date', label:'Date', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
+  {key:'date', label:'Date', left:true}, {key:'wl', label:'W/L', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
   {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'}, {key:'min', label:'MIN'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
   {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
@@ -479,7 +479,7 @@ function computeTeamSummaryClientSide(team, gameIds){
     const oppFgm = sum('fgm'), oppFga = sum('fga'), oppTpm = sum('tpm'), oppTpa = sum('tpa'),
           oppFtm = sum('ftm'), oppFta = sum('fta');
     return {
-      date: g.date, homeAway: isHome ? 'vs' : '@', opponent: oppName, teamPts, oppPts,
+      date: g.date, homeAway: isHome ? 'vs' : '@', opponent: oppName, wl: teamPts>oppPts?'W':(teamPts<oppPts?'L':'\u2014'), teamPts, oppPts,
       oppFgm, oppFga, oppFgPct: oppFga ? Math.round((oppFgm/oppFga)*10000)/10000 : null,
       oppTpm, oppTpa, oppFtm, oppFta,
       oppOreb: sum('oreb'), oppDreb: sum('dreb'), oppReb: sum('reb'),
@@ -500,7 +500,7 @@ function computeTeamSummaryClientSide(team, gameIds){
     const sum = key => ownRows.reduce((a,r)=> a + (r[key]||0), 0);
     const fgm = sum('fgm'), fga = sum('fga'), tpm = sum('tpm'), tpa = sum('tpa'), ftm = sum('ftm'), fta = sum('fta');
     return {
-      date: g.date, homeAway: isHome ? 'vs' : '@', opponent: oppName, teamPts, oppPts, min: sum('min'),
+      date: g.date, homeAway: isHome ? 'vs' : '@', opponent: oppName, wl: teamPts>oppPts?'W':(teamPts<oppPts?'L':'\u2014'), teamPts, oppPts, min: sum('min'),
       fgm, fga, fgPct: fga ? Math.round((fgm/fga)*10000)/10000 : null,
       tpm, tpa, tpPct: tpa ? Math.round((tpm/tpa)*10000)/10000 : null,
       ftm, fta, ftPct: fta ? Math.round((ftm/fta)*10000)/10000 : null,
@@ -1888,6 +1888,26 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     main.appendChild(impactWrap);
   }
 
+  // Vs opposing position-group height -- proxy analysis, see buildHeightTierSection's own
+  // comment for exactly what this does and doesn't measure.
+  const heightTierTitle = document.createElement('div'); heightTierTitle.className='section-title';
+  heightTierTitle.textContent = 'Production vs. Opposing Position Height';
+  main.appendChild(heightTierTitle);
+  const heightTierWrap = document.createElement('div');
+  heightTierWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
+  main.appendChild(heightTierWrap);
+  buildHeightTierSection(heightTierWrap, playerName, team);
+
+  // Next opponent's players at her position -- async, since it needs the live schedule/odds
+  // feed to know who's actually next.
+  const nextOppTitle = document.createElement('div'); nextOppTitle.className='section-title';
+  nextOppTitle.textContent = 'Next Opponent \u2014 Same Position';
+  main.appendChild(nextOppTitle);
+  const nextOppWrap = document.createElement('div');
+  nextOppWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
+  main.appendChild(nextOppWrap);
+  renderNextOpponentPositionSection(nextOppWrap, playerName, team);
+
   // Year/Month filter — narrows the calendar range; the rolling-window buttons below then
   // apply within whatever that range contains (e.g. "Last 10" within June 2026 specifically).
   const selectorRow = document.createElement('div');
@@ -2849,6 +2869,197 @@ const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', question
 // by date (both players are on the same team, so at most one game per date), not by any shared
 // game id, since player logs don't store one directly.
 const TEAMMATE_OUT_INSIGNIFICANT_THRESHOLD = {pts:1.0, reb:1.0, ast:1.0, pra:2.0}; // PRA gets double the bar since it's a sum of the other three -- the same-size swing in each individual stat would otherwise look artificially bigger once combined
+// For a player, computes her per-game production against opposing same-position players,
+// bucketed into three tiers by that opponent group's minutes-weighted height. Tier boundaries
+// (terciles) are fixed from her FULL season, so "shortest/middle/tallest" means the same thing
+// no matter which window (L5/L10/L15/season) ends up being displayed -- otherwise a 5-game
+// window's own min/max would make the tiers incomparable across window sizes.
+// This is a proxy, not real defensive matchup data -- "opposing players at her position," not
+// "who actually guarded her." No box-score source tracks real defensive assignments.
+function computeHeightTierData(playerName, team){
+  const key = playerName+'|'+team;
+  const rec = DATA.fullPlayerLogs[key];
+  if(!rec) return null;
+  const bucket = positionBucket(getPlayerPosition(playerName, team));
+  if(!bucket) return null;
+
+  const gamesWithOppHeight = rec.log.filter(g=>!g.dnp).map(g=>{
+    const gameId = findGameIdForTeamDate(team, g.date);
+    if(!gameId) return null;
+    const gameRec = DATA.games[gameId];
+    if(!gameRec) return null;
+    const oppRows = gameRec.rows.filter(r=>r.team!==team && !r.dnp && positionBucket(r.pos)===bucket && (r.min||0)>0);
+    if(!oppRows.length) return null;
+    let totalMin = 0, weightedSum = 0;
+    oppRows.forEach(r=>{
+      const bio = bioLookup(r.player, r.team);
+      if(bio.heightIn===undefined || bio.heightIn===null) return;
+      totalMin += r.min; weightedSum += bio.heightIn*r.min;
+    });
+    if(totalMin<=0) return null;
+    return { date: g.date, oppHeight: weightedSum/totalMin, pts: g.pts||0, reb: g.reb||0, ast: g.ast||0, pra: (g.pts||0)+(g.reb||0)+(g.ast||0) };
+  }).filter(Boolean);
+
+  if(gamesWithOppHeight.length < 6) return null; // too few games all season to tier into three groups meaningfully at all
+
+  const sortedHeights = gamesWithOppHeight.map(g=>g.oppHeight).slice().sort((a,b)=>a-b);
+  function percentile(arr, p){
+    const idx = (arr.length-1)*p;
+    const lo = Math.floor(idx), hi = Math.ceil(idx);
+    return lo===hi ? arr[lo] : arr[lo] + (arr[hi]-arr[lo])*(idx-lo);
+  }
+  const p33 = percentile(sortedHeights, 1/3), p67 = percentile(sortedHeights, 2/3);
+  gamesWithOppHeight.forEach(g=>{ g.tier = g.oppHeight<=p33 ? 'shortest' : (g.oppHeight<=p67 ? 'middle' : 'tallest'); });
+  gamesWithOppHeight.sort((a,b)=>a.date.localeCompare(b.date)); // oldest first, so .slice(-N) gets the most recent N
+
+  return { bucket, p33, p67, allGames: gamesWithOppHeight };
+}
+// windowSize: null/undefined = full season, else last N games chronologically (matching this
+// app's usual L5/L10/L15 convention elsewhere).
+function heightTierStatsForWindow(heightData, windowSize){
+  const games = windowSize ? heightData.allGames.slice(-windowSize) : heightData.allGames;
+  const byTier = {shortest:[], middle:[], tallest:[]};
+  games.forEach(g=>byTier[g.tier].push(g));
+  const STAT_KEYS = ['pts','reb','ast','pra'];
+  const result = {};
+  ['shortest','middle','tallest'].forEach(tierName=>{
+    const tGames = byTier[tierName];
+    const stats = {};
+    STAT_KEYS.forEach(k=>{
+      const vals = tGames.map(g=>g[k]);
+      const n = vals.length;
+      const avg = n ? Math.round((vals.reduce((a,b)=>a+b,0)/n)*10)/10 : null;
+      const variance = computeVariance(vals); // already returns null for n<2
+      const stdDev = variance!==null ? Math.round(Math.sqrt(variance)*100)/100 : null;
+      stats[k] = { avg, variance, stdDev, n };
+    });
+    result[tierName] = stats;
+  });
+  return result;
+}
+
+// Renders the vs-opposing-position-height section with its own L5/L10/L15/Season toggle
+// (independent of the page's main window selector, since this needs its own fixed-tier-boundary
+// logic regardless of what window the rest of the page is showing).
+// Player name, avg minutes (last 15 games played), height, and injury status for every player
+// on her NEXT opponent who shares her position bucket -- async since the next opponent comes
+// from the live odds feed, not season data. Injury status is deliberately collapsed to exactly
+// the three categories asked for: Healthy (no notable injury on file), Day-To-Day, or Out.
+async function renderNextOpponentPositionSection(container, playerName, team){
+  const bucket = positionBucket(getPlayerPosition(playerName, team));
+  if(!bucket){ container.textContent = 'Position unavailable.'; return; }
+  container.textContent = 'Looking up next opponent\u2026';
+  const opp = await fetchNextOpponent(team);
+  if(!opp){ container.textContent = 'No upcoming game found.'; return; }
+
+  const oppFull = FULL_TEAM_NAME[opp] || opp;
+  const rows = Object.keys(DATA.fullPlayerLogs)
+    .filter(k => k.slice(k.lastIndexOf('|')+1) === opp)
+    .map(k=>{
+      const pname = k.slice(0, k.lastIndexOf('|'));
+      if(positionBucket(getPlayerPosition(pname, opp)) !== bucket) return null;
+      const rec = DATA.fullPlayerLogs[k];
+      const recentGames = rec.log.filter(g=>!g.dnp).slice(-15);
+      if(!recentGames.length) return null; // hasn't played recently -- not a real rotation piece to list
+      const avgMin = Math.round((recentGames.reduce((a,g)=>a+(g.min||0),0)/recentGames.length)*10)/10;
+      const bio = bioLookup(pname, opp);
+      const inj = teamInjuries(opp).find(i=>i.player===pname);
+      const note = inj ? noteworthyInjuryStatus(inj.status) : null;
+      const status = note==='out' ? 'Out' : (note==='dayToDay' ? 'Day-To-Day' : 'Healthy');
+      return { player: pname, avgMin, height: bio.height || '\u2014', status };
+    }).filter(Boolean).sort((a,b)=>b.avgMin-a.avgMin);
+
+  container.innerHTML = '';
+  const header = document.createElement('div'); header.className = 'footnote'; header.style.marginBottom = '8px';
+  header.textContent = `Next opponent: ${oppFull} \u2014 ${POSITION_LABEL[bucket]||bucket} on their roster (avg minutes over each player's last 15 games played).`;
+  container.appendChild(header);
+  if(!rows.length){
+    const none = document.createElement('div'); none.style.cssText = 'color:var(--sub);font-size:12.5px;';
+    none.textContent = `No ${POSITION_LABEL[bucket]||bucket} found on ${oppFull}'s recent rotation.`;
+    container.appendChild(none);
+    return;
+  }
+  const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12.5px;';
+  table.innerHTML = '<thead><tr><th style="text-align:left;padding:5px;border-bottom:2px solid var(--line);">Player</th><th style="padding:5px;border-bottom:2px solid var(--line);">Avg Min (L15)</th><th style="padding:5px;border-bottom:2px solid var(--line);">Height</th><th style="padding:5px;border-bottom:2px solid var(--line);">Status</th></tr></thead>';
+  const tbody = document.createElement('tbody');
+  rows.forEach(r=>{
+    const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
+    const statusColor = r.status==='Out' ? 'var(--red)' : (r.status==='Day-To-Day' ? '#b8860b' : 'var(--green)');
+    const tdName = document.createElement('td'); tdName.style.cssText = 'padding:5px;';
+    const nameLink = document.createElement('a'); nameLink.href='javascript:void(0)'; nameLink.className='player-link'; nameLink.textContent=r.player;
+    nameLink.addEventListener('click', ()=>goToPlayer(r.player, opp));
+    tdName.appendChild(nameLink);
+    tr.appendChild(tdName);
+    const tdMin = document.createElement('td'); tdMin.style.cssText = 'padding:5px;text-align:center;'; tdMin.textContent = r.avgMin;
+    const tdHeight = document.createElement('td'); tdHeight.style.cssText = 'padding:5px;text-align:center;'; tdHeight.textContent = r.height;
+    const tdStatus = document.createElement('td'); tdStatus.style.cssText = `padding:5px;text-align:center;font-weight:700;color:${statusColor};`; tdStatus.textContent = r.status;
+    tr.appendChild(tdMin); tr.appendChild(tdHeight); tr.appendChild(tdStatus);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  container.appendChild(table);
+}
+
+function buildHeightTierSection(container, playerName, team){
+  const heightData = computeHeightTierData(playerName, team);
+  if(!heightData){
+    const note = document.createElement('div'); note.style.cssText = 'color:var(--sub);font-size:12.5px;';
+    note.textContent = 'Not enough games with identifiable opposing-position height data to break this out yet.';
+    container.appendChild(note);
+    return;
+  }
+  const disclaimer = document.createElement('div'); disclaimer.className = 'footnote'; disclaimer.style.marginBottom = '10px';
+  disclaimer.textContent = `Proxy, not real defensive matchup data \u2014 this app has no play-by-play tracking of who actually guarded whom. "Shortest/Middle/Tallest" compares her production against opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} groups (minutes-weighted average height of whichever of them played), grouped into thirds fixed from her full season so the tiers mean the same thing across every window below. Tier cutoffs: \u2264${inchesToHeightStr(heightData.p33)} shortest, \u2264${inchesToHeightStr(heightData.p67)} middle, taller = tallest.`;
+  container.appendChild(disclaimer);
+
+  const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
+  const windowOptions = [{label:'L5', size:5}, {label:'L10', size:10}, {label:'L15', size:15}, {label:'Season', size:null}];
+  let activeSize = 10;
+  const tableHolder = document.createElement('div');
+
+  function renderTierTables(){
+    tableHolder.innerHTML = '';
+    const stats = heightTierStatsForWindow(heightData, activeSize);
+    const STAT_LABELS = {pts:'Points', reb:'Rebounds', ast:'Assists', pra:'PRA'};
+    const grid = document.createElement('div'); grid.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
+    ['pts','reb','ast','pra'].forEach(statKey=>{
+      const box = document.createElement('div'); box.style.cssText = 'flex:1;min-width:260px;';
+      const title = document.createElement('div'); title.style.cssText = 'font-weight:700;font-size:12.5px;margin-bottom:4px;'; title.textContent = STAT_LABELS[statKey];
+      box.appendChild(title);
+      const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12px;';
+      table.innerHTML = '<thead><tr><th style="text-align:left;padding:4px;border-bottom:2px solid var(--line);">Tier</th><th style="padding:4px;border-bottom:2px solid var(--line);">N</th><th style="padding:4px;border-bottom:2px solid var(--line);">Avg</th><th style="padding:4px;border-bottom:2px solid var(--line);">StdDev</th><th style="padding:4px;border-bottom:2px solid var(--line);">Variance</th></tr></thead>';
+      const tbody = document.createElement('tbody');
+      [['shortest','Shortest'], ['middle','Middle'], ['tallest','Tallest']].forEach(([tierKey,tierLabel])=>{
+        const s = stats[tierKey][statKey];
+        const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
+        tr.innerHTML = `<td style="padding:4px;">${tierLabel}</td><td style="padding:4px;text-align:center;color:var(--sub);">${s.n}</td><td style="padding:4px;text-align:center;font-weight:700;">${s.avg!==null?s.avg:'\u2014'}</td><td style="padding:4px;text-align:center;">${s.stdDev!==null?s.stdDev:'\u2014'}</td><td style="padding:4px;text-align:center;">${s.variance!==null?s.variance:'\u2014'}</td>`;
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      box.appendChild(table);
+      grid.appendChild(box);
+    });
+    tableHolder.appendChild(grid);
+  }
+
+  windowOptions.forEach(opt=>{
+    const btn = document.createElement('button');
+    btn.textContent = opt.label;
+    btn.style.cssText = 'padding:5px 12px;border-radius:5px;border:1px solid var(--line);background:'+(opt.size===activeSize?'var(--navy2)':'var(--panel)')+';color:'+(opt.size===activeSize?'#fff':'var(--ink)')+';font-size:12px;cursor:pointer;font-family:var(--sans);';
+    btn.addEventListener('click', ()=>{
+      activeSize = opt.size;
+      [...toggleRow.children].forEach(b=>{ b.style.background='var(--panel)'; b.style.color='var(--ink)'; });
+      btn.style.background = 'var(--navy2)'; btn.style.color = '#fff';
+      renderTierTables();
+    });
+    toggleRow.appendChild(btn);
+  });
+  container.appendChild(toggleRow);
+  container.appendChild(tableHolder);
+  renderTierTables();
+}
+
+
 function computeTeammateOutImpact(playerName, team){
   const rec = DATA.fullPlayerLogs[playerName+'|'+team];
   if(!rec) return [];
