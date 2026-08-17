@@ -2964,7 +2964,7 @@ function computeHeightTierData(playerName, team){
       totalMin += r.min; weightedSum += bio.heightIn*r.min;
     });
     if(totalMin<=0) return null;
-    return { date: g.date, oppHeight: weightedSum/totalMin, pts: g.pts||0, reb: g.reb||0, ast: g.ast||0, pra: (g.pts||0)+(g.reb||0)+(g.ast||0) };
+    return { date: g.date, gameId, opp: g.opp, oppHeight: weightedSum/totalMin, min: g.min||0, pts: g.pts||0, reb: g.reb||0, ast: g.ast||0, pra: (g.pts||0)+(g.reb||0)+(g.ast||0) };
   }).filter(Boolean);
 
   if(gamesWithOppHeight.length < 6) return null; // too few games all season to tier into three groups meaningfully at all
@@ -3133,7 +3133,15 @@ function buildHeightTierSection(container, playerName, team){
       [['shortest','Shortest'], ['middle','Middle'], ['tallest','Tallest']].forEach(([tierKey,tierLabel])=>{
         const s = stats[tierKey][statKey];
         const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
-        tr.innerHTML = `<td style="padding:4px;">${tierLabel}</td><td style="padding:4px;text-align:center;color:var(--sub);">${s.n}</td><td style="padding:4px;text-align:center;font-weight:700;">${s.avg!==null?s.avg:'\u2014'}</td><td style="padding:4px;text-align:center;">${s.stdDev!==null?s.stdDev:'\u2014'}</td><td style="padding:4px;text-align:center;">${s.variance!==null?s.variance:'\u2014'}</td>`;
+        const tdTier = document.createElement('td'); tdTier.style.cssText = 'padding:4px;';
+        const tierLink = document.createElement('a'); tierLink.href='javascript:void(0)'; tierLink.className='player-link'; tierLink.textContent = tierLabel;
+        tierLink.addEventListener('click', ()=>renderHeightTierDetailPage(playerName, team, tierKey, activeSize, lastRender));
+        tdTier.appendChild(tierLink);
+        const tdN = document.createElement('td'); tdN.style.cssText = 'padding:4px;text-align:center;color:var(--sub);'; tdN.textContent = s.n;
+        const tdAvg = document.createElement('td'); tdAvg.style.cssText = 'padding:4px;text-align:center;font-weight:700;'; tdAvg.textContent = s.avg!==null?s.avg:'\u2014';
+        const tdStd = document.createElement('td'); tdStd.style.cssText = 'padding:4px;text-align:center;'; tdStd.textContent = s.stdDev!==null?s.stdDev:'\u2014';
+        const tdVar = document.createElement('td'); tdVar.style.cssText = 'padding:4px;text-align:center;'; tdVar.textContent = s.variance!==null?s.variance:'\u2014';
+        [tdTier, tdN, tdAvg, tdStd, tdVar].forEach(td=>tr.appendChild(td));
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
@@ -3168,6 +3176,145 @@ function buildHeightTierSection(container, playerName, team){
   });
 
   return heightData;
+}
+
+const TIER_LABEL = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
+// Drill-down from one tier cell in buildHeightTierSection -- every game in that tier (within
+// the same window that was active when it was clicked), one checkbox per game (checked by
+// default), with Total/Min/Max/Average/Median/Mode recalculating live from only the checked
+// rows -- same footer stat set this app already uses elsewhere (e.g. Opponent Totals by Game).
+function renderHeightTierDetailPage(playerName, team, initialTier, initialWindowSize, returnTo){
+  lastRender = () => renderHeightTierDetailPage(playerName, team, initialTier, initialWindowSize, returnTo);
+  main.innerHTML = '';
+
+  const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
+  back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderPlayerPage(playerName, team); });
+  main.appendChild(back);
+
+  const heightData = computeHeightTierData(playerName, team);
+  if(!heightData){
+    const head = document.createElement('div'); head.className='pagehead';
+    head.innerHTML = `<h2>${playerName}</h2><div class="meta">Not enough games with identifiable opposing-position height data to break this out.</div>`;
+    main.appendChild(head);
+    return;
+  }
+
+  let activeTier = initialTier;
+  let activeSize = initialWindowSize;
+  const head = document.createElement('div'); head.className='pagehead';
+  main.appendChild(head);
+
+  const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'display:flex;gap:8px;margin:10px 0 14px;';
+  const windowOptions = [{label:'L5', size:5}, {label:'L10', size:10}, {label:'L15', size:15}, {label:'Season', size:null}];
+  const tierOptions = [{label:'Shortest', key:'shortest'}, {label:'Middle', key:'middle'}, {label:'Tallest', key:'tallest'}];
+
+  const tableHolder = document.createElement('div');
+  main.appendChild(tableHolder);
+
+  function renderTable(){
+    head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket}s</h2><div class="meta">Tier cutoffs (full season, fixed): \u2264${inchesToHeightStr(heightData.p33)} shortest, \u2264${inchesToHeightStr(heightData.p67)} middle, taller = tallest. Uncheck a game to exclude it from the totals below.</div>`;
+    tableHolder.innerHTML = '';
+
+    const windowed = activeSize ? heightData.allGames.slice(-activeSize) : heightData.allGames;
+    const games = windowed.filter(g=>g.tier===activeTier).slice().sort((a,b)=>b.date.localeCompare(a.date)); // most recent first for display
+
+    if(!games.length){
+      const none = document.createElement('div'); none.style.cssText='color:var(--sub);font-size:13px;';
+      none.textContent = 'No games in this tier for the selected window.';
+      tableHolder.appendChild(none);
+      return;
+    }
+
+    const wrap = document.createElement('div'); wrap.className='table-wrap';
+    const table = document.createElement('table'); table.style.width='100%';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th></th><th class="left">Date</th><th class="left">Opponent</th><th>Opp Height</th><th>MIN</th><th>PTS</th><th>REB</th><th>AST</th><th>PRA</th></tr>';
+    const tbody = document.createElement('tbody');
+    const checkboxes = [];
+
+    games.forEach(g=>{
+      const tr = document.createElement('tr'); tr.style.cursor='pointer';
+      const tdCb = document.createElement('td');
+      const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = true;
+      cb.addEventListener('click', e=>e.stopPropagation());
+      cb.addEventListener('change', updateFooter);
+      checkboxes.push({cb, game:g});
+      tdCb.appendChild(cb);
+      const tdDate = document.createElement('td'); tdDate.className='left'; tdDate.textContent = g.date;
+      const tdOpp = document.createElement('td'); tdOpp.className='left'; tdOpp.textContent = g.opp || '\u2014';
+      const tdOppHeight = document.createElement('td'); tdOppHeight.style.textAlign='center'; tdOppHeight.textContent = inchesToHeightStr(g.oppHeight) || '\u2014';
+      const tdMin = document.createElement('td'); tdMin.style.textAlign='center'; tdMin.textContent = g.min;
+      const tdPts = document.createElement('td'); tdPts.style.textAlign='center'; tdPts.textContent = g.pts;
+      const tdReb = document.createElement('td'); tdReb.style.textAlign='center'; tdReb.textContent = g.reb;
+      const tdAst = document.createElement('td'); tdAst.style.textAlign='center'; tdAst.textContent = g.ast;
+      const tdPra = document.createElement('td'); tdPra.style.textAlign='center'; tdPra.textContent = g.pra;
+      [tdCb, tdDate, tdOpp, tdOppHeight, tdMin, tdPts, tdReb, tdAst, tdPra].forEach(td=>tr.appendChild(td));
+      if(g.gameId){ tr.addEventListener('click', ()=>goToGameBox(g.gameId)); }
+      tbody.appendChild(tr);
+    });
+    table.appendChild(thead); table.appendChild(tbody);
+    wrap.appendChild(table);
+    tableHolder.appendChild(wrap);
+
+    const footerLabels = [
+      {label:'TOTAL', fn: arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)*100)/100 : null},
+      {label:'MIN', fn: arr => arr.length ? Math.min(...arr) : null},
+      {label:'MAX', fn: arr => arr.length ? Math.max(...arr) : null},
+      {label:'AVERAGE', fn: arr => arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*100)/100 : null},
+      {label:'MEDIAN', fn: median},
+      {label:'MODE', fn: mode},
+    ];
+    const STAT_KEYS = ['min','pts','reb','ast','pra'];
+    const footerRowEls = {};
+    footerLabels.forEach(fl=>{
+      const tr = document.createElement('tr'); tr.style.cssText='background:#eef2fb;font-weight:700;';
+      const tdLabel = document.createElement('td'); tdLabel.colSpan=4; tdLabel.className='left'; tdLabel.style.padding='6px 8px'; tdLabel.textContent = fl.label;
+      tr.appendChild(tdLabel);
+      STAT_KEYS.forEach(()=>{ const td=document.createElement('td'); td.style.textAlign='center'; td.style.padding='6px 8px'; tr.appendChild(td); });
+      tbody.appendChild(tr);
+      footerRowEls[fl.label] = { cells: [...tr.querySelectorAll('td')].slice(1) };
+    });
+
+    function updateFooter(){
+      const checkedGames = checkboxes.filter(c=>c.cb.checked).map(c=>c.game);
+      footerLabels.forEach(fl=>{
+        const {cells} = footerRowEls[fl.label];
+        STAT_KEYS.forEach((statKey, i)=>{
+          const vals = checkedGames.map(g=>g[statKey]);
+          const result = fl.fn(vals);
+          cells[i].textContent = result!==null && result!==undefined ? result : '\u2014';
+        });
+      });
+    }
+    updateFooter();
+  }
+
+  windowOptions.forEach(opt=>{
+    const btn = document.createElement('button');
+    btn.textContent = opt.label;
+    const isActive = ()=> opt.size===activeSize;
+    btn.style.cssText = 'padding:5px 12px;border-radius:5px;border:1px solid var(--line);font-size:12px;cursor:pointer;font-family:var(--sans);';
+    function paint(){ btn.style.background = isActive()?'var(--navy2)':'var(--panel)'; btn.style.color = isActive()?'#fff':'var(--ink)'; }
+    paint();
+    btn.addEventListener('click', ()=>{ activeSize = opt.size; [...toggleRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
+    btn._paint = paint;
+    toggleRow.appendChild(btn);
+  });
+  const sep = document.createElement('span'); sep.style.cssText='border-left:1px solid var(--line);margin:0 4px;'; toggleRow.appendChild(sep);
+  tierOptions.forEach(opt=>{
+    const btn = document.createElement('button');
+    btn.textContent = opt.label;
+    const isActive = ()=> opt.key===activeTier;
+    btn.style.cssText = 'padding:5px 12px;border-radius:5px;border:1px solid var(--line);font-size:12px;cursor:pointer;font-family:var(--sans);';
+    function paint(){ btn.style.background = isActive()?'var(--navy2)':'var(--panel)'; btn.style.color = isActive()?'#fff':'var(--ink)'; }
+    paint();
+    btn.addEventListener('click', ()=>{ activeTier = opt.key; [...toggleRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
+    btn._paint = paint;
+    toggleRow.appendChild(btn);
+  });
+  main.insertBefore(toggleRow, tableHolder);
+
+  renderTable();
 }
 
 
