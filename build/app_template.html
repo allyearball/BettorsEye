@@ -1793,6 +1793,73 @@ async function fetchNextOpponent(teamShort){
   }catch(e){ return null; }
 }
 
+function bettingLineCacheKey(playerName, team){ return `bettingline_${playerName}|${team}`; }
+function getCachedBettingLine(playerName, team){
+  try{ return JSON.parse(localStorage.getItem(bettingLineCacheKey(playerName, team))||'null'); }catch(e){ return null; }
+}
+function setCachedBettingLine(playerName, team, data){
+  try{ localStorage.setItem(bettingLineCacheKey(playerName, team), JSON.stringify(data)); }catch(e){}
+}
+// Whether a game between `team` and `opponent` on `date` is now in the completed-games archive
+// -- used to know when to stop showing a held-over line and look for the next game's instead.
+function isGameConfirmedComplete(team, opponent, date){
+  const gid = findGameIdForTeamDate(team, date);
+  if(!gid) return false;
+  const g = DATA.games[gid];
+  if(!g) return false;
+  const oppFull = FULL_TEAM_NAME[opponent] || opponent;
+  return (g.home===team && (g.away===opponent || g.away===oppFull)) || (g.away===team && (g.home===opponent || g.home===oppFull));
+}
+// Her PTS/REB/AST/PRA lines for her next (or currently in-progress) game. Once a game starts,
+// sportsbooks commonly pull player props from the odds feed entirely -- re-fetching at that
+// point could come back empty even though "the line from right before tip-off" is still the
+// conceptually correct thing to keep showing while the game is in progress. So: cache whatever
+// was last fetched, and only look for a genuinely NEW game once the cached one is confirmed
+// complete in the completed-games archive -- not just because a re-fetch happened to come back
+// empty.
+async function fetchHerNextGameLines(playerName, team){
+  const cached = getCachedBettingLine(playerName, team);
+  if(cached && !isGameConfirmedComplete(team, cached.opponent, cached.date)) return cached;
+
+  try{
+    const events = await fetchCachedOddsEvents();
+    const fullName = FULL_TEAM_NAME[team];
+    const relevant = (events||[])
+      .filter(ev => ev.home_team===fullName || ev.away_team===fullName)
+      .sort((a,b)=> new Date(a.commence_time)-new Date(b.commence_time))
+      .find(ev => {
+        const oppFull = ev.home_team===fullName ? ev.away_team : ev.home_team;
+        const oppShort = SHORT_TEAM_NAME[oppFull] || oppFull;
+        return !isGameConfirmedComplete(team, oppShort, toEasternDateStr(ev.commence_time));
+      });
+    if(!relevant) return null;
+
+    const oppFull = relevant.home_team===fullName ? relevant.away_team : relevant.home_team;
+    const oppShort = SHORT_TEAM_NAME[oppFull] || oppFull;
+    const dateStr = toEasternDateStr(relevant.commence_time);
+
+    let detail = null;
+    try{ detail = await fetchCachedOddsDetail(relevant.id); }catch(e){}
+    const dk = detail ? getBookmakerData(detail, 'draftkings') : null;
+    const markets = dk ? marketsByKey(dk) : {};
+    function lineFor(marketKey){
+      const m = markets[marketKey];
+      if(!m) return null;
+      const o = dkPlayerOutcomes(m, playerName, 'Over') || dkPlayerOutcomes(m, playerName, 'Under');
+      return (o && o.point!==undefined) ? o.point : null;
+    }
+    const lines = { pts: lineFor('player_points'), reb: lineFor('player_rebounds'), ast: lineFor('player_assists'), pra: lineFor('player_points_rebounds_assists') };
+    const result = { eventId: relevant.id, opponent: oppShort, date: dateStr, lines };
+    if(Object.values(lines).some(v=>v!==null)){
+      setCachedBettingLine(playerName, team, result);
+      return result;
+    }
+    return cached || result; // fetch found the right game but no real lines yet -- fall back to any prior cache rather than show all dashes if we had something before
+  }catch(e){
+    return cached || null;
+  }
+}
+
 function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   windowMode = windowMode===undefined ? 10 : windowMode; // default matches prior behavior
   month = month || 'full';
@@ -1896,7 +1963,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   const heightTierWrap = document.createElement('div');
   heightTierWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
   main.appendChild(heightTierWrap);
-  buildHeightTierSection(heightTierWrap, playerName, team);
+  const heightTierData = buildHeightTierSection(heightTierWrap, playerName, team);
 
   // Next opponent's players at her position -- async, since it needs the live schedule/odds
   // feed to know who's actually next.
@@ -1906,7 +1973,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   const nextOppWrap = document.createElement('div');
   nextOppWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
   main.appendChild(nextOppWrap);
-  renderNextOpponentPositionSection(nextOppWrap, playerName, team);
+  renderNextOpponentPositionSection(nextOppWrap, playerName, team, heightTierData);
 
   // Year/Month filter — narrows the calendar range; the rolling-window buttons below then
   // apply within whatever that range contains (e.g. "Last 10" within June 2026 specifically).
@@ -2945,12 +3012,19 @@ function heightTierStatsForWindow(heightData, windowSize){
 // on her NEXT opponent who shares her position bucket -- async since the next opponent comes
 // from the live odds feed, not season data. Injury status is deliberately collapsed to exactly
 // the three categories asked for: Healthy (no notable injury on file), Day-To-Day, or Out.
-async function renderNextOpponentPositionSection(container, playerName, team){
+async function renderNextOpponentPositionSection(container, playerName, team, heightTierData){
   const bucket = positionBucket(getPlayerPosition(playerName, team));
   if(!bucket){ container.textContent = 'Position unavailable.'; return; }
   container.textContent = 'Looking up next opponent\u2026';
   const opp = await fetchNextOpponent(team);
   if(!opp){ container.textContent = 'No upcoming game found.'; return; }
+
+  function tierFor(heightIn){
+    if(!heightTierData || heightIn===undefined || heightIn===null) return null;
+    if(heightIn <= heightTierData.p33) return 'Shortest';
+    if(heightIn <= heightTierData.p67) return 'Middle';
+    return 'Tallest';
+  }
 
   const oppFull = FULL_TEAM_NAME[opp] || opp;
   const rows = Object.keys(DATA.fullPlayerLogs)
@@ -2966,12 +3040,12 @@ async function renderNextOpponentPositionSection(container, playerName, team){
       const inj = teamInjuries(opp).find(i=>i.player===pname);
       const note = inj ? noteworthyInjuryStatus(inj.status) : null;
       const status = note==='out' ? 'Out' : (note==='dayToDay' ? 'Day-To-Day' : 'Healthy');
-      return { player: pname, avgMin, height: bio.height || '\u2014', status };
+      return { player: pname, avgMin, heightIn: bio.heightIn, height: bio.height || '\u2014', tier: tierFor(bio.heightIn), status };
     }).filter(Boolean).sort((a,b)=>b.avgMin-a.avgMin);
 
   container.innerHTML = '';
   const header = document.createElement('div'); header.className = 'footnote'; header.style.marginBottom = '8px';
-  header.textContent = `Next opponent: ${oppFull} \u2014 ${POSITION_LABEL[bucket]||bucket} on their roster (avg minutes over each player's last 15 games played).`;
+  header.textContent = `Next opponent: ${oppFull} \u2014 ${POSITION_LABEL[bucket]||bucket} on their roster (avg minutes over each player's last 15 games played).` + (heightTierData ? '' : ' Tier column unavailable \u2014 not enough of her own games to establish shortest/middle/tallest cutoffs yet.');
   container.appendChild(header);
   if(!rows.length){
     const none = document.createElement('div'); none.style.cssText = 'color:var(--sub);font-size:12.5px;';
@@ -2980,7 +3054,7 @@ async function renderNextOpponentPositionSection(container, playerName, team){
     return;
   }
   const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12.5px;';
-  table.innerHTML = '<thead><tr><th style="text-align:left;padding:5px;border-bottom:2px solid var(--line);">Player</th><th style="padding:5px;border-bottom:2px solid var(--line);">Avg Min (L15)</th><th style="padding:5px;border-bottom:2px solid var(--line);">Height</th><th style="padding:5px;border-bottom:2px solid var(--line);">Status</th></tr></thead>';
+  table.innerHTML = '<thead><tr><th style="text-align:left;padding:5px;border-bottom:2px solid var(--line);">Player</th><th style="padding:5px;border-bottom:2px solid var(--line);">Avg Min (L15)</th><th style="padding:5px;border-bottom:2px solid var(--line);">Tier</th><th style="padding:5px;border-bottom:2px solid var(--line);">Height</th><th style="padding:5px;border-bottom:2px solid var(--line);">Status</th></tr></thead>';
   const tbody = document.createElement('tbody');
   rows.forEach(r=>{
     const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
@@ -2991,11 +3065,32 @@ async function renderNextOpponentPositionSection(container, playerName, team){
     tdName.appendChild(nameLink);
     tr.appendChild(tdName);
     const tdMin = document.createElement('td'); tdMin.style.cssText = 'padding:5px;text-align:center;'; tdMin.textContent = r.avgMin;
+    const tdTier = document.createElement('td'); tdTier.style.cssText = 'padding:5px;text-align:center;'; tdTier.textContent = r.tier || '\u2014';
     const tdHeight = document.createElement('td'); tdHeight.style.cssText = 'padding:5px;text-align:center;'; tdHeight.textContent = r.height;
     const tdStatus = document.createElement('td'); tdStatus.style.cssText = `padding:5px;text-align:center;font-weight:700;color:${statusColor};`; tdStatus.textContent = r.status;
-    tr.appendChild(tdMin); tr.appendChild(tdHeight); tr.appendChild(tdStatus);
+    tr.appendChild(tdMin); tr.appendChild(tdTier); tr.appendChild(tdHeight); tr.appendChild(tdStatus);
     tbody.appendChild(tr);
   });
+
+  // Overall group classification -- minutes-weighted average height across everyone listed
+  // above, classified the same way each individual player was, so you can see at a glance
+  // whether this whole position group profiles as short/middle/tall for her, not just any one
+  // player on it. Only meaningful with real minutes and real heights to weight by.
+  const withHeight = rows.filter(r=>r.heightIn!==undefined && r.heightIn!==null && r.avgMin>0);
+  if(withHeight.length){
+    const totalMin = withHeight.reduce((a,r)=>a+r.avgMin,0);
+    const weightedHeight = withHeight.reduce((a,r)=>a+r.heightIn*r.avgMin,0)/totalMin;
+    const groupTier = tierFor(weightedHeight);
+    const tr = document.createElement('tr'); tr.style.cssText = 'background:#eef2fb;font-weight:700;border-top:2px solid var(--line);';
+    const tdLabel = document.createElement('td'); tdLabel.style.cssText = 'padding:5px;'; tdLabel.textContent = 'Group (minutes-weighted)';
+    const tdBlankMin = document.createElement('td'); tdBlankMin.style.cssText = 'padding:5px;';
+    const tdGroupTier = document.createElement('td'); tdGroupTier.style.cssText = 'padding:5px;text-align:center;'; tdGroupTier.textContent = groupTier || '\u2014';
+    const tdGroupHeight = document.createElement('td'); tdGroupHeight.style.cssText = 'padding:5px;text-align:center;'; tdGroupHeight.textContent = inchesToHeightStr(weightedHeight) || '\u2014';
+    const tdBlankStatus = document.createElement('td'); tdBlankStatus.style.cssText = 'padding:5px;';
+    [tdLabel, tdBlankMin, tdGroupTier, tdGroupHeight, tdBlankStatus].forEach(td=>tr.appendChild(td));
+    tbody.appendChild(tr);
+  }
+
   table.appendChild(tbody);
   container.appendChild(table);
 }
@@ -3006,7 +3101,7 @@ function buildHeightTierSection(container, playerName, team){
     const note = document.createElement('div'); note.style.cssText = 'color:var(--sub);font-size:12.5px;';
     note.textContent = 'Not enough games with identifiable opposing-position height data to break this out yet.';
     container.appendChild(note);
-    return;
+    return null;
   }
   const disclaimer = document.createElement('div'); disclaimer.className = 'footnote'; disclaimer.style.marginBottom = '10px';
   disclaimer.textContent = `Proxy, not real defensive matchup data \u2014 this app has no play-by-play tracking of who actually guarded whom. "Shortest/Middle/Tallest" compares her production against opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} groups (minutes-weighted average height of whichever of them played), grouped into thirds fixed from her full season so the tiers mean the same thing across every window below. Tier cutoffs: \u2264${inchesToHeightStr(heightData.p33)} shortest, \u2264${inchesToHeightStr(heightData.p67)} middle, taller = tallest.`;
@@ -3015,6 +3110,7 @@ function buildHeightTierSection(container, playerName, team){
   const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
   const windowOptions = [{label:'L5', size:5}, {label:'L10', size:10}, {label:'L15', size:15}, {label:'Season', size:null}];
   let activeSize = 10;
+  let currentLines = null; // populated async below; re-renders once available, whatever window is active at that moment
   const tableHolder = document.createElement('div');
 
   function renderTierTables(){
@@ -3024,7 +3120,12 @@ function buildHeightTierSection(container, playerName, team){
     const grid = document.createElement('div'); grid.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
     ['pts','reb','ast','pra'].forEach(statKey=>{
       const box = document.createElement('div'); box.style.cssText = 'flex:1;min-width:260px;';
-      const title = document.createElement('div'); title.style.cssText = 'font-weight:700;font-size:12.5px;margin-bottom:4px;'; title.textContent = STAT_LABELS[statKey];
+      const title = document.createElement('div'); title.style.cssText = 'font-weight:700;font-size:12.5px;margin-bottom:4px;';
+      let lineText;
+      if(!currentLines) lineText = ' (O/U loading\u2026)';
+      else if(currentLines.lines[statKey]===null || currentLines.lines[statKey]===undefined) lineText = ' (O/U \u2014)';
+      else lineText = ` (O/U ${currentLines.lines[statKey]})`;
+      title.textContent = STAT_LABELS[statKey] + lineText;
       box.appendChild(title);
       const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12px;';
       table.innerHTML = '<thead><tr><th style="text-align:left;padding:4px;border-bottom:2px solid var(--line);">Tier</th><th style="padding:4px;border-bottom:2px solid var(--line);">N</th><th style="padding:4px;border-bottom:2px solid var(--line);">Avg</th><th style="padding:4px;border-bottom:2px solid var(--line);">StdDev</th><th style="padding:4px;border-bottom:2px solid var(--line);">Variance</th></tr></thead>';
@@ -3057,6 +3158,16 @@ function buildHeightTierSection(container, playerName, team){
   container.appendChild(toggleRow);
   container.appendChild(tableHolder);
   renderTierTables();
+
+  // Async: fetch her next-game lines and re-render once available (preserving whatever
+  // L5/L10/L15/Season window is active at that moment), rather than blocking the initial render
+  // on a network call.
+  fetchHerNextGameLines(playerName, team).then(result=>{
+    currentLines = result;
+    renderTierTables();
+  });
+
+  return heightData;
 }
 
 
