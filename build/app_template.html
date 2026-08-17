@@ -971,45 +971,6 @@ function renderTeamPage(team, year, month, windowMode){
   const t1 = document.createElement('div'); t1.className='section-title'; t1.textContent='Player Totals'; main.appendChild(t1);
   makeTable(main, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team});
 
-  // ---- Tracked prop-line history, per player (points/rebounds/assists/threes/PRA are
-  // player stats, so this is a player-select + chart rather than one team-wide graph) ----
-  const lineTrendTitle = document.createElement('div'); lineTrendTitle.className='section-title';
-  lineTrendTitle.textContent = 'Tracked DraftKings Prop Line History (Season)';
-  main.appendChild(lineTrendTitle);
-  const rosterSorted = summary.totals.slice().sort((a,b)=> b.gp - a.gp);
-  if(rosterSorted.length){
-    const lineTrendControls = document.createElement('div'); lineTrendControls.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:8px;';
-    const playerSelectLabel = document.createElement('div'); playerSelectLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;'; playerSelectLabel.textContent='Player:';
-    const playerSelect = document.createElement('select'); playerSelect.style.cssText='padding:5px 8px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;font-family:var(--sans);';
-    rosterSorted.forEach(p=>{
-      const opt = document.createElement('option'); opt.value = p.player; opt.textContent = `${p.player} (${p.gp} GP)`;
-      playerSelect.appendChild(opt);
-    });
-    lineTrendControls.appendChild(playerSelectLabel); lineTrendControls.appendChild(playerSelect);
-    main.appendChild(lineTrendControls);
-
-    const lineTrendContainer = document.createElement('div');
-    lineTrendContainer.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
-    lineTrendContainer.textContent = 'Loading tracked line history\u2026';
-    main.appendChild(lineTrendContainer);
-
-    async function loadTeamPlayerTrend(pname){
-      lineTrendContainer.textContent = 'Loading tracked line history\u2026';
-      try{
-        const history = await fetchOddsHistoryCached(n => { lineTrendContainer.textContent = `Loading tracked line history\u2026 (${n} snapshots so far)`; });
-        renderLineTrendChart(lineTrendContainer, buildPlayerLineSeries(pname, team, history));
-      }catch(e){
-        lineTrendContainer.textContent = `Couldn\u2019t load line history: ${e.message}`;
-      }
-    }
-    playerSelect.addEventListener('change', ()=>loadTeamPlayerTrend(playerSelect.value));
-    loadTeamPlayerTrend(rosterSorted[0].player);
-  } else {
-    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;';
-    na.textContent = 'No players found for this team/range.';
-    main.appendChild(na);
-  }
-
   const t2 = document.createElement('div'); t2.className='section-title'; t2.textContent='Player Averages (Per Game Played)'; main.appendChild(t2);
   makeTable(main, AVG_COLS, summary.averages, {defaultSort:'pts', teamFor:()=>team});
 
@@ -1926,22 +1887,6 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     });
     main.appendChild(impactWrap);
   }
-
-  const lineTrendTitle = document.createElement('div'); lineTrendTitle.className='section-title';
-  lineTrendTitle.textContent = 'Tracked DraftKings Prop Line History (Season)';
-  main.appendChild(lineTrendTitle);
-  const lineTrendContainer = document.createElement('div');
-  lineTrendContainer.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
-  lineTrendContainer.textContent = 'Loading tracked line history\u2026';
-  main.appendChild(lineTrendContainer);
-  (async ()=>{
-    try{
-      const history = await fetchOddsHistoryCached(n => { lineTrendContainer.textContent = `Loading tracked line history\u2026 (${n} snapshots so far)`; });
-      renderLineTrendChart(lineTrendContainer, buildPlayerLineSeries(playerName, team, history));
-    }catch(e){
-      lineTrendContainer.textContent = `Couldn\u2019t load line history: ${e.message}`;
-    }
-  })();
 
   // Year/Month filter — narrows the calendar range; the rolling-window buttons below then
   // apply within whatever that range contains (e.g. "Last 10" within June 2026 specifically).
