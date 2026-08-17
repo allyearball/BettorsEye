@@ -2684,9 +2684,13 @@ async function showAdminClickEventsModal(userId, userEmail){
   try{
     const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
     events = await fetchJson(`${workerBase}/admin/click-events?userId=${encodeURIComponent(userId)}&limit=300`, {headers: authHeaders()});
+    if(events && events.error) throw new Error(events.error);
   }catch(e){
     status.style.color = '#b3261e';
-    status.textContent = 'Couldn\u2019t load this user\u2019s activity.';
+    const match = String(e.message||'').match(/\{.*\}/);
+    let detail = e.message || 'unknown error';
+    if(match){ try{ const parsed = JSON.parse(match[0]); if(parsed.error) detail = parsed.error; }catch(_){} }
+    status.textContent = `Couldn\u2019t load this user\u2019s activity: ${detail}`;
     return;
   }
   if(!events.length){ status.textContent = 'No clicks recorded yet.'; return; }
