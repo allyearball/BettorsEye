@@ -23,6 +23,7 @@
   header h1{font-size:18px;margin:0;font-weight:800;text-transform:lowercase;}
   header h1 .brand-bettors{color:#ffffff;}
   header h1 .brand-eye{color:var(--green);}
+  header h1 .brand-crosshair{width:1.15em;height:1.15em;vertical-align:-0.22em;margin:0 -0.02em;}
   header .tag{font-size:12px;color:#b9c4d9;}
   .toplinks{display:flex;gap:6px;margin-left:auto;}
   .toplinks button{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.25);color:#fff;padding:7px 14px;border-radius:6px;font-size:13px;cursor:pointer;font-family:var(--sans);}
@@ -90,7 +91,7 @@
 </head>
 <body>
 <header>
-  <h1><span class="brand-bettors">bettors</span><span class="brand-eye">eye</span></h1>
+  <h1><span class="brand-bettors">bett</span><svg class="brand-crosshair" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="0" x2="12" y2="24" stroke="#b3261e" stroke-width="2"/><line x1="0" y1="12" x2="24" y2="12" stroke="#b3261e" stroke-width="2"/><circle cx="12" cy="12" r="7" fill="none" stroke="#b3261e" stroke-width="2"/><circle cx="12" cy="12" r="1.8" fill="#b3261e"/></svg><span class="brand-bettors">rs</span><span class="brand-eye">eye</span></h1>
   <div class="tag">Data through <span id="asOf"></span></div>
   <div class="toplinks" id="toplinks"></div>
 </header>
@@ -670,6 +671,49 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
   document.body.appendChild(bar);
   document.body.style.paddingBottom = '68px'; // room so the fixed bar (now taller) doesn't cover the page's last bit of content
   return bar;
+}
+
+// Minutes-weighted average height across the league, over each player's last 5 games played.
+// See computeTeamWeightedHeight()'s own comment for the exact formula and why the accounted-for
+// minutes won't land exactly on 200 for every team.
+function renderTeamHeightPage(){
+  lastRender = () => renderTeamHeightPage();
+  main.innerHTML = '';
+
+  const head = document.createElement('div'); head.className='pagehead';
+  head.innerHTML = `<h2>\ud83d\udccf Team Height (Last 5 Games)</h2><div class="meta">Minutes-weighted average height on the floor \u2014 each player's last-5-games average minutes played, multiplied by her height, summed across the roster and divided by total minutes accounted for. Roughly "how tall is the average player on the court for this team right now."</div>`;
+  main.appendChild(head);
+
+  const results = computeTeamWeightedHeight();
+  if(!results.length){
+    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;';
+    na.textContent = 'No height data available for any team yet.';
+    main.appendChild(na);
+    return;
+  }
+
+  const wrap = document.createElement('div'); wrap.className = 'table-wrap';
+  const table = document.createElement('table'); table.style.width = '100%';
+  const thead = document.createElement('thead');
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Team</th><th>Avg Height</th><th>(inches)</th><th>Minutes Accounted For</th><th class="left">Rotation (L5 avg min)</th></tr>';
+  const tbody = document.createElement('tbody');
+  results.forEach(r=>{
+    const tr = document.createElement('tr');
+    const tdRank = document.createElement('td'); tdRank.style.cssText='padding:8px;text-align:center;font-weight:700;'; tdRank.textContent = `${r.rank}/${r.of}`;
+    const tdTeam = document.createElement('td'); tdTeam.className='left'; tdTeam.style.cssText='padding:8px;';
+    tdTeam.appendChild(teamLinkEl(r.team, FULL_TEAM_NAME[r.team]||r.team));
+    const tdHeight = document.createElement('td'); tdHeight.style.cssText='padding:8px;text-align:center;font-weight:700;font-size:15px;color:var(--navy2);';
+    tdHeight.textContent = inchesToHeightStr(r.weightedHeightIn);
+    const tdIn = document.createElement('td'); tdIn.style.cssText='padding:8px;text-align:center;color:var(--sub);'; tdIn.textContent = r.weightedHeightIn.toFixed(2);
+    const tdMin = document.createElement('td'); tdMin.style.cssText='padding:8px;text-align:center;color:var(--sub);'; tdMin.textContent = r.totalMinutesAccountedFor;
+    const tdRoster = document.createElement('td'); tdRoster.className='left'; tdRoster.style.cssText='padding:8px;font-size:11.5px;color:var(--sub);';
+    tdRoster.textContent = r.players.slice(0,8).map(p=>`${p.player} (${inchesToHeightStr(p.heightIn)}, ${p.avgMin}m)`).join(', ') + (r.players.length>8 ? `, +${r.players.length-8} more` : '');
+    [tdRank, tdTeam, tdHeight, tdIn, tdMin, tdRoster].forEach(td=>tr.appendChild(td));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(thead); table.appendChild(tbody);
+  wrap.appendChild(table);
+  main.appendChild(wrap);
 }
 
 function renderLeagueStatsPage(year, mode, windowMode){
@@ -1547,6 +1591,50 @@ function isInjuryDnp(g){
   const s = String(g.notPlayingReason).toLowerCase();
   return s.includes('injur') || s.includes('illness') || s.includes('health') || s.includes('sick');
 }
+// Minutes-weighted average height, per team, over the last 5 games each player actually
+// played. This is a real basketball concept -- roughly "how tall is the average player on the
+// floor for this team at any given moment" -- computed as sum(avgMin_i * height_i) /
+// sum(avgMin_i) across every player who's gotten minutes recently. sum(avgMin_i) should land
+// close to 200 (5 players x 40 minutes) per team, though not exactly, since it's built from a
+// 5-game average per player rather than one single game (overtime, rotation changes, and
+// players who only picked up minutes partway through the window all nudge it slightly off 200
+// -- that's expected, not a bug, and is exactly why totalMinutesAccountedFor is surfaced
+// alongside the result rather than assumed to always be 200).
+function computeTeamWeightedHeight(){
+  const teamData = {};
+  TEAM_NAMES.forEach(t=>{ teamData[t] = {sumWeighted:0, sumMinutes:0, players:[]}; });
+
+  Object.keys(DATA.fullPlayerLogs).forEach(key=>{
+    const sep = key.lastIndexOf('|');
+    const playerName = key.slice(0, sep), team = key.slice(sep+1);
+    if(!teamData[team]) return;
+    const log = DATA.fullPlayerLogs[key].log;
+    const recentGames = log.filter(g=>!g.dnp).slice(-5);
+    if(!recentGames.length) return;
+    const avgMin = recentGames.reduce((a,g)=>a+(g.min||0),0) / recentGames.length;
+    if(avgMin <= 0) return; // no meaningful recent playing time -- skip rather than dilute with a garbage-time-only player
+    const bio = bioLookup(playerName, team);
+    if(bio.heightIn===undefined || bio.heightIn===null) return; // no height on file -- skip rather than guess
+    teamData[team].sumWeighted += avgMin * bio.heightIn;
+    teamData[team].sumMinutes += avgMin;
+    teamData[team].players.push({player: playerName, avgMin: Math.round(avgMin*10)/10, heightIn: bio.heightIn, height: bio.height});
+  });
+
+  const results = TEAM_NAMES.map(t=>{
+    const d = teamData[t];
+    const weightedHeightIn = d.sumMinutes > 0 ? d.sumWeighted / d.sumMinutes : null;
+    return {
+      team: t,
+      weightedHeightIn: weightedHeightIn!==null ? Math.round(weightedHeightIn*100)/100 : null,
+      totalMinutesAccountedFor: Math.round(d.sumMinutes*10)/10,
+      players: d.players.sort((a,b)=>b.avgMin-a.avgMin),
+    };
+  }).filter(r=>r.weightedHeightIn!==null);
+  results.sort((a,b)=>b.weightedHeightIn-a.weightedHeightIn);
+  results.forEach((r,i)=>{ r.rank = i+1; r.of = results.length; });
+  return results;
+}
+
 function computeMinutesTrend(windowSize, thresholdPct){
   const rows = [];
   Object.keys(DATA.fullPlayerLogs).forEach(key=>{
@@ -1796,6 +1884,50 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     main.appendChild(bioDiv);
   }
 
+  // Teammate-out impact -- for every teammate currently listed as officially out, how this
+  // player's own per-game production has historically differed in games that teammate missed
+  // vs played. Only shows teammates actually out right now, since the point is "who's out for
+  // the upcoming game", not a general career-long injury-replacement history.
+  const teammateImpact = computeTeammateOutImpact(playerName, team);
+  if(teammateImpact.length){
+    const impactTitle = document.createElement('div'); impactTitle.className='section-title';
+    impactTitle.textContent = 'Production When a Teammate Is Out';
+    main.appendChild(impactTitle);
+    const impactWrap = document.createElement('div');
+    impactWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
+    teammateImpact.forEach((imp, i)=>{
+      if(i>0) impactWrap.appendChild(document.createElement('hr'));
+      const header = document.createElement('div'); header.style.cssText = 'font-weight:700;margin-bottom:4px;';
+      header.innerHTML = `${imp.teammate} <span style="font-weight:400;color:var(--sub);font-size:12px;">(${imp.status||'Out'})</span>`;
+      impactWrap.appendChild(header);
+      if(imp.insufficientSample){
+        const note = document.createElement('div'); note.style.cssText = 'font-size:12.5px;color:var(--sub);';
+        note.textContent = `Only ${imp.gamesWithout} game(s) on record without ${imp.teammate} \u2014 too small a sample to draw a real comparison from.`;
+        impactWrap.appendChild(note);
+        return;
+      }
+      const sampleNote = document.createElement('div'); sampleNote.style.cssText = 'font-size:11.5px;color:var(--sub);margin-bottom:6px;';
+      sampleNote.textContent = `${imp.gamesWithout} game(s) without ${imp.teammate} vs ${imp.gamesWith} game(s) with her.`;
+      impactWrap.appendChild(sampleNote);
+      const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;';
+      const STAT_LABELS = {pts:'PPG', reb:'RPG', ast:'APG', pra:'PRA'};
+      imp.stats.forEach(s=>{
+        const box = document.createElement('div');
+        const lbl = document.createElement('div'); lbl.style.cssText = 'font-size:11px;color:var(--sub);'; lbl.textContent = STAT_LABELS[s.statKey];
+        const val = document.createElement('div'); val.style.cssText = 'font-weight:700;font-size:14px;';
+        const deltaText = formatTeammateOutDelta(s.statKey, s.delta);
+        val.textContent = deltaText;
+        val.style.color = deltaText.startsWith('Insignificant') ? 'var(--sub)' : (s.delta>0 ? 'var(--green)' : (s.delta<0 ? 'var(--red)' : 'var(--sub)'));
+        const detail = document.createElement('div'); detail.style.cssText = 'font-size:10.5px;color:var(--sub);';
+        detail.textContent = `${s.withoutAvg!==null?s.withoutAvg.toFixed(1):'\u2014'} without vs ${s.withAvg!==null?s.withAvg.toFixed(1):'\u2014'} with`;
+        box.appendChild(lbl); box.appendChild(val); box.appendChild(detail);
+        statsRow.appendChild(box);
+      });
+      impactWrap.appendChild(statsRow);
+    });
+    main.appendChild(impactWrap);
+  }
+
   const lineTrendTitle = document.createElement('div'); lineTrendTitle.className='section-title';
   lineTrendTitle.textContent = 'Tracked DraftKings Prop Line History (Season)';
   main.appendChild(lineTrendTitle);
@@ -1937,6 +2069,8 @@ function buildNav(){
   nav.appendChild(leagueLabel);
   const leagueBtn = navBtn('League Stats', ()=>renderLeagueStatsPage());
   nav.appendChild(leagueBtn);
+  const heightBtn = navBtn('Team Height (L5)', ()=>renderTeamHeightPage());
+  nav.appendChild(heightBtn);
 
   const gLabel = document.createElement('div'); gLabel.className='group-label'; gLabel.textContent='Teams';
   nav.appendChild(gLabel);
@@ -2032,6 +2166,62 @@ function buildTopLinks(){
   tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn); tl.appendChild(appTrackerBtn);
   renderAccountControls();
 }
+// ================= Click tracking (admin-visible usage analytics) =================
+// Batches clicks in memory and flushes periodically rather than one network request per click
+// -- with as many interactive elements as this app has (filters, sortable headers, track
+// buttons), per-click requests would be wasteful and could realistically overwhelm the Worker.
+// Only active while logged in -- there's no user to associate anonymous activity with, and no
+// point tracking the login screen itself.
+const CLICK_BATCH_FLUSH_INTERVAL_MS = 15000;
+let _clickEventBuffer = [];
+function currentPageLabel(){
+  const activeNav = document.querySelector('.toplinks button.active');
+  if(activeNav) return activeNav.textContent.trim();
+  const h2 = document.querySelector('#main h2');
+  if(h2) return h2.textContent.trim().slice(0,60);
+  return document.title || 'unknown';
+}
+// Walks up a few levels from the actual clicked element to find the nearest meaningful
+// clickable ancestor (a raw click often lands on an icon or text span inside a real button) --
+// data-track-label lets any specific button opt into a clean, deliberate description instead of
+// relying on this generic fallback.
+function describeClickTarget(el){
+  let node = el;
+  for(let i=0; i<4 && node; i++){
+    if(node.hasAttribute && node.hasAttribute('data-track-label')) return node.getAttribute('data-track-label');
+    if(node.tagName === 'BUTTON' || node.tagName === 'A'){
+      const text = (node.textContent||'').trim().replace(/\s+/g,' ').slice(0,80);
+      const cls = node.className ? '.'+String(node.className).split(' ')[0] : '';
+      return `${node.tagName.toLowerCase()}${cls}: ${text||'(no text)'}`;
+    }
+    if(node.tagName === 'INPUT'){
+      return `input[${node.type||'text'}]${node.placeholder?': '+node.placeholder:''}`;
+    }
+    node = node.parentElement;
+  }
+  const tag = (el.tagName||'').toLowerCase();
+  const cls = el.className ? '.'+String(el.className).split(' ')[0] : '';
+  return `${tag}${cls}`;
+}
+async function flushClickEvents(){
+  if(!_clickEventBuffer.length || !isLoggedIn()) return;
+  const events = _clickEventBuffer.splice(0, _clickEventBuffer.length);
+  try{
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    await fetch(`${workerBase}/track/click`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({events}), keepalive:true});
+  }catch(e){ /* best-effort -- a lost batch of clicks isn't worth retrying or blocking on */ }
+}
+function initClickTracking(){
+  document.addEventListener('click', (e)=>{
+    if(!isLoggedIn()) return;
+    _clickEventBuffer.push({page: currentPageLabel(), element: describeClickTarget(e.target), ts: new Date().toISOString()});
+    if(_clickEventBuffer.length >= 50) flushClickEvents(); // flush early on a burst rather than waiting for the timer
+  }, true); // capture phase -- still captures the click even if some handler later calls stopPropagation
+  setInterval(flushClickEvents, CLICK_BATCH_FLUSH_INTERVAL_MS);
+  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='hidden') flushClickEvents(); });
+  window.addEventListener('beforeunload', flushClickEvents);
+}
+
 async function initApp(){
   const urlParams = new URLSearchParams(window.location.search);
   const setupToken = urlParams.get('setupToken');
@@ -2065,6 +2255,7 @@ async function initApp(){
   renderHomePage();
 }
 initApp();
+initClickTracking();
 
 /* ================= DraftKings Live Odds (The Odds API, fetched client-side) ================= */
 const FULL_TEAM_NAME = {
@@ -2445,6 +2636,57 @@ function showLeagueDefenseRankModal(statKey, bucket, marketLabel, isL5){
 // position bucket, for ML/Spread/Total/Team Total bets.
 // Admin-only, read-only view of a specific user's tracked bets -- deliberately no indicator
 // shown to the user themselves anywhere that this happened.
+// Admin-only view of a specific user's recent clicks (most recent 300).
+async function showAdminClickEventsModal(userId, userEmail){
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--panel);border-radius:10px;padding:20px;max-width:700px;width:100%;max-height:80vh;overflow-y:auto;position:relative;box-shadow:0 8px 30px rgba(0,0,0,0.25);';
+  overlay.appendChild(card);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '\u2715';
+  closeBtn.style.cssText = 'position:absolute;top:10px;right:12px;background:none;border:none;font-size:18px;color:var(--sub);cursor:pointer;line-height:1;padding:4px;';
+  const close = ()=>{ document.body.removeChild(overlay); };
+  closeBtn.addEventListener('click', close);
+  overlay.addEventListener('click', (e)=>{ if(e.target===overlay) close(); });
+  card.appendChild(closeBtn);
+
+  const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;color:var(--navy2);margin-bottom:12px;padding-right:20px;';
+  title.textContent = `Recent Activity \u2014 ${userEmail}`;
+  card.appendChild(title);
+
+  const status = document.createElement('div'); status.className = 'footnote'; status.textContent = 'Loading\u2026';
+  card.appendChild(status);
+  document.body.appendChild(overlay);
+
+  let events;
+  try{
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    events = await fetchJson(`${workerBase}/admin/click-events?userId=${encodeURIComponent(userId)}&limit=300`, {headers: authHeaders()});
+  }catch(e){
+    status.style.color = '#b3261e';
+    status.textContent = 'Couldn\u2019t load this user\u2019s activity.';
+    return;
+  }
+  if(!events.length){ status.textContent = 'No clicks recorded yet.'; return; }
+  status.textContent = `${events.length} most recent click(s), newest first.`;
+
+  const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-top:10px;font-size:11.5px;';
+  table.innerHTML = '<thead><tr><th style="text-align:left;padding:5px;border-bottom:2px solid var(--line);">Time</th><th style="text-align:left;padding:5px;border-bottom:2px solid var(--line);">Page</th><th style="text-align:left;padding:5px;border-bottom:2px solid var(--line);">Clicked</th></tr></thead>';
+  const tbody = document.createElement('tbody');
+  events.forEach(ev=>{
+    const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
+    const tdTs = document.createElement('td'); tdTs.style.cssText = 'padding:5px;white-space:nowrap;'; tdTs.textContent = (ev.ts||'').replace('T',' ').slice(0,19);
+    const tdPage = document.createElement('td'); tdPage.style.cssText = 'padding:5px;'; tdPage.textContent = ev.page || '\u2014';
+    const tdEl = document.createElement('td'); tdEl.style.cssText = 'padding:5px;'; tdEl.textContent = ev.element || '\u2014';
+    [tdTs, tdPage, tdEl].forEach(td=>tr.appendChild(td));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  card.appendChild(table);
+}
+
 async function showAdminUserBetTrackerModal(userId, userEmail){
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
@@ -2632,6 +2874,50 @@ function injuryStatusSeverity(status){
   return 'other';
 }
 const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', questionable:'#b8860b', other:'var(--sub)', unknown:'var(--sub)'};
+
+// How this player's per-game production has differed, historically, in games her teammate
+// missed vs played -- for every teammate CURRENTLY listed as officially out. Cross-references
+// by date (both players are on the same team, so at most one game per date), not by any shared
+// game id, since player logs don't store one directly.
+const TEAMMATE_OUT_INSIGNIFICANT_THRESHOLD = {pts:1.0, reb:1.0, ast:1.0, pra:2.0}; // PRA gets double the bar since it's a sum of the other three -- the same-size swing in each individual stat would otherwise look artificially bigger once combined
+function computeTeammateOutImpact(playerName, team){
+  const rec = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!rec) return [];
+  const ownGames = rec.log.filter(g=>!g.dnp);
+  if(ownGames.length < 4) return []; // too small a sample to split meaningfully at all
+
+  const outTeammates = teamInjuries(team).filter(inj => injuryStatusSeverity(inj.status)==='out' && inj.player !== playerName);
+  const results = [];
+  outTeammates.forEach(inj=>{
+    const tmRec = DATA.fullPlayerLogs[inj.player+'|'+team];
+    if(!tmRec) return; // no log data for the teammate on file -- can't compute a split
+    const playedDates = new Set(tmRec.log.filter(g=>!g.dnp).map(g=>g.date));
+    const gamesWith = ownGames.filter(g=>playedDates.has(g.date));
+    const gamesWithout = ownGames.filter(g=>!playedDates.has(g.date));
+    if(gamesWithout.length < 2){
+      results.push({teammate: inj.player, status: inj.status, insufficientSample:true, gamesWith: gamesWith.length, gamesWithout: gamesWithout.length});
+      return;
+    }
+    function avgStat(games, statKey){
+      const vals = games.map(g => statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[statKey]||0));
+      return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : null;
+    }
+    const stats = ['pts','reb','ast','pra'].map(statKey=>{
+      const withAvg = avgStat(gamesWith, statKey);
+      const withoutAvg = avgStat(gamesWithout, statKey);
+      return { statKey, withAvg, withoutAvg, delta: (withAvg!==null && withoutAvg!==null) ? withoutAvg-withAvg : null };
+    });
+    results.push({teammate: inj.player, status: inj.status, gamesWith: gamesWith.length, gamesWithout: gamesWithout.length, stats, insufficientSample:false});
+  });
+  return results;
+}
+function formatTeammateOutDelta(statKey, delta){
+  if(delta===null || delta===undefined) return '\u2014';
+  const rounded = Math.round(delta*10)/10;
+  const sign = rounded>=0 ? '+' : '';
+  if(Math.abs(rounded) < TEAMMATE_OUT_INSIGNIFICANT_THRESHOLD[statKey]) return `Insignificant (${sign}${rounded})`;
+  return `${sign}${rounded}`;
+}
 
 // Distinct from injuryStatusSeverity (used elsewhere for general color-coding of any status) --
 // this specifically identifies the two statuses that should make the injury indicator show up
@@ -6586,7 +6872,12 @@ function renderAdminPage(){
       viewBtn.style.cssText = 'padding:4px 8px;border-radius:4px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:11px;cursor:pointer;font-family:var(--sans);';
       viewBtn.addEventListener('click', ()=>showAdminUserBetTrackerModal(u.id, u.email));
 
-      tdActions.appendChild(adminToggleBtn); tdActions.appendChild(viewBtn); tdActions.appendChild(deleteBtn);
+      const activityBtn = document.createElement('button');
+      activityBtn.textContent = '\ud83d\udcca Activity';
+      activityBtn.style.cssText = viewBtn.style.cssText;
+      activityBtn.addEventListener('click', ()=>showAdminClickEventsModal(u.id, u.email));
+
+      tdActions.appendChild(adminToggleBtn); tdActions.appendChild(viewBtn); tdActions.appendChild(activityBtn); tdActions.appendChild(deleteBtn);
       [tdEmail, tdUsername, tdName, tdCreated, tdVerified, tdAdmin, tdLocked, tdActions].forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
     });
