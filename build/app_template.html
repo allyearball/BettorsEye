@@ -22,8 +22,7 @@
   header{background:#000000;color:#fff;padding:16px 24px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;}
   header h1{font-size:18px;margin:0;font-weight:800;text-transform:lowercase;}
   header h1 .brand-bettors{color:#ffffff;}
-  header h1 .brand-eye{color:var(--green);}
-  header h1 .brand-crosshair{width:1.15em;height:1.15em;vertical-align:-0.22em;margin:0 -0.02em;}
+  header h1 .brand-eye{color:var(--red);}
   header .tag{font-size:12px;color:#b9c4d9;}
   .toplinks{display:flex;gap:6px;margin-left:auto;}
   .toplinks button{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.25);color:#fff;padding:7px 14px;border-radius:6px;font-size:13px;cursor:pointer;font-family:var(--sans);}
@@ -91,7 +90,7 @@
 </head>
 <body>
 <header>
-  <h1><span class="brand-bettors">bett</span><svg class="brand-crosshair" viewBox="0 0 24 24" aria-hidden="true"><line x1="12" y1="0" x2="12" y2="24" stroke="#b3261e" stroke-width="2"/><line x1="0" y1="12" x2="24" y2="12" stroke="#b3261e" stroke-width="2"/><circle cx="12" cy="12" r="7" fill="none" stroke="#b3261e" stroke-width="2"/><circle cx="12" cy="12" r="1.8" fill="#b3261e"/></svg><span class="brand-bettors">rs</span><span class="brand-eye">eye</span></h1>
+  <h1><span class="brand-bettors">bettors</span><span class="brand-eye">eye</span></h1>
   <div class="tag">Data through <span id="asOf"></span></div>
   <div class="toplinks" id="toplinks"></div>
 </header>
@@ -2139,31 +2138,42 @@ function buildTopLinks(){
   const trackerBtn = document.createElement('button'); trackerBtn.textContent='Bet Tracker';
   const appTrackerBtn = document.createElement('button'); appTrackerBtn.textContent='App Tracker';
   function clearActive(){ [homeBtn,explorerBtn,oddsBtn,trackerBtn,appTrackerBtn].forEach(b=>b.classList.remove('active')); }
-  homeBtn.addEventListener('click', ()=>{
+  // Shared guard for every nav destination -- the initial page load already gates behind login
+  // (see initApp()), but that alone doesn't stop someone from clicking a nav button directly
+  // once the shell itself has loaded. Every nav click re-checks rather than trusting that the
+  // initial gate is still the only way in.
+  function withLogin(fn){
+    return ()=>{
+      if(!isLoggedIn()){ renderAuthGate(main, ()=>{ renderAccountControls(); fn(); }); return; }
+      fn();
+    };
+  }
+  homeBtn.addEventListener('click', withLogin(()=>{
     clearActive(); homeBtn.classList.add('active');
     nav.innerHTML=''; nav.style.display='none';
     renderHomePage();
-  });
-  explorerBtn.addEventListener('click', ()=>{
+  }));
+  explorerBtn.addEventListener('click', withLogin(()=>{
     clearActive(); explorerBtn.classList.add('active');
     nav.style.display=''; buildNav();
-  });
-  oddsBtn.addEventListener('click', ()=>{
+  }));
+  oddsBtn.addEventListener('click', withLogin(()=>{
     clearActive(); oddsBtn.classList.add('active');
     nav.innerHTML=''; nav.style.display='none';
     renderOddsPage();
-  });
-  trackerBtn.addEventListener('click', ()=>{
+  }));
+  trackerBtn.addEventListener('click', withLogin(()=>{
     clearActive(); trackerBtn.classList.add('active');
     nav.innerHTML=''; nav.style.display='none';
     renderBetTrackerPage();
-  });
-  appTrackerBtn.addEventListener('click', ()=>{
+  }));
+  appTrackerBtn.addEventListener('click', withLogin(()=>{
     clearActive(); appTrackerBtn.classList.add('active');
     nav.innerHTML=''; nav.style.display='none';
     renderAppTrackerPage();
-  });
-  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn); tl.appendChild(appTrackerBtn);
+  }));
+  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn);
+  if(isAdminUser()) tl.appendChild(appTrackerBtn); // App Tracker is admin-only now -- no visible nav entry for anyone else
   renderAccountControls();
 }
 // ================= Click tracking (admin-visible usage analytics) =================
@@ -2252,6 +2262,16 @@ async function initApp(){
   TEAM_NAMES = Object.keys(DATA.teams).sort();
   buildTopLinks();
   nav.style.display = 'none';
+
+  // Site-wide login wall -- nothing renders except a login form until authenticated. See the
+  // conversation notes on why this is a UI-level gate, not real access control: DATA is already
+  // fully loaded into the page by this point regardless (loadData() above runs unconditionally),
+  // so this stops someone from using the app through the normal UI, not from viewing source.
+  if(!isLoggedIn()){
+    renderAuthGate(main, ()=>{ renderAccountControls(); renderHomePage(); });
+    return;
+  }
+
   renderHomePage();
 }
 initApp();
@@ -7666,6 +7686,18 @@ async function renderAppTrackerPage(){
   lastRender = () => renderAppTrackerPage();
   main.innerHTML = '';
   removeGameWindowStickyBar();
+
+  if(!isAdminUser()){
+    if(!isLoggedIn()){
+      renderAuthGate(main, ()=>renderAppTrackerPage());
+      return;
+    }
+    const denied = document.createElement('div'); denied.className='pagehead';
+    denied.innerHTML = `<h2>\ud83d\udcca App Tracker</h2><div class="meta">This page is admin-only right now.</div>`;
+    main.appendChild(denied);
+    return;
+  }
+
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83d\udcca App Tracker</h2><div class="meta">Every Top 30 recommendation (Standard + Advanced Analytics) this app has automatically captured, meant to be taken once per day pre-game \u2014 see the note below for exactly when. Auto-grades against this app's own historical box scores once each game concludes, same as the Bet Tracker.</div>`;
   main.appendChild(head);
@@ -7688,7 +7720,11 @@ async function renderAppTrackerPage(){
   forceRegradeBtn.title = 'Re-grades every pick, including ones that already show a result \u2014 use this if a result looks wrong (a past grading bug could have assigned a result before the game had actually finished).';
   const deleteAllBtn = document.createElement('button'); deleteAllBtn.textContent = '\ud83d\uddd1\ufe0f Delete All Snapshots';
   deleteAllBtn.style.cssText = 'padding:8px 14px;border-radius:6px;border:1px solid var(--red);background:var(--panel);color:var(--red);font-size:13px;cursor:pointer;font-family:var(--sans);font-weight:700;';
-  actionsRow.appendChild(refreshBtn); actionsRow.appendChild(gradeBtn); actionsRow.appendChild(forceRegradeBtn); actionsRow.appendChild(deleteAllBtn);
+  actionsRow.appendChild(refreshBtn); actionsRow.appendChild(gradeBtn); actionsRow.appendChild(forceRegradeBtn);
+  // App Tracker is shared/public data (not per-user), so wiping it affects every user, not just
+  // whoever clicks the button -- admin-only, unlike Bet Tracker's own delete-all which only
+  // ever touches that one user's own data.
+  if(isAdminUser()) actionsRow.appendChild(deleteAllBtn);
   main.appendChild(actionsRow);
 
   const tableDiv = document.createElement('div'); main.appendChild(tableDiv);
