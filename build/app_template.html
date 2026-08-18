@@ -373,6 +373,7 @@ function makeTable(container, columns, rows, opts){
         tr.style.background = '#eef2fb'; tr.style.fontWeight = '700';
         columns.forEach((col, i)=>{
           const td = document.createElement('td'); if(col.left) td.classList.add('left');
+          if(col.compactHide) td.classList.add('compact-hide');
           if(i===0){ td.textContent = fr.label; }
           else if(fr.values && Object.prototype.hasOwnProperty.call(fr.values, col.key)){
             td.textContent = fmtVal(fr.values[col.key], col);
