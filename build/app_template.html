@@ -86,9 +86,61 @@
   .player-bio b{color:var(--ink);}
   .backbtn{background:none;border:1px solid var(--line);color:var(--navy2);padding:6px 14px;border-radius:6px;font-size:12.5px;cursor:pointer;font-family:var(--sans);margin-bottom:14px;}
   .backbtn:hover{background:#eef2fb;}
+
+  /* ============ Layout modes: Full (today's dense layout, unchanged) vs Compact ============
+     Compact is the default for anyone who hasn't chosen yet. This is a persistent user
+     preference (localStorage), not a screen-width breakpoint -- someone can pick Compact on a
+     desktop or Full on a phone. Color scheme is untouched everywhere below; this only ever
+     changes spacing, sizing, and what's visible by default vs behind a tap. */
+
+  /* -- Compact: touch targets, spacing, typography -- */
+  body.compact-mode{font-size:15px;}
+  body.compact-mode header{padding:12px 14px;gap:10px;}
+  body.compact-mode header h1{font-size:17px;}
+  body.compact-mode .layout{flex-direction:column;min-height:0;}
+  body.compact-mode nav{position:static;width:100%;flex:0 0 auto;max-height:none;border-right:none;border-bottom:1px solid var(--line);padding:6px 0;}
+  body.compact-mode nav .group-label{padding:10px 14px 4px;}
+  body.compact-mode nav button.navbtn{padding:11px 14px;font-size:14px;}
+  body.compact-mode main{padding:14px 12px;}
+  body.compact-mode .toplinks{gap:4px;}
+  body.compact-mode .toplinks button{padding:10px 12px;font-size:13.5px;min-height:40px;}
+  body.compact-mode #accountControls{flex-wrap:wrap;}
+  body.compact-mode .pagehead h2{font-size:18px;}
+  body.compact-mode .section-title{font-size:12.5px;margin:18px 0 8px;}
+  body.compact-mode th,body.compact-mode td{padding:10px 9px;font-size:13.5px;}
+  body.compact-mode thead th{font-size:11px;}
+  body.compact-mode button{min-height:40px;}
+  body.compact-mode input[type=checkbox],body.compact-mode input[type=radio]{width:20px;height:20px;}
+  body.compact-mode .addbtn{padding:11px 18px;font-size:14px;}
+  body.compact-mode .backbtn{padding:10px 16px;font-size:13.5px;min-height:40px;}
+  body.compact-mode .controls{gap:10px;}
+  body.compact-mode .controls select,body.compact-mode .controls input{padding:9px 10px;font-size:14px;min-height:40px;}
+
+  /* -- Compact: hide secondary content by default, expandable per-page via .compact-expand-btn -- */
+  body.compact-mode .compact-hide{display:none !important;}
+  body.full-mode .compact-only{display:none !important;}
+  .compact-expand-btn{display:none;}
+  body.compact-mode .compact-expand-row .compact-expand-btn{display:inline-flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;background:none;border:1px solid var(--line);border-radius:6px;font-size:16px;cursor:pointer;color:var(--navy2);}
+
+  /* -- Layout mode toggle button itself, styled like the other header account controls -- */
+  #layoutModeBtn{white-space:nowrap;}
+  /* Compact-mode-only "Show All Details" toggle for wide tables that use compact-hide -- reveals
+     the hidden columns back to table-cell display (not just block, since these are td/th). */
+  .compact-show-all .compact-hide{display:table-cell !important;}
 </style>
 </head>
 <body>
+<script>
+// Applied synchronously, immediately after <body> opens and before any visible content exists
+// yet, so there's no flash of the wrong layout mode on load. Default is 'compact' for anyone
+// who hasn't chosen yet -- a deliberate choice, not a screen-width detection, since layout mode
+// is a persistent user preference independent of device.
+(function(){
+  var mode = localStorage.getItem('wnba_layout_mode');
+  if(mode !== 'full' && mode !== 'compact') mode = 'compact';
+  document.body.className = mode === 'compact' ? 'compact-mode' : 'full-mode';
+})();
+</script>
 <header>
   <h1><span class="brand-bettors">bettors</span><span class="brand-eye">eye</span></h1>
   <div class="tag">Data through <span id="asOf"></span></div>
@@ -2126,6 +2178,17 @@ function renderAccountControls(){
   }
   container.innerHTML = '';
 
+  const layoutBtn = document.createElement('button');
+  layoutBtn.id = 'layoutModeBtn';
+  function paintLayoutBtn(){ layoutBtn.textContent = getLayoutMode()==='compact' ? '\ud83d\udcf1 Compact' : '\ud83d\udda5\ufe0f Full'; }
+  paintLayoutBtn();
+  layoutBtn.title = 'Switch between Full (everything visible) and Compact (simplified, mobile-friendly) layouts';
+  layoutBtn.addEventListener('click', ()=>{
+    setLayoutMode(getLayoutMode()==='compact' ? 'full' : 'compact');
+    paintLayoutBtn();
+    if(lastRender) lastRender(); // re-render current page so any JS-driven (not just CSS) compact behavior picks up the change too
+  });
+
   const settingsBtn = document.createElement('button');
   settingsBtn.textContent = '\u2699\ufe0f Settings';
   settingsBtn.addEventListener('click', ()=>{
@@ -2159,6 +2222,7 @@ function renderAccountControls(){
     });
   }
 
+  container.appendChild(layoutBtn);
   container.appendChild(settingsBtn);
   if(adminBtn) container.appendChild(adminBtn);
   container.appendChild(authBtn);
@@ -3949,6 +4013,20 @@ function getAuthToken(){ return localStorage.getItem(AUTH_TOKEN_LS_KEY); }
 function getAuthEmail(){ return localStorage.getItem(AUTH_EMAIL_LS_KEY); }
 function isEmailVerified(){ return localStorage.getItem(AUTH_VERIFIED_LS_KEY) === '1'; }
 function isAdminUser(){ return localStorage.getItem(AUTH_ADMIN_LS_KEY) === '1'; }
+
+// Layout mode: persistent user preference (Full = today's dense layout, Compact = simplified/
+// mobile-friendly default). Applied synchronously in a tiny inline script right after <body>
+// opens (see there for why) -- these functions are for changing it after the fact, from the
+// toggle button.
+const LAYOUT_MODE_KEY = 'wnba_layout_mode';
+function getLayoutMode(){
+  const stored = localStorage.getItem(LAYOUT_MODE_KEY);
+  return (stored === 'full' || stored === 'compact') ? stored : 'compact';
+}
+function setLayoutMode(mode){
+  localStorage.setItem(LAYOUT_MODE_KEY, mode);
+  document.body.className = mode === 'compact' ? 'compact-mode' : 'full-mode';
+}
 function getAuthUsername(){ return localStorage.getItem(AUTH_USERNAME_LS_KEY); }
 function getAuthFirstName(){ return localStorage.getItem(AUTH_FIRSTNAME_LS_KEY); }
 function getAuthLastName(){ return localStorage.getItem(AUTH_LASTNAME_LS_KEY); }
@@ -5273,22 +5351,34 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   expandLabel.appendChild(expandCb);
   expandLabel.appendChild(document.createTextNode('Expand Table (show all Vs Similar Defenses games)'));
   toggleRow.appendChild(expandLabel);
+
+  // Compact mode hides most columns on this table by default (see the compact-hide classes
+  // above) -- this is the "still allowing it to be clicked on and expanded" escape hatch, a
+  // table-wide reveal rather than per-row, so viewing everything is one tap away instead of
+  // gone entirely. Only shown in Compact mode -- irrelevant in Full, where nothing is hidden.
+  const compactShowAllLabel = document.createElement('label'); compactShowAllLabel.className='compact-only';
+  compactShowAllLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;width:fit-content;';
+  const compactShowAllCb = document.createElement('input'); compactShowAllCb.type='checkbox'; compactShowAllCb.checked = false;
+  compactShowAllLabel.appendChild(compactShowAllCb);
+  compactShowAllLabel.appendChild(document.createTextNode('Show All Details'));
+  toggleRow.appendChild(compactShowAllLabel);
   container.appendChild(toggleRow);
 
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   // Opp Def Rank / Allowed-Gm columns shown by default -- not auto-hidden.
   toggleCb.addEventListener('change', ()=>{ wrap.classList.toggle('hide-defcols', toggleCb.checked); });
   expandCb.addEventListener('change', ()=>{ wrap.classList.toggle('show-simdef-extra', expandCb.checked); });
+  compactShowAllCb.addEventListener('change', ()=>{ wrap.classList.toggle('compact-show-all', compactShowAllCb.checked); });
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="th-overall">Overall %</th>'
-    +'<th class="th-l5">L5%</th><th class="th-l10">L10%</th><th class="th-l15">L15%</th><th class="th-season">Season%</th><th class="th-l10ema">L10 EMA</th>'
-    +'<th class="left">Game</th><th class="left">Vs Opponent This Season</th>'
-    +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="left th-simdef">Vs Similar Defenses</th>'
-    +'<th class="left th-simdefl5">Vs Similar Defenses (L5)</th><th class="left defcol th-defrankl5">Opp Def Rank (L5)</th>'
-    +'<th class="defcol th-dvpseason" style="cursor:pointer;">DvP (Season)</th><th class="defcol th-dvpl15" style="cursor:pointer;">DvP (L15)</th>'
-    +'<th class="defcol th-dvpl10" style="cursor:pointer;">DvP (L10)</th><th class="defcol th-dvpl5" style="cursor:pointer;">DvP (L5)</th>'
-    +'<th>Price</th><th class="left">Sportsbook</th><th class="defcol th-defallowed">Allowed/Gm</th><th></th></tr>';
+    +'<th class="th-l5 compact-hide">L5%</th><th class="th-l10 compact-hide">L10%</th><th class="th-l15 compact-hide">L15%</th><th class="th-season compact-hide">Season%</th><th class="th-l10ema compact-hide">L10 EMA</th>'
+    +'<th class="left compact-hide">Game</th><th class="left compact-hide">Vs Opponent This Season</th>'
+    +'<th class="left defcol th-defrank compact-hide">Opp Def Rank</th><th class="left th-simdef compact-hide">Vs Similar Defenses</th>'
+    +'<th class="left th-simdefl5 compact-hide">Vs Similar Defenses (L5)</th><th class="left defcol th-defrankl5 compact-hide">Opp Def Rank (L5)</th>'
+    +'<th class="defcol th-dvpseason compact-hide" style="cursor:pointer;">DvP (Season)</th><th class="defcol th-dvpl15 compact-hide" style="cursor:pointer;">DvP (L15)</th>'
+    +'<th class="defcol th-dvpl10 compact-hide" style="cursor:pointer;">DvP (L10)</th><th class="defcol th-dvpl5 compact-hide" style="cursor:pointer;">DvP (L5)</th>'
+    +'<th>Price</th><th class="left compact-hide">Sportsbook</th><th class="defcol th-defallowed compact-hide">Allowed/Gm</th><th></th></tr>';
   // Each DvP header sorts the table by that specific window's value on click -- click again to
   // flip direction, same as any other sortable column elsewhere in this app. Click a DIFFERENT
   // DvP column and it takes over as the active sort. Nulls (no data available) always sort last
@@ -5409,7 +5499,8 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     const tdL10 = mkRate(bet.rate10, bet.gp10, isProp ? hitCountFor(bet,10) : null);
     const tdL15 = mkRate(bet.rate15, bet.gp15, isProp ? hitCountFor(bet,15) : null);
     const tdSeason = mkRate(bet.rateAll, bet.gpAll, isProp ? hitCountFor(bet,'all') : null);
-    const tdL10Ema = document.createElement('td'); tdL10Ema.style.cssText = cellStyle;
+    [tdL5, tdL10, tdL15, tdSeason].forEach(td=>td.classList.add('compact-hide'));
+    const tdL10Ema = document.createElement('td'); tdL10Ema.style.cssText = cellStyle; tdL10Ema.classList.add('compact-hide');
     if(isProp){
       const ema = betTiebreakEma(bet);
       tdL10Ema.textContent = ema!==null ? Math.round(ema*10)/10 : '\u2014';
@@ -5419,7 +5510,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
       tdL10Ema.textContent = ema!==null ? (metric==='margin' ? (ema>=0?'+'+ema:String(ema)) : String(ema)) : '\u2014';
     }
 
-    const tdGame = document.createElement('td'); tdGame.className='left';
+    const tdGame = document.createElement('td'); tdGame.className='left compact-hide';
     tdGame.style.cssText = cellStyle.replace('text-align:center;','') + 'color:var(--sub);';
     const gameTeams = bet.game.split(' @ ');
     if(gameTeams.length===2){
@@ -5430,30 +5521,30 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
       tdGame.textContent = bet.game;
     }
 
-    const tdVsOpp = document.createElement('td'); tdVsOpp.className='left';
+    const tdVsOpp = document.createElement('td'); tdVsOpp.className='left compact-hide';
     tdVsOpp.style.cssText = cellStyle.replace('text-align:center;','');
     tdVsOpp.appendChild(buildVsOpponentCell(bet));
 
-    const tdSimDef = document.createElement('td'); tdSimDef.className='left';
+    const tdSimDef = document.createElement('td'); tdSimDef.className='left compact-hide';
     tdSimDef.style.cssText = cellStyle.replace('text-align:center;','');
     tdSimDef.appendChild(buildSimilarDefenseCell(bet));
 
-    const tdSimDefL5 = document.createElement('td'); tdSimDefL5.className='left';
+    const tdSimDefL5 = document.createElement('td'); tdSimDefL5.className='left compact-hide';
     tdSimDefL5.style.cssText = cellStyle.replace('text-align:center;','');
     tdSimDefL5.appendChild(buildSimilarDefenseCellL5(bet));
 
     const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
     tdPrice.textContent = fmtAmerican(bet.price);
-    const tdSportsbook = document.createElement('td'); tdSportsbook.className='left'; tdSportsbook.style.cssText = cellStyle.replace('text-align:center;','');
+    const tdSportsbook = document.createElement('td'); tdSportsbook.className='left compact-hide'; tdSportsbook.style.cssText = cellStyle.replace('text-align:center;','');
     tdSportsbook.textContent = bet.sportsbook || '\u2014';
 
-    const tdDef = document.createElement('td'); tdDef.className='left defcol'; tdDef.style.cssText = cellStyle.replace('text-align:center;','');
-    const tdDefL5 = document.createElement('td'); tdDefL5.className='left defcol'; tdDefL5.style.cssText = cellStyle.replace('text-align:center;','');
-    const tdDvpSeason = document.createElement('td'); tdDvpSeason.className='defcol'; tdDvpSeason.style.cssText = cellStyle;
-    const tdDvpL15 = document.createElement('td'); tdDvpL15.className='defcol'; tdDvpL15.style.cssText = cellStyle;
-    const tdDvpL10 = document.createElement('td'); tdDvpL10.className='defcol'; tdDvpL10.style.cssText = cellStyle;
-    const tdDvpL5col = document.createElement('td'); tdDvpL5col.className='defcol'; tdDvpL5col.style.cssText = cellStyle;
-    const tdAllowed = document.createElement('td'); tdAllowed.className='defcol'; tdAllowed.style.cssText = cellStyle;
+    const tdDef = document.createElement('td'); tdDef.className='left defcol compact-hide'; tdDef.style.cssText = cellStyle.replace('text-align:center;','');
+    const tdDefL5 = document.createElement('td'); tdDefL5.className='left defcol compact-hide'; tdDefL5.style.cssText = cellStyle.replace('text-align:center;','');
+    const tdDvpSeason = document.createElement('td'); tdDvpSeason.className='defcol compact-hide'; tdDvpSeason.style.cssText = cellStyle;
+    const tdDvpL15 = document.createElement('td'); tdDvpL15.className='defcol compact-hide'; tdDvpL15.style.cssText = cellStyle;
+    const tdDvpL10 = document.createElement('td'); tdDvpL10.className='defcol compact-hide'; tdDvpL10.style.cssText = cellStyle;
+    const tdDvpL5col = document.createElement('td'); tdDvpL5col.className='defcol compact-hide'; tdDvpL5col.style.cssText = cellStyle;
+    const tdAllowed = document.createElement('td'); tdAllowed.className='defcol compact-hide'; tdAllowed.style.cssText = cellStyle;
     function fmtDvp(v){ return v!==null ? v.toFixed(3) : '\u2014'; }
     if(isProp && bet.opponent){
       tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
