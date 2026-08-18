@@ -287,11 +287,22 @@ function makeTable(container, columns, rows, opts){
   }
   const countSpan = document.createElement('span'); countSpan.style.cssText='font-size:12px;color:#5b6472';
   controls.appendChild(countSpan);
+  // Generic Compact-mode "Show All Details" reveal, only added when this table actually has
+  // compactHide columns to reveal -- same escape hatch pattern as the Standard Top 30 table,
+  // now available to every table built through makeTable without needing per-table wiring.
+  if(columns.some(c=>c.compactHide)){
+    const compactLabel = document.createElement('label'); compactLabel.className='compact-only';
+    const compactCb = document.createElement('input'); compactCb.type='checkbox';
+    compactCb.addEventListener('change', ()=>{ wrap.classList.toggle('compact-show-all', compactCb.checked); });
+    compactLabel.appendChild(compactCb); compactLabel.appendChild(document.createTextNode('Show All Details'));
+    controls.appendChild(compactLabel);
+  }
   const table = document.createElement('table');
   const thead = document.createElement('thead'); const trh = document.createElement('tr');
   columns.forEach(col=>{
     const th = document.createElement('th'); th.textContent = col.label;
     if(col.left) th.classList.add('left');
+    if(col.compactHide) th.classList.add('compact-hide');
     appendDefIcon(th, col.def || STAT_DEFINITIONS[col.key]);
     const arrow = document.createElement('span'); arrow.className='arrow'; th.appendChild(arrow);
     th.addEventListener('click', ()=>{
@@ -333,6 +344,7 @@ function makeTable(container, columns, rows, opts){
       if(r.starter) tr.classList.add('starter');
       columns.forEach(col=>{
         const td = document.createElement('td'); if(col.left) td.classList.add('left');
+        if(col.compactHide) td.classList.add('compact-hide');
         if(col.noBoldStarter) td.classList.add('no-starter-bold');
         td.style.cursor = 'pointer';
         td.addEventListener('click', ()=>{
@@ -393,15 +405,15 @@ const GAME_COLS = [
   {key:'height', label:'Height', left:true}, {key:'weight', label:'Wt (lb)'}, {key:'age', label:'Age'}, {key:'dob', label:'DOB', left:true},
 ];
 const TOTALS_COLS = [
-  {key:'player', label:'Player', left:true}, {key:'gp', label:'GP'}, {key:'gs', label:'GS'},
+  {key:'player', label:'Player', left:true}, {key:'gp', label:'GP'}, {key:'gs', label:'GS', compactHide:true},
   {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
-  {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
-  {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
-  {key:'ftm', label:'FTM'}, {key:'fta', label:'FTA'}, {key:'ftPct', label:'FT%', pct:true},
-  {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB'},
-  {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
-  {key:'to', label:'TO'}, {key:'pf', label:'PF'},
-  {key:'height', label:'Height', left:true}, {key:'weight', label:'Wt (lb)'}, {key:'age', label:'Age'}, {key:'dob', label:'DOB', left:true},
+  {key:'fgm', label:'FGM', compactHide:true}, {key:'fga', label:'FGA', compactHide:true}, {key:'fgPct', label:'FG%', pct:true, compactHide:true},
+  {key:'tpm', label:'3PM', compactHide:true}, {key:'tpa', label:'3PA', compactHide:true}, {key:'tpPct', label:'3P%', pct:true, compactHide:true},
+  {key:'ftm', label:'FTM', compactHide:true}, {key:'fta', label:'FTA', compactHide:true}, {key:'ftPct', label:'FT%', pct:true, compactHide:true},
+  {key:'oreb', label:'OREB', compactHide:true}, {key:'dreb', label:'DREB', compactHide:true}, {key:'reb', label:'REB'},
+  {key:'ast', label:'AST'}, {key:'stl', label:'STL', compactHide:true}, {key:'blk', label:'BLK', compactHide:true},
+  {key:'to', label:'TO', compactHide:true}, {key:'pf', label:'PF', compactHide:true},
+  {key:'height', label:'Height', left:true, compactHide:true}, {key:'weight', label:'Wt (lb)', compactHide:true}, {key:'age', label:'Age', compactHide:true}, {key:'dob', label:'DOB', left:true, compactHide:true},
 ];
 const AVG_COLS = TOTALS_COLS.map(c=>{
   if(['min','pts','fgm','fga','tpm','tpa','ftm','fta','oreb','dreb','reb','ast','stl','blk','to','pf'].includes(c.key)) return Object.assign({},c,{round1:true});
@@ -410,22 +422,22 @@ const AVG_COLS = TOTALS_COLS.map(c=>{
 const OPP_COLS = [
   {key:'date', label:'Date', left:true}, {key:'wl', label:'W/L', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
   {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'},
-  {key:'oppFgm', label:'Opp FGM'}, {key:'oppFga', label:'Opp FGA'}, {key:'oppFgPct', label:'Opp FG%', pct:true},
-  {key:'oppTpm', label:'Opp 3PM'}, {key:'oppTpa', label:'Opp 3PA'},
-  {key:'oppFtm', label:'Opp FTM'}, {key:'oppFta', label:'Opp FTA'},
-  {key:'oppOreb', label:'Opp OREB'}, {key:'oppDreb', label:'Opp DREB'}, {key:'oppReb', label:'Opp REB'},
-  {key:'oppAst', label:'Opp AST'}, {key:'oppStl', label:'Opp STL'}, {key:'oppBlk', label:'Opp BLK'},
-  {key:'oppTo', label:'Opp TO'}, {key:'oppPf', label:'Opp PF'},
+  {key:'oppFgm', label:'Opp FGM', compactHide:true}, {key:'oppFga', label:'Opp FGA', compactHide:true}, {key:'oppFgPct', label:'Opp FG%', pct:true, compactHide:true},
+  {key:'oppTpm', label:'Opp 3PM', compactHide:true}, {key:'oppTpa', label:'Opp 3PA', compactHide:true},
+  {key:'oppFtm', label:'Opp FTM', compactHide:true}, {key:'oppFta', label:'Opp FTA', compactHide:true},
+  {key:'oppOreb', label:'Opp OREB', compactHide:true}, {key:'oppDreb', label:'Opp DREB', compactHide:true}, {key:'oppReb', label:'Opp REB', compactHide:true},
+  {key:'oppAst', label:'Opp AST', compactHide:true}, {key:'oppStl', label:'Opp STL', compactHide:true}, {key:'oppBlk', label:'Opp BLK', compactHide:true},
+  {key:'oppTo', label:'Opp TO', compactHide:true}, {key:'oppPf', label:'Opp PF', compactHide:true},
 ];
 const TEAM_GAME_COLS = [
   {key:'date', label:'Date', left:true}, {key:'wl', label:'W/L', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
-  {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'}, {key:'min', label:'MIN'},
-  {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
-  {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
-  {key:'ftm', label:'FTM'}, {key:'fta', label:'FTA'}, {key:'ftPct', label:'FT%', pct:true},
-  {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB'},
-  {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
-  {key:'to', label:'TO'}, {key:'pf', label:'PF'},
+  {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'}, {key:'min', label:'MIN', compactHide:true},
+  {key:'fgm', label:'FGM', compactHide:true}, {key:'fga', label:'FGA', compactHide:true}, {key:'fgPct', label:'FG%', pct:true, compactHide:true},
+  {key:'tpm', label:'3PM', compactHide:true}, {key:'tpa', label:'3PA', compactHide:true}, {key:'tpPct', label:'3P%', pct:true, compactHide:true},
+  {key:'ftm', label:'FTM', compactHide:true}, {key:'fta', label:'FTA', compactHide:true}, {key:'ftPct', label:'FT%', pct:true, compactHide:true},
+  {key:'oreb', label:'OREB', compactHide:true}, {key:'dreb', label:'DREB', compactHide:true}, {key:'reb', label:'REB'},
+  {key:'ast', label:'AST'}, {key:'stl', label:'STL', compactHide:true}, {key:'blk', label:'BLK', compactHide:true},
+  {key:'to', label:'TO', compactHide:true}, {key:'pf', label:'PF', compactHide:true},
 ];
 
 let TEAM_NAMES = [];
@@ -1469,9 +1481,9 @@ function buildMultiWindowTeamDvpCell(opponentTeam){
 const TEAM_ADV_COLS = [
   {key:'player', label:'Player', left:true}, {key:'gp', label:'GP'},
   {key:'usgPct', label:'USG%', round2:true},
-  {key:'ptsEma', label:'PTS EMA', round2:true}, {key:'ptsStd', label:'PTS StdDev', round2:true}, {key:'ptsIqr', label:'PTS IQR', round2:true},
-  {key:'rebEma', label:'REB EMA', round2:true}, {key:'rebStd', label:'REB StdDev', round2:true}, {key:'rebIqr', label:'REB IQR', round2:true},
-  {key:'astEma', label:'AST EMA', round2:true}, {key:'astStd', label:'AST StdDev', round2:true}, {key:'astIqr', label:'AST IQR', round2:true},
+  {key:'ptsEma', label:'PTS EMA', round2:true}, {key:'ptsStd', label:'PTS StdDev', round2:true, compactHide:true}, {key:'ptsIqr', label:'PTS IQR', round2:true, compactHide:true},
+  {key:'rebEma', label:'REB EMA', round2:true, compactHide:true}, {key:'rebStd', label:'REB StdDev', round2:true, compactHide:true}, {key:'rebIqr', label:'REB IQR', round2:true, compactHide:true},
+  {key:'astEma', label:'AST EMA', round2:true, compactHide:true}, {key:'astStd', label:'AST StdDev', round2:true, compactHide:true}, {key:'astIqr', label:'AST IQR', round2:true, compactHide:true},
 ];
 
 // Builds one row per player (within whatever gameIds are currently in view \u2014 respects the
@@ -1536,10 +1548,10 @@ function computeTeamDefenseTrend(opponentGamesChrono){
 const TEAM_DEF_BY_POS_COLS = [
   {key:'position', label:'Position Allowed To', left:true},
   {key:'ptsAllowed', label:'PTS/Gm'}, {key:'ptsDvp', label:'PTS DvP Idx', round2:true},
-  {key:'rebAllowed', label:'REB/Gm'}, {key:'rebDvp', label:'REB DvP Idx', round2:true},
-  {key:'astAllowed', label:'AST/Gm'}, {key:'astDvp', label:'AST DvP Idx', round2:true},
-  {key:'tpmAllowed', label:'3PM/Gm'}, {key:'tpmDvp', label:'3PM DvP Idx', round2:true},
-  {key:'praAllowed', label:'PRA/Gm'}, {key:'praDvp', label:'PRA DvP Idx', round2:true},
+  {key:'rebAllowed', label:'REB/Gm', compactHide:true}, {key:'rebDvp', label:'REB DvP Idx', round2:true, compactHide:true},
+  {key:'astAllowed', label:'AST/Gm', compactHide:true}, {key:'astDvp', label:'AST DvP Idx', round2:true, compactHide:true},
+  {key:'tpmAllowed', label:'3PM/Gm', compactHide:true}, {key:'tpmDvp', label:'3PM DvP Idx', round2:true, compactHide:true},
+  {key:'praAllowed', label:'PRA/Gm', compactHide:true}, {key:'praDvp', label:'PRA DvP Idx', round2:true, compactHide:true},
 ];
 function computeTeamDefenseByPosition(team){
   return ['G','F','C'].map(bucket=>{
@@ -3129,21 +3141,23 @@ function heightTierStatsForWindow(heightData, windowSize){
 // on her NEXT opponent who shares her position bucket -- async since the next opponent comes
 // from the live odds feed, not season data. Injury status is deliberately collapsed to exactly
 // the three categories asked for: Healthy (no notable injury on file), Day-To-Day, or Out.
-async function renderNextOpponentPositionSection(container, playerName, team, heightTierData){
+// Shared between renderNextOpponentPositionSection (full breakdown display) and
+// buildHeightTierSection (which, in Compact mode, uses just the resulting tier to decide which
+// one of Shortest/Middle/Tallest is most relevant to show by default -- the one matching her
+// actual next opponent, rather than all three at once).
+async function computeNextOpponentGroupTier(playerName, team, heightTierData){
   const bucket = positionBucket(getPlayerPosition(playerName, team));
-  if(!bucket){ container.textContent = 'Position unavailable.'; return; }
-  container.textContent = 'Looking up next opponent\u2026';
+  if(!bucket) return null;
   const opp = await fetchNextOpponent(team);
-  if(!opp){ container.textContent = 'No upcoming game found.'; return; }
+  if(!opp) return null;
 
   function tierFor(heightIn){
     if(!heightTierData || heightIn===undefined || heightIn===null) return null;
-    if(heightIn < heightTierData.p33) return 'Shortest';
-    if(heightIn <= heightTierData.p67) return 'Middle';
-    return 'Tallest';
+    if(heightIn < heightTierData.p33) return 'shortest';
+    if(heightIn <= heightTierData.p67) return 'middle';
+    return 'tallest';
   }
 
-  const oppFull = FULL_TEAM_NAME[opp] || opp;
   const rows = Object.keys(DATA.fullPlayerLogs)
     .filter(k => k.slice(k.lastIndexOf('|')+1) === opp)
     .map(k=>{
@@ -3157,8 +3171,26 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
       const inj = teamInjuries(opp).find(i=>i.player===pname);
       const note = inj ? noteworthyInjuryStatus(inj.status) : null;
       const status = note==='out' ? 'Out' : (note==='dayToDay' ? 'Day-To-Day' : 'Healthy');
-      return { player: pname, avgMin, heightIn: bio.heightIn, height: bio.height || '\u2014', tier: tierFor(bio.heightIn), status };
+      const tier = tierFor(bio.heightIn);
+      return { player: pname, avgMin, heightIn: bio.heightIn, height: bio.height || '\u2014', tier: tier ? tier.charAt(0).toUpperCase()+tier.slice(1) : null, status };
     }).filter(Boolean).sort((a,b)=>b.avgMin-a.avgMin);
+
+  const withHeight = rows.filter(r=>r.heightIn!==undefined && r.heightIn!==null && r.avgMin>0);
+  let groupTier = null, weightedHeight = null;
+  if(withHeight.length){
+    const totalMin = withHeight.reduce((a,r)=>a+r.avgMin,0);
+    weightedHeight = withHeight.reduce((a,r)=>a+r.heightIn*r.avgMin,0)/totalMin;
+    groupTier = tierFor(weightedHeight); // lowercase ('shortest'/'middle'/'tallest') -- matches the keys buildHeightTierSection's stats object uses
+  }
+  return { bucket, opp, rows, groupTier, weightedHeight };
+}
+
+async function renderNextOpponentPositionSection(container, playerName, team, heightTierData){
+  container.textContent = 'Looking up next opponent\u2026';
+  const result = await computeNextOpponentGroupTier(playerName, team, heightTierData);
+  if(!result){ container.textContent = 'Position unavailable, or no upcoming game found.'; return null; }
+  const {bucket, opp, rows, groupTier, weightedHeight} = result;
+  const oppFull = FULL_TEAM_NAME[opp] || opp;
 
   container.innerHTML = '';
   const header = document.createElement('div'); header.className = 'footnote'; header.style.marginBottom = '8px';
@@ -3168,7 +3200,7 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
     const none = document.createElement('div'); none.style.cssText = 'color:var(--sub);font-size:12.5px;';
     none.textContent = `No ${POSITION_LABEL[bucket]||bucket} found on ${oppFull}'s recent rotation.`;
     container.appendChild(none);
-    return;
+    return result;
   }
   const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12.5px;';
   table.innerHTML = '<thead><tr><th style="text-align:left;padding:5px;border-bottom:2px solid var(--line);">Player</th><th style="padding:5px;border-bottom:2px solid var(--line);">Avg Min (L15)</th><th style="padding:5px;border-bottom:2px solid var(--line);">Tier</th><th style="padding:5px;border-bottom:2px solid var(--line);">Height</th><th style="padding:5px;border-bottom:2px solid var(--line);">Status</th></tr></thead>';
@@ -3193,15 +3225,11 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
   // above, classified the same way each individual player was, so you can see at a glance
   // whether this whole position group profiles as short/middle/tall for her, not just any one
   // player on it. Only meaningful with real minutes and real heights to weight by.
-  const withHeight = rows.filter(r=>r.heightIn!==undefined && r.heightIn!==null && r.avgMin>0);
-  if(withHeight.length){
-    const totalMin = withHeight.reduce((a,r)=>a+r.avgMin,0);
-    const weightedHeight = withHeight.reduce((a,r)=>a+r.heightIn*r.avgMin,0)/totalMin;
-    const groupTier = tierFor(weightedHeight);
+  if(groupTier){
     const tr = document.createElement('tr'); tr.style.cssText = 'background:#eef2fb;font-weight:700;border-top:2px solid var(--line);';
     const tdLabel = document.createElement('td'); tdLabel.style.cssText = 'padding:5px;'; tdLabel.textContent = 'Group (minutes-weighted)';
     const tdBlankMin = document.createElement('td'); tdBlankMin.style.cssText = 'padding:5px;';
-    const tdGroupTier = document.createElement('td'); tdGroupTier.style.cssText = 'padding:5px;text-align:center;'; tdGroupTier.textContent = groupTier || '\u2014';
+    const tdGroupTier = document.createElement('td'); tdGroupTier.style.cssText = 'padding:5px;text-align:center;'; tdGroupTier.textContent = groupTier.charAt(0).toUpperCase()+groupTier.slice(1);
     const tdGroupHeight = document.createElement('td'); tdGroupHeight.style.cssText = 'padding:5px;text-align:center;'; tdGroupHeight.textContent = `${inchesToHeightStr(weightedHeight) || '\u2014'} (${weightedHeight.toFixed(1)}in)`;
     const tdBlankStatus = document.createElement('td'); tdBlankStatus.style.cssText = 'padding:5px;';
     [tdLabel, tdBlankMin, tdGroupTier, tdGroupHeight, tdBlankStatus].forEach(td=>tr.appendChild(td));
@@ -3210,6 +3238,7 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
 
   table.appendChild(tbody);
   container.appendChild(table);
+  return result;
 }
 
 function buildHeightTierSection(container, playerName, team){
@@ -3224,16 +3253,22 @@ function buildHeightTierSection(container, playerName, team){
   disclaimer.textContent = `Proxy, not real defensive matchup data \u2014 this app has no play-by-play tracking of who actually guarded whom. "Shortest/Middle/Tallest" compares her production against opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} groups (minutes-weighted average height of whichever of them played), grouped into thirds fixed from her full season so the tiers mean the same thing across every window below. Cutoffs: Shortest < ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest > ${heightData.p67.toFixed(1)}in.`;
   container.appendChild(disclaimer);
 
-  const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;';
+  const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;';
   const windowOptions = [{label:'L5', size:5}, {label:'L10', size:10}, {label:'L15', size:15}, {label:'Season', size:null}];
   let activeSize = 10;
   let currentLines = null; // populated async below; re-renders once available, whatever window is active at that moment
+  let relevantTier = null; // populated async below -- the tier matching her actual next opponent's position group
+  let showAllTiers = false; // Compact mode only: toggled by the "Show More Tiers" button
   const tableHolder = document.createElement('div');
 
   function renderTierTables(){
     tableHolder.innerHTML = '';
     const stats = heightTierStatsForWindow(heightData, activeSize);
     const STAT_LABELS = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'3-Pointers Made', pra:'PRA'};
+    const filterToRelevant = getLayoutMode()==='compact' && relevantTier && !showAllTiers;
+    const tiersToShow = filterToRelevant
+      ? [[relevantTier, TIER_LABEL[relevantTier]]]
+      : [['shortest','Shortest'], ['middle','Middle'], ['tallest','Tallest']];
     const grid = document.createElement('div'); grid.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
     ['pts','reb','ast','tpm','pra'].forEach(statKey=>{
       const box = document.createElement('div'); box.style.cssText = 'flex:1;min-width:260px;';
@@ -3247,7 +3282,7 @@ function buildHeightTierSection(container, playerName, team){
       const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12px;';
       table.innerHTML = '<thead><tr><th style="text-align:left;padding:4px;border-bottom:2px solid var(--line);">Tier</th><th style="padding:4px;border-bottom:2px solid var(--line);">N</th><th style="padding:4px;border-bottom:2px solid var(--line);">Avg</th><th style="padding:4px;border-bottom:2px solid var(--line);">StdDev</th><th style="padding:4px;border-bottom:2px solid var(--line);">Variance</th></tr></thead>';
       const tbody = document.createElement('tbody');
-      [['shortest','Shortest'], ['middle','Middle'], ['tallest','Tallest']].forEach(([tierKey,tierLabel])=>{
+      tiersToShow.forEach(([tierKey,tierLabel])=>{
         const s = stats[tierKey][statKey];
         const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
         const tdTier = document.createElement('td'); tdTier.style.cssText = 'padding:4px;';
@@ -3274,12 +3309,25 @@ function buildHeightTierSection(container, playerName, team){
     btn.style.cssText = 'padding:5px 12px;border-radius:5px;border:1px solid var(--line);background:'+(opt.size===activeSize?'var(--navy2)':'var(--panel)')+';color:'+(opt.size===activeSize?'#fff':'var(--ink)')+';font-size:12px;cursor:pointer;font-family:var(--sans);';
     btn.addEventListener('click', ()=>{
       activeSize = opt.size;
-      [...toggleRow.children].forEach(b=>{ b.style.background='var(--panel)'; b.style.color='var(--ink)'; });
+      [...toggleRow.children].forEach(b=>{ if(b.tagName==='BUTTON' && b!==expandTiersBtn){ b.style.background='var(--panel)'; b.style.color='var(--ink)'; } });
       btn.style.background = 'var(--navy2)'; btn.style.color = '#fff';
       renderTierTables();
     });
     toggleRow.appendChild(btn);
   });
+
+  // Compact mode only: hidden until relevantTier resolves (nothing to filter to/from before
+  // that), toggles between showing just her next opponent's actual tier vs all three.
+  const expandTiersBtn = document.createElement('button');
+  expandTiersBtn.className = 'compact-only';
+  expandTiersBtn.style.cssText = 'display:none;padding:5px 12px;border-radius:5px;border:1px solid var(--line);background:var(--panel);color:var(--navy2);font-size:12px;cursor:pointer;font-family:var(--sans);font-weight:700;';
+  expandTiersBtn.addEventListener('click', ()=>{
+    showAllTiers = !showAllTiers;
+    expandTiersBtn.textContent = showAllTiers ? '\u25b4 Show Just Next Opponent\u2019s Tier' : '\u25be Show More Tiers';
+    renderTierTables();
+  });
+  toggleRow.appendChild(expandTiersBtn);
+
   container.appendChild(toggleRow);
   container.appendChild(tableHolder);
   renderTierTables();
@@ -3290,6 +3338,18 @@ function buildHeightTierSection(container, playerName, team){
   fetchHerNextGameLines(playerName, team).then(result=>{
     currentLines = result;
     renderTierTables();
+  });
+
+  // Async: find which tier her actual next opponent falls into, so Compact mode can default to
+  // showing just that one instead of all three. Full mode ignores this entirely (renderTierTables
+  // only filters when getLayoutMode()==='compact').
+  computeNextOpponentGroupTier(playerName, team, heightData).then(result=>{
+    if(result && result.groupTier){
+      relevantTier = result.groupTier;
+      expandTiersBtn.style.display = '';
+      expandTiersBtn.textContent = '\u25be Show More Tiers';
+      renderTierTables();
+    }
   });
 
   return heightData;
