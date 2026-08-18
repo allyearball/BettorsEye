@@ -33,6 +33,11 @@
   nav button.navbtn{display:block;width:100%;text-align:left;background:none;border:none;padding:7px 16px;font-size:13px;color:var(--ink);cursor:pointer;border-left:3px solid transparent;font-family:var(--sans);}
   nav button.navbtn:hover{background:#f0f2f6;}
   nav button.navbtn.active{background:#eef2fb;border-left-color:var(--navy2);font-weight:700;color:var(--navy2);}
+  nav button.navgroup-btn{display:flex;align-items:center;justify-content:space-between;width:100%;text-align:left;background:#f7f8fa;border:none;border-bottom:1px solid var(--line);padding:12px 16px;font-size:13px;font-weight:800;color:var(--navy2);cursor:pointer;font-family:var(--sans);text-transform:uppercase;letter-spacing:.04em;}
+  nav button.navgroup-btn:hover{background:#eef2fb;}
+  nav button.navgroup-btn::after{content:'\25be';font-size:11px;}
+  nav button.navgroup-btn.active::after{content:'\25b4';}
+  nav .navgroup-content{padding:4px 0 8px;}
   main{flex:1;padding:22px 26px;min-width:0;}
   .pagehead h2{margin:0 0 4px;font-size:19px;}
   .pagehead .meta{color:var(--sub);font-size:13px;}
@@ -101,6 +106,7 @@
   body.compact-mode nav{position:static;width:100%;flex:0 0 auto;max-height:none;border-right:none;border-bottom:1px solid var(--line);padding:6px 0;}
   body.compact-mode nav .group-label{padding:10px 14px 4px;}
   body.compact-mode nav button.navbtn{padding:11px 14px;font-size:14px;}
+  body.compact-mode nav button.navgroup-btn{padding:14px;font-size:13.5px;min-height:44px;}
   body.compact-mode main{padding:14px 12px;}
   body.compact-mode .toplinks{gap:4px;}
   body.compact-mode .toplinks button{padding:10px 12px;font-size:13.5px;min-height:40px;}
@@ -2145,24 +2151,69 @@ function navBtn(text, onClick){
 }
 function setActiveNav(team){
   [...nav.querySelectorAll('.navbtn')].forEach(x=>x.classList.remove('active'));
-  const btn = [...nav.querySelectorAll('.navbtn')].find(b=>b.textContent===team);
-  if(btn) btn.classList.add('active');
+  const btn = [...nav.querySelectorAll('.navbtn')].find(b=>b.dataset.team===team);
+  if(!btn) return;
+  btn.classList.add('active');
+  // If this button lives inside a currently-collapsed group, expand that group (and collapse
+  // the other one) so the now-active button is actually visible, not just marked active while
+  // hidden.
+  const content = btn.closest('.navgroup-content');
+  if(content && content.style.display==='none'){
+    [...nav.querySelectorAll('.navgroup-content')].forEach(c=>{ c.style.display = 'none'; });
+    [...nav.querySelectorAll('.navgroup-btn')].forEach(b=>b.classList.remove('active'));
+    content.style.display = '';
+    const groupBtn = content.previousElementSibling;
+    if(groupBtn && groupBtn.classList.contains('navgroup-btn')) groupBtn.classList.add('active');
+  }
 }
 function buildNav(){
   nav.innerHTML='';
-  const leagueLabel = document.createElement('div'); leagueLabel.className='group-label'; leagueLabel.textContent='League';
-  nav.appendChild(leagueLabel);
-  const leagueBtn = navBtn('League Stats', ()=>renderLeagueStatsPage());
-  nav.appendChild(leagueBtn);
-  const heightBtn = navBtn('Team Height (L5)', ()=>renderTeamHeightPage());
-  nav.appendChild(heightBtn);
 
-  const gLabel = document.createElement('div'); gLabel.className='group-label'; gLabel.textContent='Teams';
-  nav.appendChild(gLabel);
-  TEAM_NAMES.forEach(team=>{
-    const btn = navBtn(team, ()=>renderTeamPage(team));
-    nav.appendChild(btn);
+  const leagueGroupBtn = document.createElement('button'); leagueGroupBtn.className='navgroup-btn'; leagueGroupBtn.textContent='League';
+  nav.appendChild(leagueGroupBtn);
+  const leagueGroupContent = document.createElement('div'); leagueGroupContent.className='navgroup-content';
+  nav.appendChild(leagueGroupContent);
+  const leagueBtn = navBtn('League Stats', ()=>renderLeagueStatsPage());
+  leagueGroupContent.appendChild(leagueBtn);
+  // Menu label is shortened to "Team Height" -- the (L5) detail stays on the page itself
+  // (renderTeamHeightPage's own heading), just not repeated in the nav label.
+  const heightBtn = navBtn('Team Height', ()=>renderTeamHeightPage());
+  leagueGroupContent.appendChild(heightBtn);
+
+  const teamsGroupBtn = document.createElement('button'); teamsGroupBtn.className='navgroup-btn'; teamsGroupBtn.textContent='Teams';
+  nav.appendChild(teamsGroupBtn);
+  const teamsGroupContent = document.createElement('div'); teamsGroupContent.className='navgroup-content';
+  nav.appendChild(teamsGroupContent);
+  // Sorted by full name (city + nickname), not by short nickname alone -- every WNBA team's full
+  // name is "City/Region Nickname" in that order, so sorting the full string IS sorting by city
+  // first, team name second, with no extra parsing needed.
+  const sortedTeams = TEAM_NAMES.slice().sort((a,b)=>{
+    const fullA = FULL_TEAM_NAME[a] || a, fullB = FULL_TEAM_NAME[b] || b;
+    return fullA.localeCompare(fullB);
   });
+  sortedTeams.forEach(team=>{
+    const btn = navBtn(FULL_TEAM_NAME[team] || team, ()=>renderTeamPage(team));
+    btn.dataset.team = team; // setActiveNav matches on this, not on the (now full-name) display text
+    teamsGroupContent.appendChild(btn);
+  });
+
+  function collapseGroups(){
+    leagueGroupContent.style.display = 'none';
+    teamsGroupContent.style.display = 'none';
+    leagueGroupBtn.classList.remove('active');
+    teamsGroupBtn.classList.remove('active');
+  }
+  function toggleGroup(btn, content){
+    const wasOpen = content.style.display !== 'none';
+    collapseGroups();
+    if(!wasOpen){ content.style.display = ''; btn.classList.add('active'); }
+  }
+  leagueGroupBtn.addEventListener('click', ()=>toggleGroup(leagueGroupBtn, leagueGroupContent));
+  teamsGroupBtn.addEventListener('click', ()=>toggleGroup(teamsGroupBtn, teamsGroupContent));
+
+  collapseGroups();
+  leagueGroupContent.style.display = '';
+  leagueGroupBtn.classList.add('active');
   leagueBtn.click();
 }
 // Rebuildable so login/logout can refresh just this piece without touching the page nav
