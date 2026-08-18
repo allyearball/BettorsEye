@@ -2282,16 +2282,56 @@ function renderAccountControls(){
   }
   container.innerHTML = '';
 
+  const modeBtnWrap = document.createElement('div');
+  modeBtnWrap.style.cssText = 'position:relative;display:inline-block;';
   const layoutBtn = document.createElement('button');
   layoutBtn.id = 'layoutModeBtn';
-  function paintLayoutBtn(){ layoutBtn.textContent = getLayoutMode()==='compact' ? '\ud83d\udcf1 Compact' : '\ud83d\udda5\ufe0f Full'; }
-  paintLayoutBtn();
-  layoutBtn.title = 'Switch between Full (everything visible) and Compact (simplified, mobile-friendly) layouts';
-  layoutBtn.addEventListener('click', ()=>{
-    setLayoutMode(getLayoutMode()==='compact' ? 'full' : 'compact');
-    paintLayoutBtn();
-    if(lastRender) lastRender(); // re-render current page so any JS-driven (not just CSS) compact behavior picks up the change too
+  layoutBtn.textContent = '\u2699\ufe0f Mode';
+  layoutBtn.title = 'Choose Full (everything visible) or Compact (simplified, mobile-friendly) layout';
+
+  const modePopover = document.createElement('div');
+  modePopover.id = 'layoutModePopover';
+  modePopover.style.cssText = 'display:none;position:absolute;top:100%;right:0;margin-top:6px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 14px;box-shadow:0 4px 16px rgba(0,0,0,0.2);z-index:1000;min-width:190px;';
+  [
+    {value:'full', label:'Full (everything visible)'},
+    {value:'compact', label:'Compact (mobile-friendly)'},
+  ].forEach(opt=>{
+    const label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:8px;padding:7px 2px;font-size:13.5px;color:var(--ink);cursor:pointer;font-weight:400;';
+    const radio = document.createElement('input');
+    radio.type = 'radio'; radio.name = 'layoutModeRadio'; radio.value = opt.value;
+    radio.checked = getLayoutMode() === opt.value;
+    radio.addEventListener('change', ()=>{
+      setLayoutMode(opt.value);
+      modePopover.style.display = 'none';
+      if(lastRender) lastRender(); // re-render current page so any JS-driven (not just CSS) compact behavior picks up the change too
+    });
+    label.appendChild(radio);
+    label.appendChild(document.createTextNode(opt.label));
+    modePopover.appendChild(label);
   });
+  layoutBtn.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    modePopover.style.display = modePopover.style.display==='none' ? '' : 'none';
+  });
+  modeBtnWrap.appendChild(layoutBtn);
+  modeBtnWrap.appendChild(modePopover);
+
+  // Guarded so this is only ever attached once, no matter how many times renderAccountControls
+  // re-runs (every page navigation rebuilds the header controls) -- a plain document listener
+  // added inside this function would otherwise pile up a fresh duplicate on every single
+  // navigation. Looks up the popover/button by id each time rather than capturing a closure
+  // reference, so it stays correct even after this function has rebuilt them.
+  if(!window._layoutModePopoverListenerAdded){
+    window._layoutModePopoverListenerAdded = true;
+    document.addEventListener('click', (e)=>{
+      const popover = document.getElementById('layoutModePopover');
+      const btn = document.getElementById('layoutModeBtn');
+      if(popover && popover.style.display!=='none' && !popover.contains(e.target) && e.target!==btn){
+        popover.style.display = 'none';
+      }
+    });
+  }
 
   const settingsBtn = document.createElement('button');
   settingsBtn.textContent = '\u2699\ufe0f Settings';
@@ -2326,7 +2366,7 @@ function renderAccountControls(){
     });
   }
 
-  container.appendChild(layoutBtn);
+  container.appendChild(modeBtnWrap);
   container.appendChild(settingsBtn);
   if(adminBtn) container.appendChild(adminBtn);
   container.appendChild(authBtn);
