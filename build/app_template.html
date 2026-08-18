@@ -1812,13 +1812,15 @@ function gamesVsOpponentRows(playerName, team, opponentShort){
 // exactly rather than re-implementing it.
 function buildStandardFooterRows(rows, statKeys){
   const footerRows = [];
+  const n = rows.filter(g=>!g.dnp).length; // matches statValues' own DNP filtering below, not the raw row count (which includes DNPs)
+  const gpLabel = `${n} game${n===1?'':'s'} played`;
   const labels = [
-    {label:'TOTAL (games played)', fn: arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)*100)/100 : null},
-    {label:'MIN (games played)', fn: arr => arr.length ? Math.min(...arr) : null},
-    {label:'MAX (games played)', fn: arr => arr.length ? Math.max(...arr) : null},
-    {label:'AVERAGE (games played)', fn: arr => arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*100)/100 : null},
-    {label:'MEDIAN (games played)', fn: median},
-    {label:'MODE (games played)', fn: mode},
+    {label:`TOTAL (${gpLabel})`, fn: arr => arr.length ? Math.round(arr.reduce((a,b)=>a+b,0)*100)/100 : null},
+    {label:`MIN (${gpLabel})`, fn: arr => arr.length ? Math.min(...arr) : null},
+    {label:`MAX (${gpLabel})`, fn: arr => arr.length ? Math.max(...arr) : null},
+    {label:`AVERAGE (${gpLabel})`, fn: arr => arr.length ? Math.round((arr.reduce((a,b)=>a+b,0)/arr.length)*100)/100 : null},
+    {label:`MEDIAN (${gpLabel})`, fn: median},
+    {label:`MODE (${gpLabel})`, fn: mode},
   ];
   labels.forEach(({label, fn})=>{
     const values = {};
@@ -1978,6 +1980,23 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     main.appendChild(bioDiv);
   }
 
+  // Year/Month filter — narrows the calendar range; the rolling-window buttons below then
+  // apply within whatever that range contains (e.g. "Last 10" within June 2026 specifically).
+  // Placed right after the bio, before the tabs, so it's visible at the very top of the page
+  // rather than buried below the Production tab's content.
+  const selectorRow = document.createElement('div');
+  selectorRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin:14px 0;';
+  const selectorLabel = document.createElement('div'); selectorLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;';
+  selectorLabel.textContent = 'Season:';
+  selectorRow.appendChild(selectorLabel);
+  selectorRow.appendChild(buildYearMonthSelector(
+    years, (y)=>availableMonthsForYearInLog(fullLog,y), year, month,
+    (y,m)=>renderPlayerPage(playerName, team, returnTo, windowMode, y, m)
+  ));
+  main.appendChild(selectorRow);
+
+  main.appendChild(renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderPlayerPage(playerName, team, returnTo, val, year, month); }));
+
   // Three tabs to cut down on scrolling: Production (teammate-out impact, height-tier analysis,
   // next opponent), Gamelogs (box score + advanced metrics, plus the year/month/window controls
   // that actually drive them), Vs. Opponent (matchup-specific gamelog + advanced metrics). Each
@@ -2083,21 +2102,6 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   prodTabContent.appendChild(nextOppWrap);
   renderNextOpponentPositionSection(nextOppWrap, playerName, team, heightTierData);
 
-  // Year/Month filter — narrows the calendar range; the rolling-window buttons below then
-  // apply within whatever that range contains (e.g. "Last 10" within June 2026 specifically).
-  const selectorRow = document.createElement('div');
-  selectorRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin:14px 0;';
-  const selectorLabel = document.createElement('div'); selectorLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;';
-  selectorLabel.textContent = 'Season:';
-  selectorRow.appendChild(selectorLabel);
-  selectorRow.appendChild(buildYearMonthSelector(
-    years, (y)=>availableMonthsForYearInLog(fullLog,y), year, month,
-    (y,m)=>renderPlayerPage(playerName, team, returnTo, windowMode, y, m)
-  ));
-  main.appendChild(selectorRow);
-
-  main.appendChild(renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderPlayerPage(playerName, team, returnTo, val, year, month); }));
-
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const monthLabelText = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
   const t1 = document.createElement('div'); t1.className='section-title';
@@ -2176,7 +2180,9 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     const footerRows = buildStandardFooterRows(rows, STAT_KEYS_FOR_SUMMARY);
     makeTable(vsOppStdContainer, PLAYER_VS_OPP_COLS, rows, {defaultSort:'date', defaultDir:'desc', footerRows});
     const advRows = computePlayerAdvancedLogVsOpponent(playerName, team, opponentShort);
-    makeTable(vsOppAdvContainer, PLAYER_ADV_COLS, advRows, {defaultSort:'date', defaultDir:'desc'});
+    const ADV_STAT_KEYS = ['min','usgPct','ptsEma','ptsStd','ptsIqr','rebEma','rebStd','rebIqr','astEma','astStd','astIqr','dvpPts','dvpReb','dvpAst'];
+    const advFooterRows = buildStandardFooterRows(advRows, ADV_STAT_KEYS);
+    makeTable(vsOppAdvContainer, PLAYER_ADV_COLS, advRows, {defaultSort:'date', defaultDir:'desc', footerRows: advFooterRows});
   }
   vsOppSelect.addEventListener('change', ()=>renderVsOpponentTables(vsOppSelect.value));
   renderVsOpponentTables(vsOppSelect.value);
@@ -2221,11 +2227,11 @@ function buildNav(){
   nav.appendChild(leagueGroupBtn);
   const leagueGroupContent = document.createElement('div'); leagueGroupContent.className='navgroup-content';
   nav.appendChild(leagueGroupContent);
-  const leagueBtn = navBtn('League Stats', ()=>renderLeagueStatsPage());
+  const leagueBtn = navBtn('League Stats', ()=>{ renderLeagueStatsPage(); collapseGroups(); });
   leagueGroupContent.appendChild(leagueBtn);
   // Menu label is shortened to "Team Height" -- the (L5) detail stays on the page itself
   // (renderTeamHeightPage's own heading), just not repeated in the nav label.
-  const heightBtn = navBtn('Team Height', ()=>renderTeamHeightPage());
+  const heightBtn = navBtn('Team Height', ()=>{ renderTeamHeightPage(); collapseGroups(); });
   leagueGroupContent.appendChild(heightBtn);
 
   const teamsGroupBtn = document.createElement('button'); teamsGroupBtn.className='navgroup-btn'; teamsGroupBtn.textContent='Teams';
@@ -2240,11 +2246,15 @@ function buildNav(){
     return fullA.localeCompare(fullB);
   });
   sortedTeams.forEach(team=>{
-    const btn = navBtn(FULL_TEAM_NAME[team] || team, ()=>renderTeamPage(team));
+    const btn = navBtn(FULL_TEAM_NAME[team] || team, ()=>{ renderTeamPage(team); collapseGroups(); });
     btn.dataset.team = team; // setActiveNav matches on this, not on the (now full-name) display text
     teamsGroupContent.appendChild(btn);
   });
 
+  // Declared as a function (not const) specifically so it's hoisted -- the navBtn onClick
+  // callbacks above reference it before this line runs, which is fine since those callbacks
+  // only actually execute later, on click, by which point buildNav() has fully finished and
+  // collapseGroups is defined either way.
   function collapseGroups(){
     leagueGroupContent.style.display = 'none';
     teamsGroupContent.style.display = 'none';
