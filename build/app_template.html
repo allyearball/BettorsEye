@@ -162,7 +162,7 @@
   #bottomTabBar button.active{color:#ffffff;background:rgba(255,255,255,.12);}
   /* Compact-mode-only "Show All Details" toggle for wide tables that use compact-hide -- reveals
      the hidden columns back to table-cell display (not just block, since these are td/th). */
-  .compact-show-all .compact-hide{display:table-cell !important;}
+  body.compact-mode .compact-show-all .compact-hide{display:table-cell !important;}
 </style>
 </head>
 <body>
@@ -3503,18 +3503,13 @@ function buildHeightTierSection(container, playerName, team){
   const windowOptions = [{label:'L5', size:5}, {label:'L10', size:10}, {label:'L15', size:15}, {label:'Season', size:null}];
   let activeSize = 10;
   let currentLines = null; // populated async below; re-renders once available, whatever window is active at that moment
-  let relevantTier = null; // populated async below -- the tier matching her actual next opponent's position group
-  let showAllTiers = false; // Compact mode only: toggled by the "Show More Tiers" button
   const tableHolder = document.createElement('div');
 
   function renderTierTables(){
     tableHolder.innerHTML = '';
     const stats = heightTierStatsForWindow(heightData, activeSize);
     const STAT_LABELS = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'3-Pointers Made', pra:'PRA'};
-    const filterToRelevant = getLayoutMode()==='compact' && relevantTier && !showAllTiers;
-    const tiersToShow = filterToRelevant
-      ? [[relevantTier, TIER_LABEL[relevantTier]]]
-      : [['shortest','Shortest'], ['middle','Middle'], ['tallest','Tallest']];
+    const tiersToShow = [['shortest','Shortest'], ['middle','Middle'], ['tallest','Tallest']];
     const grid = document.createElement('div'); grid.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
     ['pts','reb','ast','tpm','pra'].forEach(statKey=>{
       const box = document.createElement('div'); box.style.cssText = 'flex:1;min-width:260px;';
@@ -3555,24 +3550,12 @@ function buildHeightTierSection(container, playerName, team){
     btn.style.cssText = 'padding:5px 12px;border-radius:5px;border:1px solid var(--line);background:'+(opt.size===activeSize?'var(--navy2)':'var(--panel)')+';color:'+(opt.size===activeSize?'#fff':'var(--ink)')+';font-size:12px;cursor:pointer;font-family:var(--sans);';
     btn.addEventListener('click', ()=>{
       activeSize = opt.size;
-      [...toggleRow.children].forEach(b=>{ if(b.tagName==='BUTTON' && b!==expandTiersBtn){ b.style.background='var(--panel)'; b.style.color='var(--ink)'; } });
+      [...toggleRow.children].forEach(b=>{ if(b.tagName==='BUTTON'){ b.style.background='var(--panel)'; b.style.color='var(--ink)'; } });
       btn.style.background = 'var(--navy2)'; btn.style.color = '#fff';
       renderTierTables();
     });
     toggleRow.appendChild(btn);
   });
-
-  // Compact mode only: hidden until relevantTier resolves (nothing to filter to/from before
-  // that), toggles between showing just her next opponent's actual tier vs all three.
-  const expandTiersBtn = document.createElement('button');
-  expandTiersBtn.className = 'compact-only';
-  expandTiersBtn.style.cssText = 'display:none;padding:5px 12px;border-radius:5px;border:1px solid var(--line);background:var(--panel);color:var(--navy2);font-size:12px;cursor:pointer;font-family:var(--sans);font-weight:700;';
-  expandTiersBtn.addEventListener('click', ()=>{
-    showAllTiers = !showAllTiers;
-    expandTiersBtn.textContent = showAllTiers ? '\u25b4 Show Just Next Opponent\u2019s Tier' : '\u25be Show More Tiers';
-    renderTierTables();
-  });
-  toggleRow.appendChild(expandTiersBtn);
 
   container.appendChild(toggleRow);
   container.appendChild(tableHolder);
@@ -3584,18 +3567,6 @@ function buildHeightTierSection(container, playerName, team){
   fetchHerNextGameLines(playerName, team).then(result=>{
     currentLines = result;
     renderTierTables();
-  });
-
-  // Async: find which tier her actual next opponent falls into, so Compact mode can default to
-  // showing just that one instead of all three. Full mode ignores this entirely (renderTierTables
-  // only filters when getLayoutMode()==='compact').
-  computeNextOpponentGroupTier(playerName, team, heightData).then(result=>{
-    if(result && result.groupTier){
-      relevantTier = result.groupTier;
-      expandTiersBtn.style.display = '';
-      expandTiersBtn.textContent = '\u25be Show More Tiers';
-      renderTierTables();
-    }
   });
 
   return heightData;
