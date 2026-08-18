@@ -98,38 +98,68 @@
      desktop or Full on a phone. Color scheme is untouched everywhere below; this only ever
      changes spacing, sizing, and what's visible by default vs behind a tap. */
 
-  /* -- Compact: touch targets, spacing, typography -- */
-  body.compact-mode{font-size:15px;}
-  body.compact-mode header{padding:12px 14px;gap:10px;}
-  body.compact-mode header h1{font-size:17px;}
-  body.compact-mode .layout{flex-direction:column;min-height:0;}
+  /* -- Compact: touch targets, spacing, typography -- genuinely phone-scale, not just "desktop
+     but slightly bigger". Designed to be usable without any pinch-zooming at all. -- */
+  body.compact-mode{font-size:18px;}
+  body.compact-mode header{padding:14px 16px;gap:8px;}
+  body.compact-mode header h1{font-size:20px;}
+  body.compact-mode header .tag{font-size:13px;}
+  body.compact-mode .layout{flex-direction:column;min-height:0;padding-bottom:88px;} /* room for the fixed bottom tab bar */
   body.compact-mode nav{position:static;width:100%;flex:0 0 auto;max-height:none;border-right:none;border-bottom:1px solid var(--line);padding:6px 0;}
-  body.compact-mode nav .group-label{padding:10px 14px 4px;}
-  body.compact-mode nav button.navbtn{padding:11px 14px;font-size:14px;}
-  body.compact-mode nav button.navgroup-btn{padding:14px;font-size:13.5px;min-height:44px;}
-  body.compact-mode main{padding:14px 12px;}
-  body.compact-mode .toplinks{gap:4px;}
-  body.compact-mode .toplinks button{padding:10px 12px;font-size:13.5px;min-height:40px;}
-  body.compact-mode #accountControls{flex-wrap:wrap;}
-  body.compact-mode .pagehead h2{font-size:18px;}
-  body.compact-mode .section-title{font-size:12.5px;margin:18px 0 8px;}
-  body.compact-mode th,body.compact-mode td{padding:10px 9px;font-size:13.5px;}
-  body.compact-mode thead th{font-size:11px;}
-  body.compact-mode button{min-height:40px;}
-  body.compact-mode input[type=checkbox],body.compact-mode input[type=radio]{width:20px;height:20px;}
-  body.compact-mode .addbtn{padding:11px 18px;font-size:14px;}
-  body.compact-mode .backbtn{padding:10px 16px;font-size:13.5px;min-height:40px;}
-  body.compact-mode .controls{gap:10px;}
-  body.compact-mode .controls select,body.compact-mode .controls input{padding:9px 10px;font-size:14px;min-height:40px;}
+  body.compact-mode nav .group-label{padding:12px 16px 6px;font-size:13px;}
+  body.compact-mode nav button.navbtn{padding:16px;font-size:17px;min-height:56px;}
+  body.compact-mode nav button.navgroup-btn{padding:18px 16px;font-size:17px;min-height:60px;}
+  body.compact-mode main{padding:16px 14px;}
+  body.compact-mode .pagehead h2{font-size:22px;}
+  body.compact-mode .pagehead .meta{font-size:15px;}
+  body.compact-mode .section-title{font-size:14.5px;margin:20px 0 10px;}
+  body.compact-mode th,body.compact-mode td{padding:14px 12px;font-size:16px;}
+  body.compact-mode thead th{font-size:12.5px;}
+  body.compact-mode button{min-height:52px;font-size:17px;}
+  body.compact-mode a.player-link{font-size:inherit;}
+  body.compact-mode input[type=checkbox],body.compact-mode input[type=radio]{width:26px;height:26px;}
+  body.compact-mode .addbtn{padding:15px 20px;font-size:17px;min-height:52px;width:100%;display:block;}
+  body.compact-mode .backbtn{padding:14px 18px;font-size:16px;min-height:52px;}
+  body.compact-mode .controls{gap:12px;}
+  body.compact-mode .controls select,body.compact-mode .controls input{padding:13px 12px;font-size:17px;min-height:52px;}
+  body.compact-mode label{font-size:16px;}
+  body.compact-mode .footnote{font-size:13.5px;}
 
   /* -- Compact: hide secondary content by default, expandable per-page via .compact-expand-btn -- */
   body.compact-mode .compact-hide{display:none !important;}
   body.full-mode .compact-only{display:none !important;}
   .compact-expand-btn{display:none;}
-  body.compact-mode .compact-expand-row .compact-expand-btn{display:inline-flex;align-items:center;justify-content:center;min-width:40px;min-height:40px;background:none;border:1px solid var(--line);border-radius:6px;font-size:16px;cursor:pointer;color:var(--navy2);}
+  body.compact-mode .compact-expand-row .compact-expand-btn{display:inline-flex;align-items:center;justify-content:center;min-width:48px;min-height:48px;background:none;border:1px solid var(--line);border-radius:6px;font-size:18px;cursor:pointer;color:var(--navy2);}
 
   /* -- Layout mode toggle button itself, styled like the other header account controls -- */
   #layoutModeBtn{white-space:nowrap;}
+
+  /* ============ Compact-mode top header: logo + single Menu button, everything else moves
+     into the slide-down panel or the bottom tab bar. The old row of Home/Stats/Live Lines/etc
+     text buttons and the old row of Settings/Mode/Login buttons both disappear entirely in
+     Compact -- replaced by #compactMenuBtn (top) and #bottomTabBar (bottom). ============ */
+  body.compact-mode .toplinks > button{display:none;} /* the 5 page-nav buttons (Home/Stats/Live Lines/Bet Tracker/App Tracker) -- replaced by the bottom tab bar */
+  body.compact-mode #accountControls > *{display:none;} /* Mode/Settings/Login/Admin (buttons + the Mode dropdown wrapper div) -- replaced by the hamburger panel */
+  body.compact-mode #accountControls{border-left:none;padding-left:0;margin-left:auto;}
+  body.full-mode #compactMenuBtn, body.full-mode #compactMenuPanel, body.full-mode #bottomTabBar{display:none !important;}
+
+  #compactMenuBtn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.3);color:#fff;padding:12px 18px;border-radius:8px;font-size:22px;cursor:pointer;min-height:52px;min-width:60px;}
+  #compactMenuPanel{display:none;position:fixed;top:0;right:0;bottom:0;width:82%;max-width:340px;background:#fff;z-index:2000;box-shadow:-4px 0 24px rgba(0,0,0,.3);overflow-y:auto;padding:18px;}
+  #compactMenuPanel.open{display:block;}
+  #compactMenuOverlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1999;}
+  #compactMenuOverlay.open{display:block;}
+  #compactMenuPanel .panel-close{width:100%;text-align:right;background:none;border:none;font-size:28px;color:var(--sub);cursor:pointer;padding:6px;margin-bottom:10px;}
+  #compactMenuPanel button.panel-item{display:block;width:100%;text-align:left;background:#f7f8fa;border:1px solid var(--line);border-radius:10px;padding:16px 18px;font-size:17px;font-weight:700;color:var(--ink);cursor:pointer;margin-bottom:10px;min-height:56px;}
+  #compactMenuPanel button.panel-item:active{background:#eef2fb;}
+
+  /* ============ Bottom tab bar: primary navigation, fixed, always visible in Compact mode.
+     The single most-used navigation pattern on a phone, and the reason for the layout padding
+     added to .compact-mode .layout above (so the last bit of real content is never hidden
+     behind this). ============ */
+  #bottomTabBar{position:fixed;left:0;right:0;bottom:0;z-index:900;display:flex;background:#000000;border-top:1px solid rgba(255,255,255,.15);padding:6px 2px calc(6px + env(safe-area-inset-bottom, 0px));}
+  #bottomTabBar button{flex:1 1 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:none;border:none;color:#b9c4d9;padding:8px 2px;font-size:11px;font-family:var(--sans);cursor:pointer;min-height:56px;border-radius:8px;}
+  #bottomTabBar button .tab-icon{font-size:22px;line-height:1;}
+  #bottomTabBar button.active{color:#ffffff;background:rgba(255,255,255,.1);}
   /* Compact-mode-only "Show All Details" toggle for wide tables that use compact-hide -- reveals
      the hidden columns back to table-cell display (not just block, since these are td/th). */
   .compact-show-all .compact-hide{display:table-cell !important;}
@@ -2327,6 +2357,7 @@ function renderAccountControls(){
   container.innerHTML = '';
 
   const modeBtnWrap = document.createElement('div');
+  modeBtnWrap.id = 'modeBtnWrap';
   modeBtnWrap.style.cssText = 'position:relative;display:inline-block;';
   const layoutBtn = document.createElement('button');
   layoutBtn.id = 'layoutModeBtn';
@@ -2414,6 +2445,55 @@ function renderAccountControls(){
   container.appendChild(settingsBtn);
   if(adminBtn) container.appendChild(adminBtn);
   container.appendChild(authBtn);
+
+  // Compact-mode-only hamburger menu -- CSS hides every direct child of #accountControls in
+  // Compact mode (the desktop-style button row above), so this needs to live as a SIBLING of
+  // #accountControls rather than inside it, or the same hide-everything rule would catch it too.
+  buildCompactMenu(container, {layoutBtn: () => { setLayoutMode(getLayoutMode()==='compact'?'full':'compact'); if(lastRender) lastRender(); }, settingsBtn, adminBtn, authBtn});
+}
+// Builds (once) the hamburger button + slide-out panel + overlay, appended as a sibling of
+// #accountControls rather than a child of it (see the comment at the call site for why).
+// Rebuilds the panel's contents fresh each call so it reflects current login/admin state.
+function buildCompactMenu(afterEl, actions){
+  let menuBtn = document.getElementById('compactMenuBtn');
+  let panel = document.getElementById('compactMenuPanel');
+  let overlay = document.getElementById('compactMenuOverlay');
+  if(!menuBtn){
+    menuBtn = document.createElement('button');
+    menuBtn.id = 'compactMenuBtn';
+    menuBtn.textContent = '\u2630';
+    afterEl.insertAdjacentElement('afterend', menuBtn);
+  }
+  if(!overlay){
+    overlay = document.createElement('div');
+    overlay.id = 'compactMenuOverlay';
+    document.body.appendChild(overlay);
+  }
+  if(!panel){
+    panel = document.createElement('div');
+    panel.id = 'compactMenuPanel';
+    document.body.appendChild(panel);
+  }
+  function closePanel(){ panel.classList.remove('open'); overlay.classList.remove('open'); }
+  function openPanel(){ panel.classList.add('open'); overlay.classList.add('open'); }
+  menuBtn.onclick = openPanel;
+  overlay.onclick = closePanel;
+
+  panel.innerHTML = '';
+  const closeBtn = document.createElement('button'); closeBtn.className = 'panel-close'; closeBtn.textContent = '\u2715';
+  closeBtn.addEventListener('click', closePanel);
+  panel.appendChild(closeBtn);
+
+  function panelItem(text, onClick){
+    const b = document.createElement('button'); b.className = 'panel-item'; b.textContent = text;
+    b.addEventListener('click', ()=>{ closePanel(); onClick(); });
+    panel.appendChild(b);
+    return b;
+  }
+  panelItem(getLayoutMode()==='compact' ? '\ud83d\udcf1 Mode: Compact (tap for Full)' : '\ud83d\udda5\ufe0f Mode: Full (tap for Compact)', actions.layoutBtn);
+  panelItem('\u2699\ufe0f Settings', ()=>actions.settingsBtn.click());
+  if(actions.adminBtn) panelItem('\ud83d\udee1\ufe0f Admin', ()=>actions.adminBtn.click());
+  panelItem(actions.authBtn.textContent, ()=>actions.authBtn.click());
 }
 
 function buildTopLinks(){
@@ -2423,7 +2503,14 @@ function buildTopLinks(){
   const oddsBtn = document.createElement('button'); oddsBtn.textContent='Live Lines';
   const trackerBtn = document.createElement('button'); trackerBtn.textContent='Bet Tracker';
   const appTrackerBtn = document.createElement('button'); appTrackerBtn.textContent='App Tracker';
-  function clearActive(){ [homeBtn,explorerBtn,oddsBtn,trackerBtn,appTrackerBtn].forEach(b=>b.classList.remove('active')); }
+  const allNavBtns = [homeBtn,explorerBtn,oddsBtn,trackerBtn,appTrackerBtn];
+  function clearActive(){ allNavBtns.forEach(b=>b.classList.remove('active')); [...document.querySelectorAll('#bottomTabBar button')].forEach(b=>b.classList.remove('active')); }
+  function setActiveBoth(topBtn, tabId){
+    clearActive();
+    topBtn.classList.add('active');
+    const tabBtn = document.getElementById(tabId);
+    if(tabBtn) tabBtn.classList.add('active');
+  }
   // Shared guard for every nav destination -- the initial page load already gates behind login
   // (see initApp()), but that alone doesn't stop someone from clicking a nav button directly
   // once the shell itself has loaded. Every nav click re-checks rather than trusting that the
@@ -2434,33 +2521,67 @@ function buildTopLinks(){
       fn();
     };
   }
-  homeBtn.addEventListener('click', withLogin(()=>{
-    clearActive(); homeBtn.classList.add('active');
+  // Named (not inline) specifically so both the top bar (Full mode) and the bottom tab bar
+  // (Compact mode) can call the exact same navigation logic rather than maintaining it twice.
+  const goHome = withLogin(()=>{
+    setActiveBoth(homeBtn, 'tabHome');
     nav.innerHTML=''; nav.style.display='none';
     renderHomePage();
-  }));
-  explorerBtn.addEventListener('click', withLogin(()=>{
-    clearActive(); explorerBtn.classList.add('active');
-    nav.style.display=''; buildNav();
-  }));
-  oddsBtn.addEventListener('click', withLogin(()=>{
-    clearActive(); oddsBtn.classList.add('active');
+  });
+  const goExplorer = withLogin(()=>{
+    setActiveBoth(explorerBtn, 'tabExplorer');
+    nav.style.display='';
+    buildNav();
+  });
+  const goOdds = withLogin(()=>{
+    setActiveBoth(oddsBtn, 'tabOdds');
     nav.innerHTML=''; nav.style.display='none';
     renderOddsPage();
-  }));
-  trackerBtn.addEventListener('click', withLogin(()=>{
-    clearActive(); trackerBtn.classList.add('active');
+  });
+  const goTracker = withLogin(()=>{
+    setActiveBoth(trackerBtn, 'tabTracker');
     nav.innerHTML=''; nav.style.display='none';
     renderBetTrackerPage();
-  }));
-  appTrackerBtn.addEventListener('click', withLogin(()=>{
-    clearActive(); appTrackerBtn.classList.add('active');
+  });
+  const goAppTracker = withLogin(()=>{
+    setActiveBoth(appTrackerBtn, 'tabAppTracker');
     nav.innerHTML=''; nav.style.display='none';
     renderAppTrackerPage();
-  }));
+  });
+  homeBtn.addEventListener('click', goHome);
+  explorerBtn.addEventListener('click', goExplorer);
+  oddsBtn.addEventListener('click', goOdds);
+  trackerBtn.addEventListener('click', goTracker);
+  appTrackerBtn.addEventListener('click', goAppTracker);
   tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn);
   if(isAdminUser()) tl.appendChild(appTrackerBtn); // App Tracker is admin-only now -- no visible nav entry for anyone else
   renderAccountControls();
+  buildBottomTabBar(goHome, goExplorer, goOdds, goTracker, goAppTracker);
+}
+// Compact-mode-only fixed bottom tab bar -- the primary navigation pattern on a phone, replacing
+// the old top row of small text buttons entirely in Compact (see the CSS hiding .toplinks >
+// button in that mode). Rebuilt fresh each time buildTopLinks runs, same as the top bar is.
+function buildBottomTabBar(goHome, goExplorer, goOdds, goTracker, goAppTracker){
+  let bar = document.getElementById('bottomTabBar');
+  if(bar) bar.remove();
+  bar = document.createElement('div');
+  bar.id = 'bottomTabBar';
+  const TABS = [
+    {id:'tabHome', icon:'\ud83c\udfe0', label:'Top Bets', fn:goHome},
+    {id:'tabExplorer', icon:'\ud83d\udcca', label:'Stats', fn:goExplorer},
+    {id:'tabOdds', icon:'\ud83d\udcc8', label:'Live Lines', fn:goOdds},
+    {id:'tabTracker', icon:'\ud83d\udcdd', label:'Bet Tracker', fn:goTracker},
+  ];
+  if(isAdminUser()) TABS.push({id:'tabAppTracker', icon:'\u2699\ufe0f', label:'App Tracker', fn:goAppTracker});
+  TABS.forEach((t,i)=>{
+    const btn = document.createElement('button');
+    btn.id = t.id;
+    if(i===0) btn.classList.add('active');
+    btn.innerHTML = `<span class="tab-icon">${t.icon}</span><span>${t.label}</span>`;
+    btn.addEventListener('click', t.fn);
+    bar.appendChild(btn);
+  });
+  document.body.appendChild(bar);
 }
 // ================= Click tracking (admin-visible usage analytics) =================
 // Batches clicks in memory and flushes periodically rather than one network request per click
