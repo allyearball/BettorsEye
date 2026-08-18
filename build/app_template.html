@@ -1900,7 +1900,7 @@ async function fetchHerNextGameLines(playerName, team){
       const o = dkPlayerOutcomes(m, playerName, 'Over') || dkPlayerOutcomes(m, playerName, 'Under');
       return (o && o.point!==undefined) ? o.point : null;
     }
-    const lines = { pts: lineFor('player_points'), reb: lineFor('player_rebounds'), ast: lineFor('player_assists'), pra: lineFor('player_points_rebounds_assists') };
+    const lines = { pts: lineFor('player_points'), reb: lineFor('player_rebounds'), ast: lineFor('player_assists'), tpm: lineFor('player_threes'), pra: lineFor('player_points_rebounds_assists') };
     const result = { eventId: relevant.id, opponent: oppShort, date: dateStr, lines };
     if(Object.values(lines).some(v=>v!==null)){
       setCachedBettingLine(playerName, team, result);
@@ -3030,7 +3030,7 @@ function computeHeightTierData(playerName, team){
       totalMin += r.min; weightedSum += bio.heightIn*r.min;
     });
     if(totalMin<=0) return null;
-    return { date: g.date, gameId, opp: g.opp, oppHeight: weightedSum/totalMin, min: g.min||0, pts: g.pts||0, reb: g.reb||0, ast: g.ast||0, pra: (g.pts||0)+(g.reb||0)+(g.ast||0) };
+    return { date: g.date, gameId, opp: g.opp, oppHeight: weightedSum/totalMin, min: g.min||0, pts: g.pts||0, reb: g.reb||0, ast: g.ast||0, tpm: g.tpm||0, pra: (g.pts||0)+(g.reb||0)+(g.ast||0) };
   }).filter(Boolean);
 
   if(gamesWithOppHeight.length < 6) return null; // too few games all season to tier into three groups meaningfully at all
@@ -3053,7 +3053,7 @@ function heightTierStatsForWindow(heightData, windowSize){
   const games = windowSize ? heightData.allGames.slice(-windowSize) : heightData.allGames;
   const byTier = {shortest:[], middle:[], tallest:[]};
   games.forEach(g=>byTier[g.tier].push(g));
-  const STAT_KEYS = ['pts','reb','ast','pra'];
+  const STAT_KEYS = ['pts','reb','ast','tpm','pra'];
   const result = {};
   ['shortest','middle','tallest'].forEach(tierName=>{
     const tGames = byTier[tierName];
@@ -3182,9 +3182,9 @@ function buildHeightTierSection(container, playerName, team){
   function renderTierTables(){
     tableHolder.innerHTML = '';
     const stats = heightTierStatsForWindow(heightData, activeSize);
-    const STAT_LABELS = {pts:'Points', reb:'Rebounds', ast:'Assists', pra:'PRA'};
+    const STAT_LABELS = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'3-Pointers Made', pra:'PRA'};
     const grid = document.createElement('div'); grid.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
-    ['pts','reb','ast','pra'].forEach(statKey=>{
+    ['pts','reb','ast','tpm','pra'].forEach(statKey=>{
       const box = document.createElement('div'); box.style.cssText = 'flex:1;min-width:260px;';
       const title = document.createElement('div'); title.style.cssText = 'font-weight:700;font-size:12.5px;margin-bottom:4px;';
       let lineText;
@@ -3294,7 +3294,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     const wrap = document.createElement('div'); wrap.className='table-wrap';
     const table = document.createElement('table'); table.style.width='100%';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th></th><th class="left">Date</th><th class="left">Opponent</th><th>Opp Height</th><th>MIN</th><th>PTS</th><th>REB</th><th>AST</th><th>PRA</th></tr>';
+    thead.innerHTML = '<tr><th></th><th class="left">Date</th><th class="left">Opponent</th><th>Opp Height</th><th>MIN</th><th>PTS</th><th>REB</th><th>AST</th><th>3PM</th><th>PRA</th></tr>';
     const tbody = document.createElement('tbody');
     const checkboxes = [];
 
@@ -3313,8 +3313,9 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
       const tdPts = document.createElement('td'); tdPts.style.textAlign='center'; tdPts.textContent = g.pts;
       const tdReb = document.createElement('td'); tdReb.style.textAlign='center'; tdReb.textContent = g.reb;
       const tdAst = document.createElement('td'); tdAst.style.textAlign='center'; tdAst.textContent = g.ast;
+      const tdTpm = document.createElement('td'); tdTpm.style.textAlign='center'; tdTpm.textContent = g.tpm;
       const tdPra = document.createElement('td'); tdPra.style.textAlign='center'; tdPra.textContent = g.pra;
-      [tdCb, tdDate, tdOpp, tdOppHeight, tdMin, tdPts, tdReb, tdAst, tdPra].forEach(td=>tr.appendChild(td));
+      [tdCb, tdDate, tdOpp, tdOppHeight, tdMin, tdPts, tdReb, tdAst, tdTpm, tdPra].forEach(td=>tr.appendChild(td));
       if(g.gameId){ tr.addEventListener('click', ()=>goToGameBox(g.gameId)); }
       tbody.appendChild(tr);
     });
@@ -3330,7 +3331,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
       {label:'MEDIAN', fn: median},
       {label:'MODE', fn: mode},
     ];
-    const STAT_KEYS = ['min','pts','reb','ast','pra'];
+    const STAT_KEYS = ['min','pts','reb','ast','tpm','pra'];
     const footerRowEls = {};
     footerLabels.forEach(fl=>{
       const tr = document.createElement('tr'); tr.style.cssText='background:#eef2fb;font-weight:700;';
@@ -4297,8 +4298,6 @@ function renderOddsPage(){
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
   main.appendChild(statusDiv);
-  const topBetsDiv = document.createElement('div');
-  main.appendChild(topBetsDiv);
   const gameBoxesDiv = document.createElement('div');
   main.appendChild(gameBoxesDiv);
   const resultsDiv = document.createElement('div');
@@ -4380,7 +4379,6 @@ function renderOddsPage(){
   function renderResultsArea(){
     resultsDiv.innerHTML = '';
     if(viewingSingleGame){
-      topBetsDiv.style.display = 'none';
       gameBoxesDiv.style.display = 'none';
       const backBtn = document.createElement('button'); backBtn.className='backbtn'; backBtn.textContent='\u2190 Back to all games';
       backBtn.addEventListener('click', ()=>{ viewingSingleGame = null; renderResultsArea(); });
@@ -4390,7 +4388,6 @@ function renderOddsPage(){
       renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null, false, undefined, selectedBook);
     } else {
       renderGameWindowStickyBar(currentWindow, (val)=>{ currentWindow = val; renderResultsArea(); renderGameBoxes(); }, 'Period:');
-      topBetsDiv.style.display = '';
       gameBoxesDiv.style.display = '';
       cachedFetch.forEach(({ev, detail}) => {
         if(!gameUiState[ev.id]) gameUiState[ev.id] = {collapsed: undefined, sections: {}};
@@ -4442,7 +4439,6 @@ function renderOddsPage(){
         cachedFetch.push({ev, detail});
         renderResultsArea();
       }
-      renderTopBets(topBetsDiv, cachedFetch, undefined, selectedBook);
       renderGameBoxes();
       statusDiv.textContent = `Done. Showing DraftKings lines for ${events.length} game(s). Click a game's title to drill into just that matchup, or switch the hit-rate window above anytime \u2014 neither re-fetches from the API.`;
     }catch(e){
