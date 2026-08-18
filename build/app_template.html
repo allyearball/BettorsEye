@@ -105,7 +105,7 @@
   body.compact-mode header{padding:14px 16px;gap:8px;}
   body.compact-mode header h1{font-size:20px;}
   body.compact-mode header .tag{font-size:13px;}
-  body.compact-mode .layout{flex-direction:column;min-height:0;padding-bottom:108px;} /* room for the fixed bottom tab bar */
+  body.compact-mode .layout{flex-direction:column;min-height:0;padding-bottom:88px;} /* room for the fixed bottom tab bar */
   body.compact-mode nav{position:static;width:100%;flex:0 0 auto;max-height:none;border-right:none;border-bottom:1px solid var(--line);padding:6px 0;}
   body.compact-mode nav .group-label{padding:12px 16px 6px;font-size:13px;}
   body.compact-mode nav button.navbtn{padding:16px;font-size:17px;min-height:56px;}
@@ -157,10 +157,10 @@
      The single most-used navigation pattern on a phone, and the reason for the layout padding
      added to .compact-mode .layout above (so the last bit of real content is never hidden
      behind this). ============ */
-  #bottomTabBar{position:fixed;left:0;right:0;bottom:0;z-index:900;display:flex;background:#000000;border-top:1px solid rgba(255,255,255,.15);padding:8px 2px calc(8px + env(safe-area-inset-bottom, 0px));}
-  #bottomTabBar button{flex:1 1 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;background:none;border:none;color:#b9c4d9;padding:8px 2px;font-size:14px;font-weight:600;font-family:var(--sans);cursor:pointer;min-height:74px;border-radius:10px;}
-  #bottomTabBar button .tab-icon{font-size:30px;line-height:1;}
-  #bottomTabBar button.active{color:#ffffff;background:rgba(255,255,255,.12);}
+  #bottomTabBar{position:fixed;left:0;right:0;bottom:0;z-index:900;display:flex;background:#000000;border-top:1px solid rgba(255,255,255,.15);padding:6px 2px calc(6px + env(safe-area-inset-bottom, 0px));}
+  #bottomTabBar button{flex:1 1 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:none;border:none;color:#b9c4d9;padding:8px 2px;font-size:11px;font-family:var(--sans);cursor:pointer;min-height:56px;border-radius:8px;}
+  #bottomTabBar button .tab-icon{font-size:22px;line-height:1;}
+  #bottomTabBar button.active{color:#ffffff;background:rgba(255,255,255,.1);}
   /* Compact-mode-only "Show All Details" toggle for wide tables that use compact-hide -- reveals
      the hidden columns back to table-cell display (not just block, since these are td/th). */
   body.compact-mode .compact-show-all .compact-hide{display:table-cell !important;}
@@ -739,7 +739,7 @@ function computeLeagueDefenseRow(team, teamGames, opponents, mode){
 // page content instead, right where the rest of the controls are. removeGameWindowStickyBar()
 // is kept as a safe no-op (rather than ripped out of every call site) in case anything still
 // calls it out of habit -- there's nothing fixed/lingering left for it to actually clean up.
-const GAME_WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
+const GAME_WINDOW_OPTIONS = [ {label:'Full', value:'all'}, {label:'L15', value:15}, {label:'L10', value:10}, {label:'L5', value:5} ];
 function removeGameWindowStickyBar(){
   const existing = document.getElementById('gameWindowStickyBar');
   if(existing) existing.remove();
@@ -747,25 +747,36 @@ function removeGameWindowStickyBar(){
 }
 function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
   const bar = document.createElement('div');
-  bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;'
-    + 'padding:12px 16px;display:flex;flex-direction:row;align-items:center;gap:18px;flex-wrap:wrap;'
-    + 'margin-bottom:16px;';
-  const label = document.createElement('div');
-  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:15px;flex-shrink:0;white-space:nowrap;';
-  label.textContent = labelText || 'Period:';
-  bar.appendChild(label);
+  bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:16px;';
+  if(labelText){
+    const label = document.createElement('div');
+    label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:13px;margin-bottom:8px;';
+    label.textContent = labelText;
+    bar.appendChild(label);
+  }
+  // Always one row of 4 equal-width buttons, never wrapping regardless of screen size --
+  // flex:1 on each with min-width:0 (so long labels can't force overflow) rather than the old
+  // radio+label pairs, which could wrap awkwardly on narrow screens.
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;flex-direction:row;gap:6px;width:100%;';
+  const buttons = [];
   GAME_WINDOW_OPTIONS.forEach(opt=>{
-    const wrap = document.createElement('label');
-    wrap.style.cssText = 'display:inline-flex;flex-direction:row;align-items:center;gap:8px;font-size:14px;cursor:pointer;flex-shrink:0;white-space:nowrap;padding:6px 2px;';
-    const rb = document.createElement('input');
-    rb.type = 'radio'; rb.name = 'gameWindowStickyRadio'; rb.value = String(opt.value);
-    rb.checked = (opt.value === currentWindowMode);
-    rb.style.cssText = 'cursor:pointer;width:20px;height:20px;flex-shrink:0;';
-    rb.addEventListener('change', ()=>{ if(rb.checked) onSelect(opt.value); });
-    wrap.appendChild(rb);
-    wrap.appendChild(document.createTextNode(opt.label));
-    bar.appendChild(wrap);
+    const btn = document.createElement('button');
+    btn.textContent = opt.label;
+    function paint(){
+      const isActive = String(opt.value) === String(currentWindowMode);
+      btn.style.cssText = `flex:1 1 0;min-width:0;padding:10px 4px;border-radius:6px;border:1px solid ${isActive?'var(--navy2)':'var(--line)'};background:${isActive?'var(--navy2)':'var(--panel)'};color:${isActive?'#fff':'var(--ink)'};font-size:13px;font-weight:700;cursor:pointer;font-family:var(--sans);white-space:nowrap;`;
+    }
+    paint();
+    btn.addEventListener('click', ()=>{
+      currentWindowMode = opt.value;
+      buttons.forEach(b=>b.paint());
+      onSelect(opt.value);
+    });
+    buttons.push({paint});
+    btnRow.appendChild(btn);
   });
+  bar.appendChild(btnRow);
   return bar;
 }
 
@@ -814,7 +825,7 @@ function renderTeamHeightPage(){
 
 function renderLeagueStatsPage(year, mode, windowMode){
   mode = mode || 'totals';
-  windowMode = windowMode===undefined ? 10 : windowMode; // default matches the Team page's default
+  windowMode = windowMode===undefined ? 'all' : windowMode; // default matches the Team page's default
   const allYears = [...new Set(TEAM_NAMES.flatMap(t=>availableYears(t)))].sort();
   year = year || allYears[allYears.length-1];
   lastRender = () => renderLeagueStatsPage(year, mode, windowMode);
@@ -992,7 +1003,7 @@ function renderTeamPage(team, year, month, windowMode){
   const years = availableYears(team);
   year = year || years[years.length-1];
   month = month || 'full';
-  windowMode = windowMode===undefined ? 10 : windowMode; // default matches the player page's default
+  windowMode = windowMode===undefined ? 'all' : windowMode; // default matches the player page's default
   lastRender = () => renderTeamPage(team, year, month, windowMode);
 
   const gameIdsInRange = filterGameIdsByYearMonth(team, year, month); // most-recent-first
@@ -1998,7 +2009,7 @@ async function fetchHerNextGameLines(playerName, team){
 }
 
 function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
-  windowMode = windowMode===undefined ? 10 : windowMode; // default matches prior behavior
+  windowMode = windowMode===undefined ? 'all' : windowMode; // default matches prior behavior
   month = month || 'full';
   const key = `${playerName}|${team}`;
   const fullLogObj = DATA.fullPlayerLogs[key];
@@ -2160,7 +2171,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   const heightTierWrap = document.createElement('div');
   heightTierWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
   prodTabContent.appendChild(heightTierWrap);
-  const heightTierData = buildHeightTierSection(heightTierWrap, playerName, team);
+  const heightTierData = buildHeightTierSection(heightTierWrap, playerName, team, windowMode);
 
   // Next opponent's players at her position -- async, since it needs the live schedule/odds
   // feed to know who's actually next.
@@ -3488,7 +3499,7 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
   return result;
 }
 
-function buildHeightTierSection(container, playerName, team){
+function buildHeightTierSection(container, playerName, team, pageWindowMode){
   const heightData = computeHeightTierData(playerName, team);
   if(!heightData){
     const note = document.createElement('div'); note.style.cssText = 'color:var(--sub);font-size:12.5px;';
@@ -3500,10 +3511,11 @@ function buildHeightTierSection(container, playerName, team){
   disclaimer.textContent = `Proxy, not real defensive matchup data \u2014 this app has no play-by-play tracking of who actually guarded whom. "Shortest/Middle/Tallest" compares her production against opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} groups (minutes-weighted average height of whichever of them played), grouped into thirds fixed from her full season so the tiers mean the same thing across every window below. Cutoffs: Shortest < ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest > ${heightData.p67.toFixed(1)}in.`;
   container.appendChild(disclaimer);
 
-  const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;';
-  const windowOptions = [{label:'L5', size:5}, {label:'L10', size:10}, {label:'L15', size:15}, {label:'Season', size:null}];
-  let activeSize = 10;
-  let currentLines = null; // populated async below; re-renders once available, whatever window is active at that moment
+  // Driven entirely by the page-level Period selector at the top of the page now, not its own
+  // separate toggle -- 'all' maps to null (heightTierStatsForWindow's convention for "full
+  // season"), any number passes through unchanged.
+  const activeSize = (pageWindowMode==='all' || pageWindowMode===undefined) ? null : pageWindowMode;
+  let currentLines = null; // populated async below; re-renders once available
   const tableHolder = document.createElement('div');
 
   function renderTierTables(){
@@ -3545,26 +3557,11 @@ function buildHeightTierSection(container, playerName, team){
     tableHolder.appendChild(grid);
   }
 
-  windowOptions.forEach(opt=>{
-    const btn = document.createElement('button');
-    btn.textContent = opt.label;
-    btn.style.cssText = 'padding:5px 12px;border-radius:5px;border:1px solid var(--line);background:'+(opt.size===activeSize?'var(--navy2)':'var(--panel)')+';color:'+(opt.size===activeSize?'#fff':'var(--ink)')+';font-size:12px;cursor:pointer;font-family:var(--sans);';
-    btn.addEventListener('click', ()=>{
-      activeSize = opt.size;
-      [...toggleRow.children].forEach(b=>{ if(b.tagName==='BUTTON'){ b.style.background='var(--panel)'; b.style.color='var(--ink)'; } });
-      btn.style.background = 'var(--navy2)'; btn.style.color = '#fff';
-      renderTierTables();
-    });
-    toggleRow.appendChild(btn);
-  });
-
-  container.appendChild(toggleRow);
   container.appendChild(tableHolder);
   renderTierTables();
 
-  // Async: fetch her next-game lines and re-render once available (preserving whatever
-  // L5/L10/L15/Season window is active at that moment), rather than blocking the initial render
-  // on a network call.
+  // Async: fetch her next-game lines and re-render once available, rather than blocking the
+  // initial render on a network call.
   fetchHerNextGameLines(playerName, team).then(result=>{
     currentLines = result;
     renderTierTables();
@@ -3599,8 +3596,9 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   const head = document.createElement('div'); head.className='pagehead';
   main.appendChild(head);
 
-  const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'display:flex;gap:8px;margin:10px 0 14px;';
-  const windowOptions = [{label:'L5', size:5}, {label:'L10', size:10}, {label:'L15', size:15}, {label:'Season', size:null}];
+  const windowRow = document.createElement('div'); windowRow.style.cssText = 'display:flex;gap:4px;margin:10px 0 6px;width:100%;';
+  const tierRow = document.createElement('div'); tierRow.style.cssText = 'display:flex;gap:4px;margin:0 0 14px;width:100%;';
+  const windowOptions = [{label:'L5', size:5}, {label:'L10', size:10}, {label:'L15', size:15}, {label:'Full', size:null}];
   const tierOptions = [{label:'Shortest', key:'shortest'}, {label:'Middle', key:'middle'}, {label:'Tallest', key:'tallest'}];
 
   const tableHolder = document.createElement('div');
@@ -3689,26 +3687,26 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     const btn = document.createElement('button');
     btn.textContent = opt.label;
     const isActive = ()=> opt.size===activeSize;
-    btn.style.cssText = 'padding:5px 12px;border-radius:5px;border:1px solid var(--line);font-size:12px;cursor:pointer;font-family:var(--sans);';
+    btn.style.cssText = 'flex:1 1 0;min-width:0;padding:8px 2px;border-radius:5px;border:1px solid var(--line);font-size:12px;cursor:pointer;font-family:var(--sans);white-space:nowrap;';
     function paint(){ btn.style.background = isActive()?'var(--navy2)':'var(--panel)'; btn.style.color = isActive()?'#fff':'var(--ink)'; }
     paint();
-    btn.addEventListener('click', ()=>{ activeSize = opt.size; [...toggleRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
+    btn.addEventListener('click', ()=>{ activeSize = opt.size; [...windowRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
     btn._paint = paint;
-    toggleRow.appendChild(btn);
+    windowRow.appendChild(btn);
   });
-  const sep = document.createElement('span'); sep.style.cssText='border-left:1px solid var(--line);margin:0 4px;'; toggleRow.appendChild(sep);
   tierOptions.forEach(opt=>{
     const btn = document.createElement('button');
     btn.textContent = opt.label;
     const isActive = ()=> opt.key===activeTier;
-    btn.style.cssText = 'padding:5px 12px;border-radius:5px;border:1px solid var(--line);font-size:12px;cursor:pointer;font-family:var(--sans);';
+    btn.style.cssText = 'flex:1 1 0;min-width:0;padding:8px 2px;border-radius:5px;border:1px solid var(--line);font-size:12px;cursor:pointer;font-family:var(--sans);white-space:nowrap;';
     function paint(){ btn.style.background = isActive()?'var(--navy2)':'var(--panel)'; btn.style.color = isActive()?'#fff':'var(--ink)'; }
     paint();
-    btn.addEventListener('click', ()=>{ activeTier = opt.key; [...toggleRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
+    btn.addEventListener('click', ()=>{ activeTier = opt.key; [...tierRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
     btn._paint = paint;
-    toggleRow.appendChild(btn);
+    tierRow.appendChild(btn);
   });
-  main.insertBefore(toggleRow, tableHolder);
+  main.insertBefore(tierRow, tableHolder);
+  main.insertBefore(windowRow, tierRow);
 
   renderTable();
 }
@@ -4356,6 +4354,20 @@ function getLayoutMode(){
 function setLayoutMode(mode){
   localStorage.setItem(LAYOUT_MODE_KEY, mode);
   document.body.className = mode === 'compact' ? 'compact-mode' : 'full-mode';
+  // Belt-and-suspenders on top of the CSS class-based hiding above -- directly enforces
+  // visibility of the Compact-only chrome (bottom tab bar, hamburger button/panel) so mode
+  // switching is correct even if some CSS specificity edge case is ever introduced later.
+  const isCompact = mode === 'compact';
+  const bar = document.getElementById('bottomTabBar');
+  if(bar) bar.style.display = isCompact ? '' : 'none';
+  const menuBtn = document.getElementById('compactMenuBtn');
+  if(menuBtn) menuBtn.style.display = isCompact ? '' : 'none';
+  if(!isCompact){
+    const panel = document.getElementById('compactMenuPanel');
+    const overlay = document.getElementById('compactMenuOverlay');
+    if(panel) panel.classList.remove('open');
+    if(overlay) overlay.classList.remove('open');
+  }
 }
 function getAuthUsername(){ return localStorage.getItem(AUTH_USERNAME_LS_KEY); }
 function getAuthFirstName(){ return localStorage.getItem(AUTH_FIRSTNAME_LS_KEY); }
@@ -4603,7 +4615,7 @@ function renderOddsPage(){
     return row;
   }
 
-  let currentWindow = 10; // list-view window, default matches prior behavior
+  let currentWindow = 'all'; // list-view window, default: Full Season
   let selectedBook = 'draftkings'; // 'draftkings'|'fanduel'|'betmgm'|'williamhill_us'|'betrivers'|'fanatics'|'best'|'all'
   // No standalone period bar rendered here -- renderResultsArea() below builds one inside
   // resultsDiv every time it runs (which happens as soon as the first game's data loads, and
@@ -4637,7 +4649,7 @@ function renderOddsPage(){
 
   let cachedFetch = []; // [{ev, detail}] — so switching the window re-renders without hitting the API again
   let viewingSingleGame = null; // {ev, detail} when drilled into one game, else null
-  let singleGameWindow = 10;
+  let singleGameWindow = 'all';
   // Persists which game cards and which sections within them are expanded/collapsed, keyed by
   // event id (stable across a window change) and a fixed section key (NOT the display title,
   // since that includes the window-size label and would change every time the window changes).
@@ -4679,7 +4691,7 @@ function renderOddsPage(){
       card.addEventListener('mouseleave', ()=>{ card.style.boxShadow='none'; });
       card.addEventListener('click', ()=>{
         viewingSingleGame = {ev, detail};
-        singleGameWindow = 10;
+        singleGameWindow = 'all';
         renderResultsArea();
       });
 
@@ -4725,7 +4737,7 @@ function renderOddsPage(){
         if(!gameUiState[ev.id]) gameUiState[ev.id] = {collapsed: undefined, sections: {}};
         renderGameOddsBlock(resultsDiv, ev, detail, currentWindow, ()=>{
           viewingSingleGame = {ev, detail};
-          singleGameWindow = 10;
+          singleGameWindow = 'all';
           renderResultsArea();
         }, undefined, gameUiState[ev.id], selectedBook);
       });
