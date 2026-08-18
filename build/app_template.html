@@ -1983,6 +1983,47 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     main.appendChild(bioDiv);
   }
 
+  // Three tabs to cut down on scrolling: Production (teammate-out impact, height-tier analysis,
+  // next opponent), Gamelogs (box score + advanced metrics, plus the year/month/window controls
+  // that actually drive them), Vs. Opponent (matchup-specific gamelog + advanced metrics). Each
+  // existing section's own internal logic is untouched -- this only changes which container it
+  // gets appended to and which one is visible at a time.
+  const tabBar = document.createElement('div'); tabBar.className = 'compact-only'; tabBar.style.cssText = 'display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;';
+  const prodTabContent = document.createElement('div');
+  const gamelogTabContent = document.createElement('div');
+  const vsOppTabContent = document.createElement('div');
+  const TAB_DEFS = [
+    {label:'Production', content: prodTabContent},
+    {label:'Gamelogs', content: gamelogTabContent},
+    {label:'Vs. Opponent', content: vsOppTabContent},
+  ];
+  const tabButtons = TAB_DEFS.map(def=>{
+    const btn = document.createElement('button');
+    btn.textContent = def.label;
+    btn.style.cssText = 'padding:9px 18px;border-radius:6px;border:1px solid var(--line);font-size:13.5px;cursor:pointer;font-family:var(--sans);font-weight:700;';
+    btn.addEventListener('click', ()=>{
+      TAB_DEFS.forEach((d,i)=>{
+        d.content.style.display = d===def ? '' : 'none';
+        tabButtons[i].style.background = d===def ? 'var(--navy2)' : 'var(--panel)';
+        tabButtons[i].style.color = d===def ? '#fff' : 'var(--ink)';
+      });
+    });
+    tabBar.appendChild(btn);
+    return btn;
+  });
+  main.appendChild(tabBar);
+  TAB_DEFS.forEach(def=>main.appendChild(def.content));
+  // Tabs are Compact-mode-only -- in Full mode every section stays visible at once (the
+  // original long-scroll layout), the tab bar itself is hidden via the compact-only class above,
+  // and clicking tabs (which can't happen since the bar is hidden) would be moot anyway.
+  if(getLayoutMode()==='compact'){
+    gamelogTabContent.style.display = 'none';
+    vsOppTabContent.style.display = 'none';
+    tabButtons[0].style.background = 'var(--navy2)'; tabButtons[0].style.color = '#fff';
+    tabButtons[1].style.background = 'var(--panel)'; tabButtons[1].style.color = 'var(--ink)';
+    tabButtons[2].style.background = 'var(--panel)'; tabButtons[2].style.color = 'var(--ink)';
+  }
+
   // Teammate-out impact -- for every teammate currently listed as officially out, how this
   // player's own per-game production has historically differed in games that teammate missed
   // vs played. Only shows teammates actually out right now, since the point is "who's out for
@@ -1991,7 +2032,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   if(teammateImpact.length){
     const impactTitle = document.createElement('div'); impactTitle.className='section-title';
     impactTitle.textContent = 'Production When a Teammate Is Out';
-    main.appendChild(impactTitle);
+    prodTabContent.appendChild(impactTitle);
     const impactWrap = document.createElement('div');
     impactWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
     teammateImpact.forEach((imp, i)=>{
@@ -2024,27 +2065,27 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
       });
       impactWrap.appendChild(statsRow);
     });
-    main.appendChild(impactWrap);
+    prodTabContent.appendChild(impactWrap);
   }
 
   // Vs opposing position-group height -- proxy analysis, see buildHeightTierSection's own
   // comment for exactly what this does and doesn't measure.
   const heightTierTitle = document.createElement('div'); heightTierTitle.className='section-title';
   heightTierTitle.textContent = 'Production vs. Opposing Position Height';
-  main.appendChild(heightTierTitle);
+  prodTabContent.appendChild(heightTierTitle);
   const heightTierWrap = document.createElement('div');
   heightTierWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
-  main.appendChild(heightTierWrap);
+  prodTabContent.appendChild(heightTierWrap);
   const heightTierData = buildHeightTierSection(heightTierWrap, playerName, team);
 
   // Next opponent's players at her position -- async, since it needs the live schedule/odds
   // feed to know who's actually next.
   const nextOppTitle = document.createElement('div'); nextOppTitle.className='section-title';
   nextOppTitle.textContent = 'Next Opponent \u2014 Same Position';
-  main.appendChild(nextOppTitle);
+  prodTabContent.appendChild(nextOppTitle);
   const nextOppWrap = document.createElement('div');
   nextOppWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
-  main.appendChild(nextOppWrap);
+  prodTabContent.appendChild(nextOppWrap);
   renderNextOpponentPositionSection(nextOppWrap, playerName, team, heightTierData);
 
   // Year/Month filter — narrows the calendar range; the rolling-window buttons below then
@@ -2065,8 +2106,8 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const monthLabelText = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
   const t1 = document.createElement('div'); t1.className='section-title';
-  t1.textContent = `Full Box Score \u2014 ${year} ${monthLabelText}, ${windowLabelText} (${pl.log.length} Games, DNPs included)`;
-  main.appendChild(t1);
+  t1.textContent = `Gamelog - Normal, ${windowLabelText} (DNPs included)`;
+  gamelogTabContent.appendChild(t1);
 
   const logRows = pl.log.map(g=>({
     date: g.date, opp: g.opp, homeAway: g.homeAway, starter: g.starter, dnp: g.dnp,
@@ -2091,24 +2132,24 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     footerRows.push({label, values});
   });
 
-  makeTable(main, PLAYER_LOG_COLS, logRows, {defaultSort:'date', defaultDir:'desc', footerRows, hideLabel:'Hide games she didn\u2019t play (DNP)'});
+  makeTable(gamelogTabContent, PLAYER_LOG_COLS, logRows, {defaultSort:'date', defaultDir:'desc', footerRows, hideLabel:'Hide games she didn\u2019t play (DNP)'});
 
   const fn2 = document.createElement('div'); fn2.className='footnote';
   fn2.innerHTML = `Rows with <b>DNP</b> checked reflect games on the schedule she didn\u2019t play in \u2014 those games are excluded from the MIN/MAX/AVERAGE/MEDIAN/MODE rows at the bottom, which are based only on games actually played within the ${windowLabelText.toLowerCase()} window selected above. Shooting-percentage summary rows (FG%/3P%/FT%) are computed from each game\u2019s own percentage, not recalculated from total makes/attempts.`;
-  main.appendChild(fn2);
+  gamelogTabContent.appendChild(fn2);
 
-  const t5 = document.createElement('div'); t5.className='section-title'; t5.textContent='Advanced Metrics \u2014 Same Games, Forecasting View'; main.appendChild(t5);
+  const t5 = document.createElement('div'); t5.className='section-title'; t5.textContent=`Gamelog - Advanced, ${windowLabelText} (DNPs included)`; gamelogTabContent.appendChild(t5);
   const adv2Footnote = document.createElement('div'); adv2Footnote.className='footnote'; adv2Footnote.style.marginBottom='8px';
   adv2Footnote.textContent = 'Same games as the box score table above, but built for forecasting against a sportsbook line instead of describing what already happened. USG% is the standard Basketball-Reference formula. EMA (exponential moving average) weights recent games more heavily and is computed using every game up to and including that row, oldest to newest. StdDev/IQR use a trailing window of up to the last 10 games played (not the calendar window above) \u2014 a high value means the average is a less reliable predictor of any single game than it looks. DvP Index compares that game\u2019s opponent to the league-average defense against her position for that stat, using ONLY games that had already been played before that game\u2019s tip-off (not the final, full-season DvP, which would leak in results from games that hadn\u2019t happened yet) \u2014 above 1.05 is a plus matchup (favors the Over), below 0.95 is a tougher one. "Potential Assists" isn\u2019t included \u2014 it genuinely can\u2019t be computed from this app\u2019s data source (see the Team page\u2019s Advanced Metrics section for the longer explanation).';
-  main.appendChild(adv2Footnote);
+  gamelogTabContent.appendChild(adv2Footnote);
   const advLogRows = computePlayerAdvancedLog(pl, team);
-  makeTable(main, PLAYER_ADV_COLS, advLogRows, {defaultSort:'date', defaultDir:'desc', hideLabel:'Hide games she didn\u2019t play (DNP)'});
+  makeTable(gamelogTabContent, PLAYER_ADV_COLS, advLogRows, {defaultSort:'date', defaultDir:'desc', hideLabel:'Hide games she didn\u2019t play (DNP)'});
 
   // ---- Vs Opponent: full-season gamelog + advanced metrics against one selected team ----
-  const t6 = document.createElement('div'); t6.className='section-title'; t6.textContent='Vs. Opponent \u2014 Full Season Gamelog'; main.appendChild(t6);
+  const t6 = document.createElement('div'); t6.className='section-title'; t6.textContent='Vs. Opponent \u2014 Full Season Gamelog'; vsOppTabContent.appendChild(t6);
   const vsOppNote = document.createElement('div'); vsOppNote.className='footnote'; vsOppNote.style.marginBottom='8px';
   vsOppNote.textContent = 'Defaults to her actual next scheduled opponent when that can be looked up from live odds (this app has no schedule/fixtures data otherwise, only completed box scores); if that lookup comes back empty, defaults to the first team alphabetically instead. Change the dropdown to see any matchup from this season. DvP Index shown per row is point-in-time (as of right before that specific game), same as the table above \u2014 not the final, full-season DvP.';
-  main.appendChild(vsOppNote);
+  vsOppTabContent.appendChild(vsOppNote);
 
   const vsOppControls = document.createElement('div'); vsOppControls.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:14px;';
   const vsOppLabel = document.createElement('div'); vsOppLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;'; vsOppLabel.textContent='Opponent:';
@@ -2117,14 +2158,14 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   opponentTeams.forEach(t=>{ const op=document.createElement('option'); op.value=t; op.textContent=FULL_TEAM_NAME[t]||t; vsOppSelect.appendChild(op); });
   if(opponentTeams.length) vsOppSelect.value = opponentTeams[0];
   vsOppControls.appendChild(vsOppLabel); vsOppControls.appendChild(vsOppSelect);
-  main.appendChild(vsOppControls);
+  vsOppTabContent.appendChild(vsOppControls);
 
-  const vsOppStdContainer = document.createElement('div'); main.appendChild(vsOppStdContainer);
-  const t7 = document.createElement('div'); t7.className='section-title'; t7.textContent='Vs. Opponent \u2014 Advanced Metrics'; main.appendChild(t7);
+  const vsOppStdContainer = document.createElement('div'); vsOppTabContent.appendChild(vsOppStdContainer);
+  const t7 = document.createElement('div'); t7.className='section-title'; t7.textContent='Vs. Opponent \u2014 Advanced Metrics'; vsOppTabContent.appendChild(t7);
   const vsOppAdvNote = document.createElement('div'); vsOppAdvNote.className='footnote'; vsOppAdvNote.style.marginBottom='8px';
   vsOppAdvNote.textContent = 'Same games as the table above, same advanced-metrics calculation as the main Advanced Metrics table (EMA/StdDev/IQR/USG%/point-in-time DvP) \u2014 just computed over only her meetings with this specific opponent, so EMA/StdDev/IQR reflect how consistent she\u2019s been against this team specifically rather than her overall recent form.';
-  main.appendChild(vsOppAdvNote);
-  const vsOppAdvContainer = document.createElement('div'); main.appendChild(vsOppAdvContainer);
+  vsOppTabContent.appendChild(vsOppAdvNote);
+  const vsOppAdvContainer = document.createElement('div'); vsOppTabContent.appendChild(vsOppAdvContainer);
 
   function renderVsOpponentTables(opponentShort){
     vsOppStdContainer.innerHTML = ''; vsOppAdvContainer.innerHTML = '';
