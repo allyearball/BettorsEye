@@ -700,13 +700,13 @@ function computeLeagueDefenseRow(team, teamGames, opponents, mode){
 // individual player's season line, side by side. Currently only the season(s) already loaded
 // client-side are selectable in the Season dropdown (that's whatever the pipeline has pulled in);
 // a full 2015-2025 historical backfill is a separate, larger pipeline project.
-// ================= Sticky "Game window" bar (Team page + Player page only) =================
-// A fixed bar pinned to the bottom of the viewport, visible regardless of scroll position,
-// since this filter affects every table on those two pages and re-finding a dropdown after
-// scrolling down a long page was the actual problem being solved here. Lives outside `main`
-// (appended to document.body directly) since `main.innerHTML=''` on every page render would
-// otherwise wipe it out along with everything else \u2014 removeGameWindowStickyBar() is called
-// explicitly by every OTHER page's render function so it doesn't linger where it doesn't apply.
+// ================= "Game window" period selector bar =================
+// Used to be a fixed bar pinned to the bottom of the viewport. Now that pages are meaningfully
+// shorter (tabs on player pages, compact-hide columns everywhere), that's no longer needed --
+// this now returns a normal in-flow element for the caller to place at the top of their own
+// page content instead, right where the rest of the controls are. removeGameWindowStickyBar()
+// is kept as a safe no-op (rather than ripped out of every call site) in case anything still
+// calls it out of habit -- there's nothing fixed/lingering left for it to actually clean up.
 const GAME_WINDOW_OPTIONS = [ {label:'Full Season', value:'all'}, {label:'Last 15', value:15}, {label:'Last 10', value:10}, {label:'Last 5', value:5} ];
 function removeGameWindowStickyBar(){
   const existing = document.getElementById('gameWindowStickyBar');
@@ -714,31 +714,26 @@ function removeGameWindowStickyBar(){
   document.body.style.paddingBottom = '';
 }
 function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
-  removeGameWindowStickyBar();
   const bar = document.createElement('div');
-  bar.id = 'gameWindowStickyBar';
-  bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:500;background:var(--panel);'
-    + 'border-top:2px solid var(--navy2);box-shadow:0 -2px 10px rgba(0,0,0,0.10);'
-    + 'padding:16px 16px;display:flex;flex-direction:row;align-items:center;gap:18px;flex-wrap:nowrap;justify-content:flex-start;'
-    + 'overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;';
+  bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;'
+    + 'padding:12px 16px;display:flex;flex-direction:row;align-items:center;gap:18px;flex-wrap:wrap;'
+    + 'margin-bottom:16px;';
   const label = document.createElement('div');
-  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:16px;flex-shrink:0;white-space:nowrap;';
+  label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:15px;flex-shrink:0;white-space:nowrap;';
   label.textContent = labelText || 'Period:';
   bar.appendChild(label);
   GAME_WINDOW_OPTIONS.forEach(opt=>{
     const wrap = document.createElement('label');
-    wrap.style.cssText = 'display:inline-flex;flex-direction:row;align-items:center;gap:8px;font-size:16px;cursor:pointer;flex-shrink:0;white-space:nowrap;padding:6px 2px;';
+    wrap.style.cssText = 'display:inline-flex;flex-direction:row;align-items:center;gap:8px;font-size:14px;cursor:pointer;flex-shrink:0;white-space:nowrap;padding:6px 2px;';
     const rb = document.createElement('input');
     rb.type = 'radio'; rb.name = 'gameWindowStickyRadio'; rb.value = String(opt.value);
     rb.checked = (opt.value === currentWindowMode);
-    rb.style.cssText = 'cursor:pointer;width:24px;height:24px;flex-shrink:0;';
+    rb.style.cssText = 'cursor:pointer;width:20px;height:20px;flex-shrink:0;';
     rb.addEventListener('change', ()=>{ if(rb.checked) onSelect(opt.value); });
     wrap.appendChild(rb);
     wrap.appendChild(document.createTextNode(opt.label));
     bar.appendChild(wrap);
   });
-  document.body.appendChild(bar);
-  document.body.style.paddingBottom = '68px'; // room so the fixed bar (now taller) doesn't cover the page's last bit of content
   return bar;
 }
 
@@ -798,7 +793,7 @@ function renderLeagueStatsPage(year, mode, windowMode){
   head.innerHTML = `<h2>\ud83c\udfc0 League Stats \u2014 ${year}, ${windowLabelText}</h2><div class="meta">Every team's and every player's line, side by side. Click a column header to sort, click a player's name to see her full game log.</div>`;
   main.appendChild(head);
 
-  renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderLeagueStatsPage(year, mode, val); });
+  main.appendChild(renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderLeagueStatsPage(year, mode, val); }));
 
   const controlsRow = document.createElement('div');
   controlsRow.style.cssText = 'display:flex;align-items:center;gap:24px;margin-bottom:16px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;';
@@ -1036,7 +1031,7 @@ function renderTeamPage(team, year, month, windowMode){
   selectorRow.appendChild(buildYearMonthSelector(availableYears(team), (y)=>availableMonthsForYear(team,y), year, month, (y,m)=>renderTeamPage(team, y, m, windowMode)));
   main.appendChild(selectorRow);
 
-  renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderTeamPage(team, year, month, val); });
+  main.appendChild(renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderTeamPage(team, year, month, val); }));
 
   const t1 = document.createElement('div'); t1.className='section-title'; t1.textContent='Player Totals'; main.appendChild(t1);
   makeTable(main, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team});
@@ -2101,7 +2096,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   ));
   main.appendChild(selectorRow);
 
-  renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderPlayerPage(playerName, team, returnTo, val, year, month); });
+  main.appendChild(renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderPlayerPage(playerName, team, returnTo, val, year, month); }));
 
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const monthLabelText = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
@@ -4468,7 +4463,10 @@ function renderOddsPage(){
 
   let currentWindow = 10; // list-view window, default matches prior behavior
   let selectedBook = 'draftkings'; // 'draftkings'|'fanduel'|'betmgm'|'williamhill_us'|'betrivers'|'fanatics'|'best'|'all'
-  renderGameWindowStickyBar(currentWindow, (val)=>{ currentWindow = val; renderResultsArea(); renderGameBoxes(); }, 'Period:');
+  // No standalone period bar rendered here -- renderResultsArea() below builds one inside
+  // resultsDiv every time it runs (which happens as soon as the first game's data loads, and
+  // again on every period/view change), so a separate one here would just sit duplicated
+  // alongside it once resultsDiv gets its own copy.
 
   const bookSelectorDiv = document.createElement('div');
   bookSelectorDiv.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;';
@@ -4576,10 +4574,10 @@ function renderOddsPage(){
       backBtn.addEventListener('click', ()=>{ viewingSingleGame = null; renderResultsArea(); });
       resultsDiv.appendChild(backBtn);
 
-      renderGameWindowStickyBar(singleGameWindow, (val)=>{ singleGameWindow = val; renderResultsArea(); }, 'Period (this game):');
+      resultsDiv.appendChild(renderGameWindowStickyBar(singleGameWindow, (val)=>{ singleGameWindow = val; renderResultsArea(); }, 'Period (this game):'));
       renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null, false, undefined, selectedBook);
     } else {
-      renderGameWindowStickyBar(currentWindow, (val)=>{ currentWindow = val; renderResultsArea(); renderGameBoxes(); }, 'Period:');
+      resultsDiv.appendChild(renderGameWindowStickyBar(currentWindow, (val)=>{ currentWindow = val; renderResultsArea(); renderGameBoxes(); }, 'Period:'));
       gameBoxesDiv.style.display = '';
       cachedFetch.forEach(({ev, detail}) => {
         if(!gameUiState[ev.id]) gameUiState[ev.id] = {collapsed: undefined, sections: {}};
