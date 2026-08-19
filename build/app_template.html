@@ -5695,35 +5695,16 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   container.appendChild(stdCountDiv);
 
   const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'margin-bottom:8px;display:flex;gap:18px;flex-wrap:wrap;';
-  const toggleLabel = document.createElement('label'); toggleLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;width:fit-content;';
-  const toggleCb = document.createElement('input'); toggleCb.type='checkbox'; toggleCb.checked = false; // not auto-hidden by default
-  toggleLabel.appendChild(toggleCb);
-  toggleLabel.appendChild(document.createTextNode('Hide Opp Def Rank / Allowed-Gm columns'));
-  toggleRow.appendChild(toggleLabel);
 
   const expandLabel = document.createElement('label'); expandLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;width:fit-content;';
   const expandCb = document.createElement('input'); expandCb.type='checkbox'; expandCb.checked = false; // collapsed (first game only) by default
   expandLabel.appendChild(expandCb);
   expandLabel.appendChild(document.createTextNode('Expand Table (show all Vs Similar Defenses games)'));
   toggleRow.appendChild(expandLabel);
-
-  // Compact mode hides most columns on this table by default (see the compact-hide classes
-  // above) -- this is the "still allowing it to be clicked on and expanded" escape hatch, a
-  // table-wide reveal rather than per-row, so viewing everything is one tap away instead of
-  // gone entirely. Only shown in Compact mode -- irrelevant in Full, where nothing is hidden.
-  const compactShowAllLabel = document.createElement('label'); compactShowAllLabel.className='compact-only';
-  compactShowAllLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;width:fit-content;';
-  const compactShowAllCb = document.createElement('input'); compactShowAllCb.type='checkbox'; compactShowAllCb.checked = false;
-  compactShowAllLabel.appendChild(compactShowAllCb);
-  compactShowAllLabel.appendChild(document.createTextNode('Show All Details'));
-  toggleRow.appendChild(compactShowAllLabel);
   container.appendChild(toggleRow);
 
-  const wrap = document.createElement('div'); wrap.className='table-wrap';
-  // Opp Def Rank / Allowed-Gm columns shown by default -- not auto-hidden.
-  toggleCb.addEventListener('change', ()=>{ wrap.classList.toggle('hide-defcols', toggleCb.checked); });
+  const wrap = document.createElement('div'); wrap.className='table-wrap compact-show-all'; // all details shown from the start, in both Full and Compact mode -- no toggle needed
   expandCb.addEventListener('change', ()=>{ wrap.classList.toggle('show-simdef-extra', expandCb.checked); });
-  compactShowAllCb.addEventListener('change', ()=>{ wrap.classList.toggle('compact-show-all', compactShowAllCb.checked); });
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="th-overall">Overall %</th>'
@@ -6024,17 +6005,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   const advCountDiv = document.createElement('div'); advCountDiv.style.cssText='font-size:11.5px;color:var(--sub);margin:2px 0 6px;';
   container.appendChild(advCountDiv);
 
-  const toggleRow = document.createElement('div'); toggleRow.style.cssText = 'margin-bottom:8px;';
-  const toggleLabel = document.createElement('label'); toggleLabel.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;width:fit-content;';
-  const toggleCb = document.createElement('input'); toggleCb.type='checkbox'; toggleCb.checked = false; // not auto-hidden by default, matching Standard
-  toggleLabel.appendChild(toggleCb);
-  toggleLabel.appendChild(document.createTextNode('Hide Opp Def Rank / Allowed-Gm columns'));
-  toggleRow.appendChild(toggleLabel);
-  container.appendChild(toggleRow);
-
   const wrap = document.createElement('div'); wrap.className='table-wrap';
-  // Opp Def Rank / Allowed-Gm columns shown by default -- not auto-hidden.
-  toggleCb.addEventListener('change', ()=>{ wrap.classList.toggle('hide-defcols', toggleCb.checked); });
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th class="left">Vs Opponent This Season</th><th>Price</th><th class="left">Sportsbook</th>'
@@ -6657,10 +6628,46 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   const halfNote = document.createElement('div'); halfNote.className='footnote'; halfNote.style.margin='4px 0 10px';
   halfNote.textContent = 'Half hit rates are derived from this season\u2019s play-by-play data (score at the end of Q2 = 1st half; final minus that = 2nd half). A small number of games can be missing this if their play-by-play log was incomplete \u2014 those are simply excluded from the count rather than treated as a miss, so the games-played figure in the badge may be slightly lower than the full-game one above.';
 
-  // Formats a hit-rate result as "67% (10-5)" -- used by both the O/U expand row and the Alt
-  // Lines expand panel, so both show percent AND the actual record behind it, not just a bare
-  // percentage.
-  function fmtHrPct(hr){ return (hr && hr.found) ? `${Math.round(hr.rate*100)}% (${hr.hits}-${hr.gp-hr.hits})` : '\u2014'; }
+  // Builds a labeled, color-coded chip (green/red/grey background, matching every other hit-rate
+  // display in this app) for the O/U expand row and the Alt Lines expand panel -- reuses
+  // singleWindowChip exactly rather than a separate plain-text format, so this looks and behaves
+  // identically to every other hit-rate badge in the app (same 60%/40% thresholds, same colors).
+  function buildLabeledChip(labelText, hr){
+    const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;align-items:center;gap:5px;';
+    const lbl = document.createElement('b'); lbl.textContent = labelText+':'; lbl.style.fontSize='12px';
+    wrap.appendChild(lbl);
+    wrap.appendChild(singleWindowChip(null, hr));
+    return wrap;
+  }
+
+  // Adds one min/max numeric-range filter control to filterBar, wired to call onChange whenever
+  // either value changes. Returns a matches(value) function the caller uses per-row -- null/
+  // undefined values never match a set range (consistent with how the rest of the app treats
+  // missing data under an active filter).
+  function addRangeFilter(filterBar, labelText, onChange){
+    const group = document.createElement('div'); group.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    const lbl = document.createElement('label'); lbl.textContent = labelText;
+    lbl.style.cssText = 'font-size:10px;color:var(--sub);font-weight:700;text-transform:uppercase;letter-spacing:.03em;';
+    group.appendChild(lbl);
+    const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:4px;';
+    const minI = document.createElement('input'); minI.type='number'; minI.placeholder='Min';
+    const maxI = document.createElement('input'); maxI.type='number'; maxI.placeholder='Max';
+    const inputStyle = 'padding:4px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:var(--sans);width:52px;';
+    minI.style.cssText = inputStyle; maxI.style.cssText = inputStyle;
+    let min = null, max = null;
+    minI.addEventListener('input', ()=>{ min = minI.value===''?null:parseFloat(minI.value); onChange(); });
+    maxI.addEventListener('input', ()=>{ max = maxI.value===''?null:parseFloat(maxI.value); onChange(); });
+    row.appendChild(minI); row.appendChild(maxI);
+    group.appendChild(row);
+    filterBar.appendChild(group);
+    return function matches(value){
+      if(min===null && max===null) return true;
+      if(value===null || value===undefined) return false;
+      if(min!==null && value<min) return false;
+      if(max!==null && value>max) return false;
+      return true;
+    };
+  }
 
   // ================= Tab bar =================
   const TAB_DEFS = [
@@ -6722,11 +6729,28 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     }
     const filterState = {player:''};
     const filterBar = document.createElement('div');
-    filterBar.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center;';
-    const playerInput = document.createElement('input'); playerInput.type='text'; playerInput.placeholder='Filter by player\u2026';
-    playerInput.style.cssText = 'padding:6px 10px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;font-family:var(--sans);flex:1;max-width:220px;';
+    filterBar.style.cssText = 'display:flex;gap:12px;margin-bottom:10px;align-items:flex-end;flex-wrap:wrap;padding:8px 10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;';
+    const playerGroup = document.createElement('div'); playerGroup.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    const playerLbl = document.createElement('label'); playerLbl.textContent = 'Player'; playerLbl.style.cssText = 'font-size:10px;color:var(--sub);font-weight:700;text-transform:uppercase;letter-spacing:.03em;';
+    const playerInput = document.createElement('input'); playerInput.type='text'; playerInput.placeholder='Search\u2026';
+    playerInput.style.cssText = 'padding:4px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:var(--sans);width:120px;';
     playerInput.addEventListener('input', ()=>{ filterState.player = playerInput.value.trim().toLowerCase(); applyFilter(); });
-    filterBar.appendChild(playerInput);
+    playerGroup.appendChild(playerLbl); playerGroup.appendChild(playerInput);
+    filterBar.appendChild(playerGroup);
+    const matchesOverPrice = addRangeFilter(filterBar, 'Over Odds', ()=>applyFilter());
+    const matchesUnderPrice = addRangeFilter(filterBar, 'Under Odds', ()=>applyFilter());
+    const matchesL5 = addRangeFilter(filterBar, 'L5%', ()=>applyFilter());
+    const matchesL10 = addRangeFilter(filterBar, 'L10%', ()=>applyFilter());
+    const matchesL15 = addRangeFilter(filterBar, 'L15%', ()=>applyFilter());
+    const matchesSeason = addRangeFilter(filterBar, 'Season%', ()=>applyFilter());
+    const clearBtn = document.createElement('button'); clearBtn.textContent = 'Clear Filters';
+    clearBtn.style.cssText = 'padding:6px 12px;border-radius:5px;border:1px solid var(--line);background:var(--panel);font-size:12px;cursor:pointer;font-family:var(--sans);';
+    clearBtn.addEventListener('click', ()=>{
+      filterState.player = ''; playerInput.value = '';
+      filterBar.querySelectorAll('input[type=number]').forEach(i=>{ i.value=''; i.dispatchEvent(new Event('input')); });
+      applyFilter();
+    });
+    filterBar.appendChild(clearBtn);
     container.appendChild(filterBar);
 
     const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-bottom:20px;';
@@ -6790,8 +6814,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         if(!isOpen && !detailTd.dataset.built){
           detailTd.dataset.built = '1';
           const oppTeam = r.team===homeShort?awayShort:homeShort;
-          const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;';
-          statsRow.innerHTML = `<div><b>L5:</b> ${fmtHrPct(r.hr5)}</div><div><b>L10:</b> ${fmtHrPct(r.hr10)}</div><div><b>L15:</b> ${fmtHrPct(r.hr15)}</div><div><b>Season:</b> ${fmtHrPct(r.hrAll)}</div>`;
+          const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
+          statsRow.appendChild(buildLabeledChip('L5', r.hr5));
+          statsRow.appendChild(buildLabeledChip('L10', r.hr10));
+          statsRow.appendChild(buildLabeledChip('L15', r.hr15));
+          statsRow.appendChild(buildLabeledChip('Season', r.hrAll));
           detailTd.appendChild(statsRow);
           const extraRow = document.createElement('div'); extraRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;margin-top:6px;align-items:center;';
           const defWrap = document.createElement('span'); defWrap.innerHTML = '<b>Opp Def Rank: </b>'; defWrap.appendChild(defRankCell(oppTeam, statKey, r.pname, r.team, marketLabel));
@@ -6801,12 +6828,19 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         }
       });
 
-      filterableRows.push({tr, pname: r.pname});
+      filterableRows.push({tr, pname: r.pname, r});
     });
 
     function applyFilter(){
-      filterableRows.forEach(({tr, pname})=>{
-        const matches = !filterState.player || pname.toLowerCase().includes(filterState.player);
+      filterableRows.forEach(({tr, pname, r})=>{
+        const playerOk = !filterState.player || pname.toLowerCase().includes(filterState.player);
+        const overPriceOk = matchesOverPrice(r.overO ? r.overO.price : null);
+        const underPriceOk = matchesUnderPrice(r.underO ? r.underO.price : null);
+        const l5Ok = matchesL5((r.hr5 && r.hr5.found) ? Math.round(r.hr5.rate*100) : null);
+        const l10Ok = matchesL10((r.hr10 && r.hr10.found) ? Math.round(r.hr10.rate*100) : null);
+        const l15Ok = matchesL15((r.hr15 && r.hr15.found) ? Math.round(r.hr15.rate*100) : null);
+        const seasonOk = matchesSeason((r.hrAll && r.hrAll.found) ? Math.round(r.hrAll.rate*100) : null);
+        const matches = playerOk && overPriceOk && underPriceOk && l5Ok && l10Ok && l15Ok && seasonOk;
         tr.style.opacity = matches ? '1' : '0.32';
       });
     }
@@ -6824,13 +6858,31 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     }
     const filterState = {player:''};
     const filterBar = document.createElement('div');
-    filterBar.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;align-items:center;';
-    const playerInput = document.createElement('input'); playerInput.type='text'; playerInput.placeholder='Filter by player\u2026';
-    playerInput.style.cssText = 'padding:6px 10px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;font-family:var(--sans);flex:1;max-width:220px;';
-    filterBar.appendChild(playerInput);
+    filterBar.style.cssText = 'display:flex;gap:12px;margin-bottom:10px;align-items:flex-end;flex-wrap:wrap;padding:8px 10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;';
+    const playerGroup = document.createElement('div'); playerGroup.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    const playerLbl = document.createElement('label'); playerLbl.textContent = 'Player'; playerLbl.style.cssText = 'font-size:10px;color:var(--sub);font-weight:700;text-transform:uppercase;letter-spacing:.03em;';
+    const playerInput = document.createElement('input'); playerInput.type='text'; playerInput.placeholder='Search\u2026';
+    playerInput.style.cssText = 'padding:4px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:var(--sans);width:120px;';
+    playerGroup.appendChild(playerLbl); playerGroup.appendChild(playerInput);
+    filterBar.appendChild(playerGroup);
+    const matchesPrice = addRangeFilter(filterBar, 'Odds', ()=>applyFilter());
+    const matchesLevel = addRangeFilter(filterBar, 'Level', ()=>applyFilter());
+    const matchesL5 = addRangeFilter(filterBar, 'L5%', ()=>applyFilter());
+    const matchesL10 = addRangeFilter(filterBar, 'L10%', ()=>applyFilter());
+    const matchesL15 = addRangeFilter(filterBar, 'L15%', ()=>applyFilter());
+    const matchesSeason = addRangeFilter(filterBar, 'Season%', ()=>applyFilter());
+    const clearBtn = document.createElement('button'); clearBtn.textContent = 'Clear Filters';
+    clearBtn.style.cssText = 'padding:6px 12px;border-radius:5px;border:1px solid var(--line);background:var(--panel);font-size:12px;cursor:pointer;font-family:var(--sans);';
+    clearBtn.addEventListener('click', ()=>{
+      filterState.player = ''; playerInput.value = '';
+      filterBar.querySelectorAll('input[type=number]').forEach(i=>{ i.value=''; i.dispatchEvent(new Event('input')); });
+      applyFilter();
+    });
+    filterBar.appendChild(clearBtn);
     container.appendChild(filterBar);
 
     const playerBoxes = [];
+    const allCells = [];
     playerNames.forEach(pname=>{
       const {team, levels} = altPlayers[pname];
       const oppTeam = team===homeShort?awayShort:homeShort;
@@ -6860,8 +6912,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
           cell.style.borderColor = 'var(--navy2)';
           detailContainer.dataset.forLevel = String(lvl.point);
           detailContainer.innerHTML = '';
-          const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;';
-          statsRow.innerHTML = `<div><b>L5:</b> ${fmtHrPct(hr5)}</div><div><b>L10:</b> ${fmtHrPct(hr10)}</div><div><b>L15:</b> ${fmtHrPct(hr15)}</div><div><b>Season:</b> ${fmtHrPct(hrAll)}</div>`;
+          const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
+          statsRow.appendChild(buildLabeledChip('L5', hr5));
+          statsRow.appendChild(buildLabeledChip('L10', hr10));
+          statsRow.appendChild(buildLabeledChip('L15', hr15));
+          statsRow.appendChild(buildLabeledChip('Season', hrAll));
           detailContainer.appendChild(statsRow);
           const extraRow = document.createElement('div'); extraRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;margin-top:6px;align-items:center;';
           const defWrap = document.createElement('span'); defWrap.innerHTML = '<b>Opp Def Rank: </b>'; defWrap.appendChild(defRankCell(oppTeam, statKey, pname, team, marketLabel));
@@ -6871,6 +6926,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
           detailContainer.style.display = '';
         });
         cellRow.appendChild(cell);
+        allCells.push({cell, price: lvl.price, level: lvl.point, hr5, hr10, hr15, hrAll});
       });
       scrollWrap.appendChild(cellRow);
       playerBox.appendChild(scrollWrap);
@@ -6879,13 +6935,23 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       playerBoxes.push({playerBox, pname});
     });
 
-    playerInput.addEventListener('input', ()=>{
+    function applyFilter(){
       filterState.player = playerInput.value.trim().toLowerCase();
       playerBoxes.forEach(({playerBox, pname})=>{
-        const matches = !filterState.player || pname.toLowerCase().includes(filterState.player);
-        playerBox.style.opacity = matches ? '1' : '0.32';
+        const nameOk = !filterState.player || pname.toLowerCase().includes(filterState.player);
+        playerBox.style.opacity = nameOk ? '1' : '0.32';
       });
-    });
+      allCells.forEach(({cell, price, level, hr5, hr10, hr15, hrAll})=>{
+        const priceOk = matchesPrice(price);
+        const levelOk = matchesLevel(level);
+        const l5Ok = matchesL5((hr5 && hr5.found) ? Math.round(hr5.rate*100) : null);
+        const l10Ok = matchesL10((hr10 && hr10.found) ? Math.round(hr10.rate*100) : null);
+        const l15Ok = matchesL15((hr15 && hr15.found) ? Math.round(hr15.rate*100) : null);
+        const seasonOk = matchesSeason((hrAll && hrAll.found) ? Math.round(hrAll.rate*100) : null);
+        cell.style.opacity = (priceOk && levelOk && l5Ok && l10Ok && l15Ok && seasonOk) ? '1' : '0.32';
+      });
+    }
+    playerInput.addEventListener('input', applyFilter);
   }
 
   // ================= Points / Rebounds / Assists / 3PM / P+R+A tabs -- each combines its O/U
