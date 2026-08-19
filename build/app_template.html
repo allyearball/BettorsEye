@@ -4665,6 +4665,11 @@ function renderOddsPage(){
   let cachedFetch = []; // [{ev, detail}] — so switching the window re-renders without hitting the API again
   let viewingSingleGame = null; // {ev, detail} when drilled into one game, else null
   let singleGameWindow = 'all';
+  // Persists the single-game view's tab/section state (which of Game Lines/1st Half/.../Parlay
+  // Recommendations is active) across period changes -- renderGameOddsBlock was previously
+  // called with uiState=undefined here, meaning every period change silently created a brand
+  // new (empty) uiState and reset the active tab back to Game Lines every time.
+  let singleGameUiState = {collapsed: undefined, sections: {}};
   // Persists which game cards and which sections within them are expanded/collapsed, keyed by
   // event id (stable across a window change) and a fixed section key (NOT the display title,
   // since that includes the window-size label and would change every time the window changes).
@@ -4707,6 +4712,7 @@ function renderOddsPage(){
       card.addEventListener('click', ()=>{
         viewingSingleGame = {ev, detail};
         singleGameWindow = 'all';
+        singleGameUiState = {collapsed: undefined, sections: {}}; // fresh tab state for the newly-selected game -- don't carry over e.g. "Points" being active from whatever game was viewed before
         renderResultsArea();
       });
 
@@ -4746,7 +4752,7 @@ function renderOddsPage(){
       resultsDiv.appendChild(backBtn);
 
       resultsDiv.appendChild(renderGameWindowStickyBar(singleGameWindow, (val)=>{ singleGameWindow = val; renderResultsArea(); }, 'Period (this game):'));
-      renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null, false, undefined, selectedBook);
+      renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null, false, singleGameUiState, selectedBook);
     } else {
       // Period bar intentionally not shown here -- it didn't meaningfully affect anything on
       // this box-score-only view. Still fully present in the single-game view above, where the
