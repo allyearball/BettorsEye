@@ -395,6 +395,12 @@ function makeTable(container, columns, rows, opts){
           link.textContent = fmtVal(r[col.key], col, r);
           link.addEventListener('click', (e)=>{ e.stopPropagation(); goToPlayer(r.player, team); });
           td.appendChild(link);
+        } else if(col.teamLink && r[col.key]){
+          // Renders as a clickable team link without touching the underlying string value, so
+          // sorting this column alphabetically still works normally (cmp() only special-cases
+          // plain strings, not DOM nodes). teamLinkEl already stops click propagation internally,
+          // so this correctly doesn't also trigger the column-highlight click handler on td.
+          td.appendChild(teamLinkEl(r[col.key], fmtVal(r[col.key], col, r)));
         } else {
           td.textContent = fmtVal(r[col.key], col, r);
         }
@@ -620,7 +626,7 @@ function computeTeamSummaryClientSide(team, gameIds){
 }
 
 const LEAGUE_TEAM_COLS = [
-  {key:'team', label:'Team', left:true}, {key:'gp', label:'Games'}, {key:'wins', label:'W-L', left:true, record:true},
+  {key:'team', label:'Team', left:true, teamLink:true}, {key:'gp', label:'Games'}, {key:'wins', label:'W-L', left:true, record:true},
   {key:'gbNum', label:'GB', gb:true},
   {key:'min', label:'Minutes'}, {key:'pts', label:'Points'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
@@ -632,7 +638,7 @@ const LEAGUE_TEAM_COLS = [
   {key:'avgHeight', label:'Avg Height (Wtd)', left:true, numeric:false},
 ];
 const LEAGUE_DEF_COLS = [
-  {key:'team', label:'Team', left:true}, {key:'gp', label:'Games'}, {key:'oppPts', label:'Opp Points'},
+  {key:'team', label:'Team', left:true, teamLink:true}, {key:'gp', label:'Games'}, {key:'oppPts', label:'Opp Points'},
   {key:'oppFgm', label:'Opp FGM'}, {key:'oppFga', label:'Opp FGA'}, {key:'oppFgPct', label:'Opp FG%', pct:true},
   {key:'oppTpm', label:'Opp 3PM'}, {key:'oppTpa', label:'Opp 3PA'}, {key:'oppTpPct', label:'Opp 3P%', pct:true},
   {key:'oppFtm', label:'Opp FTM'}, {key:'oppFta', label:'Opp FTA'}, {key:'oppFtPct', label:'Opp FT%', pct:true},
@@ -642,7 +648,7 @@ const LEAGUE_DEF_COLS = [
 ];
 
 const LEAGUE_PLAYER_COLS = [
-  {key:'team', label:'Team', left:true}, {key:'player', label:'Player', left:true},
+  {key:'team', label:'Team', left:true, teamLink:true}, {key:'player', label:'Player', left:true},
   {key:'gp', label:'GP'}, {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
   {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
@@ -1679,7 +1685,7 @@ const PLAYER_ADV_COLS = [
 // unlike EMA those aren't themselves rolling values \u2014 a single game's USG% or a single game's
 // matchup difficulty wouldn't represent her season the way a trailing average does.
 const LEAGUE_ADV_COLS = [
-  {key:'team', label:'Team', left:true}, {key:'player', label:'Player', left:true},
+  {key:'team', label:'Team', left:true, teamLink:true}, {key:'player', label:'Player', left:true},
   {key:'usgPct', label:'USG% (season avg)', round2:true},
   {key:'ptsEma', label:'PTS EMA (current)', round2:true}, {key:'ptsStd', label:'PTS StdDev(L10)', round2:true}, {key:'ptsIqr', label:'PTS IQR(L10)', round2:true},
   {key:'rebEma', label:'REB EMA (current)', round2:true}, {key:'rebStd', label:'REB StdDev(L10)', round2:true}, {key:'rebIqr', label:'REB IQR(L10)', round2:true},
