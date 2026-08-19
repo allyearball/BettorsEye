@@ -3617,12 +3617,40 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   const tableHolder = document.createElement('div');
   main.appendChild(tableHolder);
 
+  // Sort state for the games table -- defaults to date, most-recent-first, same as before this
+  // was made sortable. Persists across re-sorts (not reset by clicking a column), but resets
+  // whenever the active tier or window changes, since that's effectively a different table.
+  let sortKey = 'date', sortDir = 'desc';
+  // Which games have been unchecked (excluded from the footer totals), keyed by date since a
+  // player only plays one game per day -- tracked outside renderTable so re-sorting doesn't
+  // silently re-check everything. Reset (see windowOptions/tierOptions handlers below) when the
+  // tier or window changes, since that's a different set of games entirely.
+  let uncheckedDates = new Set();
+
+  const SORT_COLS = [
+    {key:null, label:''},
+    {key:'date', label:'Date', left:true, type:'string'},
+    {key:'opp', label:'Opponent', left:true, type:'string'},
+    {key:'oppHeight', label:'Opp Height', type:'number'},
+    {key:'min', label:'MIN', type:'number'}, {key:'pts', label:'PTS', type:'number'},
+    {key:'reb', label:'REB', type:'number'}, {key:'ast', label:'AST', type:'number'},
+    {key:'tpm', label:'3PM', type:'number'}, {key:'pra', label:'PRA', type:'number'},
+  ];
+
   function renderTable(){
-    head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket}</h2><div class="meta">Cutoffs (full season, fixed): Shortest &lt; ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest &gt; ${heightData.p67.toFixed(1)}in. Uncheck a game to exclude it from the totals below.</div>`;
+    head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket}</h2><div class="meta">Cutoffs (full season, fixed): Shortest &lt; ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest &gt; ${heightData.p67.toFixed(1)}in. Uncheck a game to exclude it from the totals below. Click a column header to sort.</div>`;
     tableHolder.innerHTML = '';
 
     const windowed = activeSize ? heightData.allGames.slice(-activeSize) : heightData.allGames;
-    const games = windowed.filter(g=>g.tier===activeTier).slice().sort((a,b)=>b.date.localeCompare(a.date)); // most recent first for display
+    const games = windowed.filter(g=>g.tier===activeTier).slice();
+    games.sort((a,b)=>{
+      const col = SORT_COLS.find(c=>c.key===sortKey);
+      let av = a[sortKey], bv = b[sortKey];
+      let d;
+      if(col && col.type==='string'){ d = String(av||'').localeCompare(String(bv||'')); }
+      else { d = (av===null||av===undefined?-Infinity:av) - (bv===null||bv===undefined?-Infinity:bv); }
+      return sortDir==='asc' ? d : -d;
+    });
 
     if(!games.length){
       const none = document.createElement('div'); none.style.cssText='color:var(--sub);font-size:13px;';
@@ -3634,16 +3662,34 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     const wrap = document.createElement('div'); wrap.className='table-wrap';
     const table = document.createElement('table'); table.style.width='100%';
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th></th><th class="left">Date</th><th class="left">Opponent</th><th>Opp Height</th><th>MIN</th><th>PTS</th><th>REB</th><th>AST</th><th>3PM</th><th>PRA</th></tr>';
+    const theadRow = document.createElement('tr');
+    SORT_COLS.forEach(col=>{
+      const th = document.createElement('th');
+      if(col.key===null){ theadRow.appendChild(th); return; }
+      if(col.left) th.classList.add('left');
+      th.style.cursor = 'pointer';
+      const isActive = sortKey===col.key;
+      th.textContent = col.label + (isActive ? (sortDir==='asc' ? ' \u25b2' : ' \u25bc') : '');
+      th.addEventListener('click', ()=>{
+        if(sortKey===col.key){ sortDir = sortDir==='asc' ? 'desc' : 'asc'; }
+        else { sortKey = col.key; sortDir = 'desc'; } // new column: start most-to-least (or Z-to-A for text)
+        renderTable();
+      });
+      theadRow.appendChild(th);
+    });
+    thead.appendChild(theadRow);
     const tbody = document.createElement('tbody');
     const checkboxes = [];
 
     games.forEach(g=>{
       const tr = document.createElement('tr'); tr.style.cursor='pointer';
       const tdCb = document.createElement('td');
-      const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = true;
+      const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = !uncheckedDates.has(g.date);
       cb.addEventListener('click', e=>e.stopPropagation());
-      cb.addEventListener('change', updateFooter);
+      cb.addEventListener('change', ()=>{
+        if(cb.checked) uncheckedDates.delete(g.date); else uncheckedDates.add(g.date);
+        updateFooter();
+      });
       checkboxes.push({cb, game:g});
       tdCb.appendChild(cb);
       const tdDate = document.createElement('td'); tdDate.className='left'; tdDate.textContent = g.date;
@@ -3703,7 +3749,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     btn.style.cssText = 'flex:1 1 0;min-width:0;padding:8px 2px;border-radius:5px;border:1px solid var(--line);font-size:12px;cursor:pointer;font-family:var(--sans);white-space:nowrap;';
     function paint(){ btn.style.background = isActive()?'var(--navy2)':'var(--panel)'; btn.style.color = isActive()?'#fff':'var(--ink)'; }
     paint();
-    btn.addEventListener('click', ()=>{ activeSize = opt.size; [...windowRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
+    btn.addEventListener('click', ()=>{ activeSize = opt.size; uncheckedDates = new Set(); [...windowRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
     btn._paint = paint;
     windowRow.appendChild(btn);
   });
@@ -3714,7 +3760,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     btn.style.cssText = 'flex:1 1 0;min-width:0;padding:8px 2px;border-radius:5px;border:1px solid var(--line);font-size:12px;cursor:pointer;font-family:var(--sans);white-space:nowrap;';
     function paint(){ btn.style.background = isActive()?'var(--navy2)':'var(--panel)'; btn.style.color = isActive()?'#fff':'var(--ink)'; }
     paint();
-    btn.addEventListener('click', ()=>{ activeTier = opt.key; [...tierRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
+    btn.addEventListener('click', ()=>{ activeTier = opt.key; uncheckedDates = new Set(); [...tierRow.children].forEach(b=>b._paint&&b._paint()); renderTable(); });
     btn._paint = paint;
     tierRow.appendChild(btn);
   });
