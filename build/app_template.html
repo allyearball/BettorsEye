@@ -121,6 +121,11 @@
   body.compact-mode input[type=checkbox],body.compact-mode input[type=radio]{width:26px;height:26px;}
   body.compact-mode .addbtn{padding:15px 20px;font-size:17px;min-height:52px;width:100%;display:block;}
   body.compact-mode .backbtn{padding:14px 18px;font-size:16px;min-height:52px;}
+  /* Small utility buttons (Refresh, Screenshot, etc) -- deliberately excluded from the
+     full-width .addbtn treatment above. These are secondary/occasional actions, not primary
+     calls to action, so they stay compact and inline even in Compact mode. */
+  .util-btn{padding:7px 14px;font-size:13px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;font-family:var(--sans);font-weight:600;}
+  body.compact-mode .util-btn{padding:10px 16px;font-size:14px;min-height:40px;width:auto;display:inline-block;}
   body.compact-mode .controls{gap:12px;}
   body.compact-mode .controls select,body.compact-mode .controls input{padding:13px 12px;font-size:17px;min-height:52px;}
   body.compact-mode label{font-size:16px;}
@@ -179,7 +184,7 @@
 })();
 </script>
 <header>
-  <h1><span class="brand-bettors">bettors</span><span class="brand-eye">eye</span></h1>
+  <h1 id="logoHome" style="cursor:pointer;"><span class="brand-bettors">bettors</span><span class="brand-eye">eye</span></h1>
   <div class="tag">Data through <span id="asOf"></span></div>
   <div class="toplinks" id="toplinks"></div>
 </header>
@@ -2561,6 +2566,8 @@ function buildTopLinks(){
     renderAppTrackerPage();
   });
   homeBtn.addEventListener('click', goHome);
+  const logoEl = document.getElementById('logoHome');
+  if(logoEl) logoEl.addEventListener('click', goHome);
   explorerBtn.addEventListener('click', goExplorer);
   oddsBtn.addEventListener('click', goOdds);
   trackerBtn.addEventListener('click', goTracker);
@@ -4460,16 +4467,14 @@ async function renderHomePage(){
   statusDiv.textContent = 'Loading today\u2019s games\u2026';
   main.appendChild(statusDiv);
 
-  const refreshBtn = document.createElement('button'); refreshBtn.className='addbtn'; refreshBtn.textContent = '\u21bb Refresh';
+  const refreshBtn = document.createElement('button'); refreshBtn.className='util-btn'; refreshBtn.textContent = '\u21bb Refresh';
   refreshBtn.style.marginBottom = '14px';
   refreshBtn.addEventListener('click', ()=>renderHomePage());
   main.appendChild(refreshBtn);
 
-  const stdBtn = document.createElement('button'); stdBtn.className='addbtn'; stdBtn.textContent = 'Standard \ud83d\udcf7';
-  stdBtn.style.cssText = 'margin-bottom:14px;margin-left:8px;';
-  const advBtn = document.createElement('button'); advBtn.className='addbtn'; advBtn.textContent = 'Advanced \ud83d\udcf7';
-  advBtn.style.cssText = 'margin-bottom:14px;margin-left:8px;';
-  main.appendChild(stdBtn); main.appendChild(advBtn);
+  const screenshotBtn = document.createElement('button'); screenshotBtn.className='util-btn'; screenshotBtn.textContent = '\ud83d\udcf7 Screenshot';
+  screenshotBtn.style.cssText = 'margin-bottom:14px;margin-left:8px;';
+  main.appendChild(screenshotBtn);
 
   const contentDiv = document.createElement('div');
   main.appendChild(contentDiv);
@@ -4488,7 +4493,7 @@ async function renderHomePage(){
     if(typeof html2canvas === 'undefined'){ alert('Screenshot library didn\u2019t load \u2014 check your internet connection and try again.'); return; }
     const wrap = container.querySelector('.table-wrap');
     if(!wrap){ alert('Nothing to screenshot yet \u2014 wait for the table to load first.'); return; }
-    const origText = btn.textContent; btn.disabled = true; btn.textContent = 'Capturing\u2026';
+    const origText = btn.textContent; btn.disabled = true;
     try{
       const clone = wrap.cloneNode(true);
       clone.style.cssText = 'position:fixed;top:-99999px;left:0;background:var(--panel);padding:12px;width:max-content;max-width:none;overflow:visible;';
@@ -4510,8 +4515,18 @@ async function renderHomePage(){
     }
     btn.disabled = false; btn.textContent = origText;
   }
-  stdBtn.addEventListener('click', ()=>downloadFullTableScreenshot(contentDiv, 'standard', stdBtn));
-  advBtn.addEventListener('click', ()=>downloadFullTableScreenshot(contentDiv2, 'advanced', advBtn));
+  // One button, two screenshots -- captures Standard then Advanced in sequence rather than
+  // needing two separate full-width buttons for what's fundamentally one action ("save today's
+  // bets").
+  screenshotBtn.addEventListener('click', async ()=>{
+    screenshotBtn.disabled = true;
+    screenshotBtn.textContent = 'Capturing Standard\u2026';
+    await downloadFullTableScreenshot(contentDiv, 'standard', screenshotBtn);
+    screenshotBtn.textContent = 'Capturing Advanced\u2026';
+    await downloadFullTableScreenshot(contentDiv2, 'advanced', screenshotBtn);
+    screenshotBtn.textContent = '\ud83d\udcf7 Screenshot';
+    screenshotBtn.disabled = false;
+  });
 
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
 
@@ -4673,7 +4688,7 @@ function renderOddsPage(){
     }
 
     const grid = document.createElement('div');
-    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:20px;';
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:12px;margin-bottom:20px;';
     cachedFetch.forEach(({ev, detail})=>{
       const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
       const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
@@ -4701,19 +4716,19 @@ function renderOddsPage(){
       card.innerHTML = `
         <div style="font-size:11px;color:var(--sub);margin-bottom:6px;">${timeStr}${venueStr ? ' \u00b7 '+venueStr : ''}</div>
         <div style="font-weight:800;font-size:13.5px;margin-bottom:8px;">${ev.away_team}${teamRecordParenText(awayShort, currentWindow)} @ ${ev.home_team}${teamRecordParenText(homeShort, currentWindow)}</div>
-        <div style="display:grid;grid-template-columns:0.6fr 1fr 1fr 0.8fr;gap:4px;font-size:11px;color:var(--sub);font-weight:700;text-transform:uppercase;margin-bottom:2px;">
+        <div style="display:grid;grid-template-columns:0.45fr 1.25fr 1.35fr 0.7fr;gap:4px;font-size:10.5px;color:var(--sub);font-weight:700;text-transform:uppercase;margin-bottom:2px;">
           <div></div><div>Spread</div><div>Total</div><div>ML</div>
         </div>
-        <div style="display:grid;grid-template-columns:0.6fr 1fr 1fr 0.8fr;gap:4px;font-size:12px;margin-bottom:4px;align-items:center;">
+        <div style="display:grid;grid-template-columns:0.45fr 1.25fr 1.35fr 0.7fr;gap:4px;font-size:11px;margin-bottom:4px;align-items:center;white-space:nowrap;">
           <div style="font-weight:700;">${awayShort}</div>
-          <div>${awaySpread ? (awaySpread.point>0?'+':'')+awaySpread.point+' ('+fmtAmerican(awaySpread.price)+')' : '\u2014'}</div>
-          <div>${over ? 'O '+over.point+' ('+fmtAmerican(over.price)+')' : '\u2014'}</div>
+          <div>${awaySpread ? (awaySpread.point>0?'+':'')+awaySpread.point+' '+fmtAmerican(awaySpread.price) : '\u2014'}</div>
+          <div>${over ? 'O '+over.point+' '+fmtAmerican(over.price) : '\u2014'}</div>
           <div>${awayML ? fmtAmerican(awayML.price) : '\u2014'}</div>
         </div>
-        <div style="display:grid;grid-template-columns:0.6fr 1fr 1fr 0.8fr;gap:4px;font-size:12px;color:var(--sub);align-items:center;">
+        <div style="display:grid;grid-template-columns:0.45fr 1.25fr 1.35fr 0.7fr;gap:4px;font-size:11px;color:var(--sub);align-items:center;white-space:nowrap;">
           <div style="font-weight:700;">${homeShort}</div>
-          <div>${homeSpread ? (homeSpread.point>0?'+':'')+homeSpread.point+' ('+fmtAmerican(homeSpread.price)+')' : '\u2014'}</div>
-          <div>${under ? 'U '+under.point+' ('+fmtAmerican(under.price)+')' : '\u2014'}</div>
+          <div>${homeSpread ? (homeSpread.point>0?'+':'')+homeSpread.point+' '+fmtAmerican(homeSpread.price) : '\u2014'}</div>
+          <div>${under ? 'U '+under.point+' '+fmtAmerican(under.price) : '\u2014'}</div>
           <div>${homeML ? fmtAmerican(homeML.price) : '\u2014'}</div>
         </div>
       `;
