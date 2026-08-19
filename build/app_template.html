@@ -799,8 +799,9 @@ function renderTeamHeightPage(){
   main.innerHTML = '';
 
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>\ud83d\udccf Team Height (Last 5 Games)</h2><div class="meta">Minutes-weighted average height on the floor \u2014 each player's last-5-games average minutes played, multiplied by her height, summed across the roster and divided by total minutes accounted for. Roughly "how tall is the average player on the court for this team right now."</div>`;
+  head.innerHTML = `<h2>\ud83d\udccf Team Height (Last 5 Games) <span id="teamHeightInfoIcon"></span></h2>`;
   main.appendChild(head);
+  appendDefIcon(head.querySelector('#teamHeightInfoIcon'), `Minutes-weighted average height on the floor \u2014 each player's last-5-games average minutes played, multiplied by her height, summed across the roster and divided by total minutes accounted for. Roughly "how tall is the average player on the court for this team right now."`);
 
   const results = computeTeamWeightedHeight();
   if(!results.length){
@@ -844,8 +845,9 @@ function renderLeagueStatsPage(year, mode, windowMode){
 
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>\ud83c\udfc0 League Stats \u2014 ${year}, ${windowLabelText}</h2><div class="meta">Every team's and every player's line, side by side. Click a column header to sort, click a player's name to see her full game log.</div>`;
+  head.innerHTML = `<h2>\ud83c\udfc0 League Stats \u2014 ${year}, ${windowLabelText} <span id="leagueStatsInfoIcon"></span></h2>`;
   main.appendChild(head);
+  appendDefIcon(head.querySelector('#leagueStatsInfoIcon'), `Every team's and every player's line, side by side. Click a column header to sort, click a player's name to see her full game log.`);
 
   main.appendChild(renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderLeagueStatsPage(year, mode, val); }));
 
@@ -929,18 +931,13 @@ function renderLeagueStatsPage(year, mode, windowMode){
   const playerCols = mode==='totals' ? LEAGUE_PLAYER_COLS : LEAGUE_PLAYER_AVG_COLS;
   makeTable(main, playerCols, playerRows, {defaultSort:'pts', defaultDir:'desc', teamFor:r=>r.team, defaultHideDNP:true, hideLabel:'Hide players who didn\u2019t play any minutes this season'});
 
-  const t3 = document.createElement('div'); t3.className='section-title';
-  t3.textContent = `Individual Player Advanced Metrics \u2014 ${year}`;
+  const t3 = document.createElement('div'); t3.className='section-title'; t3.style.display='flex'; t3.style.alignItems='center';
+  const t3Text = document.createElement('span'); t3Text.textContent = `Individual Player Advanced Metrics \u2014 ${year}`;
+  t3.appendChild(t3Text);
   main.appendChild(t3);
-  const advFn = document.createElement('div'); advFn.className='footnote'; advFn.style.marginBottom='8px';
-  advFn.textContent = 'Same advanced-metrics engine as each player\u2019s own page, applied league-wide. EMA/StdDev/IQR reflect her most recent played game (current rolling form, same number her own player page shows right now, independent of the Game Window selector above); USG% and DvP Faced are season averages instead, since a single game\u2019s usage or single game\u2019s matchup wouldn\u2019t represent a season the way a trailing average does. Tap any column header\u2019s \u24d8 for the full definition.';
-  main.appendChild(advFn);
+  appendDefIcon(t3, `Same advanced-metrics engine as each player\u2019s own page, applied league-wide. EMA/StdDev/IQR reflect her most recent played game (current rolling form, same number her own player page shows right now, independent of the Game Window selector above); USG% and DvP Faced are season averages instead, since a single game\u2019s usage or single game\u2019s matchup wouldn\u2019t represent a season the way a trailing average does. Tap any column header\u2019s \u24d8 for the full definition.<br><br>Team shooting percentages (FG%/3P%/FT%) are computed from the team\u2019s combined makes/attempts across the selected games, not averaged from individual players\u2019 percentages \u2014 that\u2019s the only mathematically correct way to roll them up. "Avg Height (Wtd)" weights each player\u2019s height by her total minutes played in the selected games, so rotation players count more than bench players who barely played.`);
   const leagueAdvRows = computeLeagueAdvancedRows(year);
   makeTable(main, LEAGUE_ADV_COLS, leagueAdvRows, {defaultSort:'ptsEma', defaultDir:'desc', teamFor:r=>r.team});
-
-  const fn = document.createElement('div'); fn.className='footnote';
-  fn.textContent = 'Team shooting percentages (FG%/3P%/FT%) are computed from the team\u2019s combined makes/attempts across the selected games, not averaged from individual players\u2019 percentages \u2014 that\u2019s the only mathematically correct way to roll them up. "Avg Height (Wtd)" weights each player\u2019s height by her total minutes played in the selected games, so rotation players count more than bench players who barely played.';
-  main.appendChild(fn);
 
   // ---- Minutes Trend: flags players whose recent minutes have moved sharply vs. their own
   // prior stretch -- independent of the year/window controls above, since it's inherently a
@@ -948,9 +945,7 @@ function renderLeagueStatsPage(year, mode, windowMode){
   const trendTitle = document.createElement('div'); trendTitle.className='section-title';
   trendTitle.textContent = '\ud83d\udcc8 Minutes Trend \u2014 Role Changes';
   main.appendChild(trendTitle);
-  const trendNote = document.createElement('div'); trendNote.className='footnote'; trendNote.style.marginBottom='8px';
-  trendNote.textContent = 'Compares each player\u2019s average minutes over her last N games to the N games right before that. Non-injury DNPs (coach\u2019s decision, rest, etc.) count as 0 minutes, so a genuine role change still shows up as a real decrease. Injury-related DNPs are excluded from the comparison entirely, since a health absence isn\u2019t a role change \u2014 note this depends on injury-reason data that isn\u2019t in the current dataset yet, so until a fresh data pull backfills it, all DNPs are treated as non-injury by default. Needs at least 2\u00d7N games of history to make a fair same-size comparison.';
-  main.appendChild(trendNote);
+  appendDefIcon(trendTitle, 'Compares each player\u2019s average minutes over her last N games to the N games right before that. Non-injury DNPs (coach\u2019s decision, rest, etc.) count as 0 minutes, so a genuine role change still shows up as a real decrease. Injury-related DNPs are excluded from the comparison entirely, since a health absence isn\u2019t a role change \u2014 note this depends on injury-reason data that isn\u2019t in the current dataset yet, so until a fresh data pull backfills it, all DNPs are treated as non-injury by default. Needs at least 2\u00d7N games of history to make a fair same-size comparison.');
 
   const trendControls = document.createElement('div');
   trendControls.style.cssText = 'display:flex;align-items:center;gap:20px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:14px;';
@@ -1025,8 +1020,9 @@ function renderTeamPage(team, year, month, windowMode){
 
   main.innerHTML = '';
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>${team} \u2014 ${year}, ${monthLabel}, ${windowLabelText} (${gameIds.length} Games)</h2><div class="meta">Player totals, per-game averages, opponent output, and individual game box scores. Click any player's name to see her full recent game log.</div>`;
+  head.innerHTML = `<h2>${team} \u2014 ${year}, ${monthLabel}, ${windowLabelText} (${gameIds.length} Games) <span id="teamPageInfoIcon"></span></h2>`;
   main.appendChild(head);
+  appendDefIcon(head.querySelector('#teamPageInfoIcon'), `Player totals, per-game averages, opponent output, and individual game box scores. Click any player's name to see her full recent game log.`);
 
   const teamInjuryList = teamInjuries(team);
 
@@ -1132,9 +1128,7 @@ function renderTeamPage(team, year, month, windowMode){
   makeTable(playersTabContent, AVG_COLS, summary.averages, {defaultSort:'pts', teamFor:()=>team});
 
   const t2b = document.createElement('div'); t2b.className='section-title'; t2b.textContent='Advanced Metrics \u2014 Offense vs. Defense (Usage Rate, Volatility, Trend)'; playersTabContent.appendChild(t2b);
-  const advFootnote = document.createElement('div'); advFootnote.className='footnote'; advFootnote.style.marginBottom='8px';
-  advFootnote.textContent = `Computed from the same ${gameIds.length}-game range selected above. USG% is the standard Basketball-Reference formula (share of team possessions used while on the floor). EMA is an exponential moving average (recent games weighted more heavily than older ones) using a span of up to 10 games. StdDev/IQR measure game-to-game volatility \u2014 a high value means the mean/average is a less reliable predictor of any single game than it looks. The two footer rows are directly comparable: "TEAM TOTAL" is this team's own scoring trend, "TEAM DEFENSE" is what opponents have scored against them, using the same PTS/REB/AST EMA-StdDev-IQR columns either way. Not shown: "Potential Assists" genuinely isn't computable from this app's data source (ESPN's free box scores don't log passer-to-shooter events, only completed assists) \u2014 that one would need a paid feed like Her Hoop Stats.`;
-  playersTabContent.appendChild(advFootnote);
+  appendDefIcon(t2b, `Computed from the same ${gameIds.length}-game range selected above. USG% is the standard Basketball-Reference formula (share of team possessions used while on the floor). EMA is an exponential moving average (recent games weighted more heavily than older ones) using a span of up to 10 games. StdDev/IQR measure game-to-game volatility \u2014 a high value means the mean/average is a less reliable predictor of any single game than it looks. The two footer rows are directly comparable: "TEAM TOTAL" is this team's own scoring trend, "TEAM DEFENSE" is what opponents have scored against them, using the same PTS/REB/AST EMA-StdDev-IQR columns either way. Not shown: "Potential Assists" genuinely isn't computable from this app's data source (ESPN's free box scores don't log passer-to-shooter events, only completed assists) \u2014 that one would need a paid feed like Her Hoop Stats.`);
   const advResult = computeAdvancedStatsForTeam(team, gameIds, summary.teamGames);
   const defenseTrend = computeTeamDefenseTrend(summary.opponents);
   const advFooterRows = [];
@@ -1143,9 +1137,7 @@ function renderTeamPage(team, year, month, windowMode){
   makeTable(playersTabContent, TEAM_ADV_COLS, advResult.rows, {defaultSort:'usgPct', teamFor:()=>team, footerRows: advFooterRows});
 
   const t2c = document.createElement('div'); t2c.className='section-title'; t2c.textContent='Team Defense by Position (Season, Full-Season DvP)'; teamTabContent.appendChild(t2c);
-  const defPosFootnote = document.createElement('div'); defPosFootnote.className='footnote'; defPosFootnote.style.marginBottom='8px';
-  defPosFootnote.textContent = 'Always season-long regardless of the Season/Game Window selected above \u2014 position splits need the bigger sample to mean anything. Same DvP Index used on the Odds page and player pages: above 1.05 means this team allows notably more than league average to that position (plus matchup for the Over); below 0.95 means notably less (tougher matchup). Directly comparable to any player\u2019s own PTS/REB/AST EMA above \u2014 e.g. a high-EMA guard facing a team with a high PTS DvP Index against guards is a stacked signal, not just one data point.';
-  teamTabContent.appendChild(defPosFootnote);
+  appendDefIcon(t2c, 'Always season-long regardless of the Season/Game Window selected above \u2014 position splits need the bigger sample to mean anything. Same DvP Index used on the Odds page and player pages: above 1.05 means this team allows notably more than league average to that position (plus matchup for the Over); below 0.95 means notably less (tougher matchup). Directly comparable to any player\u2019s own PTS/REB/AST EMA above \u2014 e.g. a high-EMA guard facing a team with a high PTS DvP Index against guards is a stacked signal, not just one data point.');
   makeTable(teamTabContent, TEAM_DEF_BY_POS_COLS, computeTeamDefenseByPosition(team), {defaultSort:'ptsAllowed', defaultDir:'desc', footerRows: [{label:'TEAM TOTAL (all positions)', values: computeTeamDefenseTotalRow(team)}]});
 
   const t3a = document.createElement('div'); t3a.className='section-title'; t3a.textContent='Team Totals by Game'; teamTabContent.appendChild(t3a);
@@ -1302,9 +1294,10 @@ function renderGamePage(game){
   removeGameWindowStickyBar();
   const head = document.createElement('div'); head.className='pagehead';
   const venue = (DATA.teamVenues && DATA.teamVenues[game.home]) || {};
-  const venueLine = venue.name ? `<br>${venue.name}${venue.city ? ' \u2014 '+venue.city+(venue.state?', '+venue.state:'') : ''}` : '';
-  head.innerHTML = `<h2>${game.label}</h2><div class="meta">Full box score, each team in its own table with team totals at the bottom. Click any column header to sort, or a player's name to see her full recent game log.${venueLine}</div>`;
+  const venueLine = venue.name ? `${venue.name}${venue.city ? ' \u2014 '+venue.city+(venue.state?', '+venue.state:'') : ''}` : '';
+  head.innerHTML = `<h2>${game.label} <span id="gamePageInfoIcon"></span></h2>${venueLine ? `<div class="meta">${venueLine}</div>` : ''}`;
   main.appendChild(head);
+  appendDefIcon(head.querySelector('#gamePageInfoIcon'), `Full box score, each team in its own table with team totals at the bottom. Click any column header to sort, or a player's name to see her full recent game log.`);
   const back = document.createElement('button'); back.className='addbtn'; back.textContent='← Back';
   back.style.marginBottom='14px';
   back.addEventListener('click', ()=>{ setActiveNav(game.home); renderTeamPage(game.home); });
@@ -2182,7 +2175,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   const heightTierWrap = document.createElement('div');
   heightTierWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
   prodTabContent.appendChild(heightTierWrap);
-  const heightTierData = buildHeightTierSection(heightTierWrap, playerName, team, windowMode);
+  const heightTierData = buildHeightTierSection(heightTierWrap, playerName, team, windowMode, heightTierTitle);
 
   // Next opponent's players at her position -- async, since it needs the live schedule/odds
   // feed to know who's actually next.
@@ -2224,23 +2217,16 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   });
 
   makeTable(gamelogTabContent, PLAYER_LOG_COLS, logRows, {defaultSort:'date', defaultDir:'desc', footerRows, hideLabel:'Hide games she didn\u2019t play (DNP)'});
-
-  const fn2 = document.createElement('div'); fn2.className='footnote';
-  fn2.innerHTML = `Rows with <b>DNP</b> checked reflect games on the schedule she didn\u2019t play in \u2014 those games are excluded from the MIN/MAX/AVERAGE/MEDIAN/MODE rows at the bottom, which are based only on games actually played within the ${windowLabelText.toLowerCase()} window selected above. Shooting-percentage summary rows (FG%/3P%/FT%) are computed from each game\u2019s own percentage, not recalculated from total makes/attempts.`;
-  gamelogTabContent.appendChild(fn2);
+  appendDefIcon(t1, `Rows with <b>DNP</b> checked reflect games on the schedule she didn\u2019t play in \u2014 those games are excluded from the MIN/MAX/AVERAGE/MEDIAN/MODE rows at the bottom, which are based only on games actually played within the ${windowLabelText.toLowerCase()} window selected above. Shooting-percentage summary rows (FG%/3P%/FT%) are computed from each game\u2019s own percentage, not recalculated from total makes/attempts.`);
 
   const t5 = document.createElement('div'); t5.className='section-title'; t5.textContent=`Gamelog - Advanced, ${windowLabelText} (DNPs included)`; gamelogTabContent.appendChild(t5);
-  const adv2Footnote = document.createElement('div'); adv2Footnote.className='footnote'; adv2Footnote.style.marginBottom='8px';
-  adv2Footnote.textContent = 'Same games as the box score table above, but built for forecasting against a sportsbook line instead of describing what already happened. USG% is the standard Basketball-Reference formula. EMA (exponential moving average) weights recent games more heavily and is computed using every game up to and including that row, oldest to newest. StdDev/IQR use a trailing window of up to the last 10 games played (not the calendar window above) \u2014 a high value means the average is a less reliable predictor of any single game than it looks. DvP Index compares that game\u2019s opponent to the league-average defense against her position for that stat, using ONLY games that had already been played before that game\u2019s tip-off (not the final, full-season DvP, which would leak in results from games that hadn\u2019t happened yet) \u2014 above 1.05 is a plus matchup (favors the Over), below 0.95 is a tougher one. "Potential Assists" isn\u2019t included \u2014 it genuinely can\u2019t be computed from this app\u2019s data source (see the Team page\u2019s Advanced Metrics section for the longer explanation).';
-  gamelogTabContent.appendChild(adv2Footnote);
+  appendDefIcon(t5, 'Same games as the box score table above, but built for forecasting against a sportsbook line instead of describing what already happened. USG% is the standard Basketball-Reference formula. EMA (exponential moving average) weights recent games more heavily and is computed using every game up to and including that row, oldest to newest. StdDev/IQR use a trailing window of up to the last 10 games played (not the calendar window above) \u2014 a high value means the average is a less reliable predictor of any single game than it looks. DvP Index compares that game\u2019s opponent to the league-average defense against her position for that stat, using ONLY games that had already been played before that game\u2019s tip-off (not the final, full-season DvP, which would leak in results from games that hadn\u2019t happened yet) \u2014 above 1.05 is a plus matchup (favors the Over), below 0.95 is a tougher one. "Potential Assists" isn\u2019t included \u2014 it genuinely can\u2019t be computed from this app\u2019s data source (see the Team page\u2019s Advanced Metrics section for the longer explanation).');
   const advLogRows = computePlayerAdvancedLog(pl, team);
   makeTable(gamelogTabContent, PLAYER_ADV_COLS, advLogRows, {defaultSort:'date', defaultDir:'desc', hideLabel:'Hide games she didn\u2019t play (DNP)'});
 
   // ---- Vs Opponent: full-season gamelog + advanced metrics against one selected team ----
   const t6 = document.createElement('div'); t6.className='section-title'; t6.textContent='Vs. Opponent \u2014 Full Season Gamelog'; vsOppTabContent.appendChild(t6);
-  const vsOppNote = document.createElement('div'); vsOppNote.className='footnote'; vsOppNote.style.marginBottom='8px';
-  vsOppNote.textContent = 'Defaults to her actual next scheduled opponent when that can be looked up from live odds (this app has no schedule/fixtures data otherwise, only completed box scores); if that lookup comes back empty, defaults to the first team alphabetically instead. Change the dropdown to see any matchup from this season. DvP Index shown per row is point-in-time (as of right before that specific game), same as the table above \u2014 not the final, full-season DvP.';
-  vsOppTabContent.appendChild(vsOppNote);
+  appendDefIcon(t6, 'Defaults to her actual next scheduled opponent when that can be looked up from live odds (this app has no schedule/fixtures data otherwise, only completed box scores); if that lookup comes back empty, defaults to the first team alphabetically instead. Change the dropdown to see any matchup from this season. DvP Index shown per row is point-in-time (as of right before that specific game), same as the table above \u2014 not the final, full-season DvP.');
 
   const vsOppControls = document.createElement('div'); vsOppControls.style.cssText='display:flex;align-items:center;gap:10px;margin-bottom:14px;';
   const vsOppLabel = document.createElement('div'); vsOppLabel.style.cssText='font-weight:700;color:var(--navy2);font-size:13px;'; vsOppLabel.textContent='Opponent:';
@@ -2253,9 +2239,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
 
   const vsOppStdContainer = document.createElement('div'); vsOppTabContent.appendChild(vsOppStdContainer);
   const t7 = document.createElement('div'); t7.className='section-title'; t7.textContent='Vs. Opponent \u2014 Advanced Metrics'; vsOppTabContent.appendChild(t7);
-  const vsOppAdvNote = document.createElement('div'); vsOppAdvNote.className='footnote'; vsOppAdvNote.style.marginBottom='8px';
-  vsOppAdvNote.textContent = 'Same games as the table above, same advanced-metrics calculation as the main Advanced Metrics table (EMA/StdDev/IQR/USG%/point-in-time DvP) \u2014 just computed over only her meetings with this specific opponent, so EMA/StdDev/IQR reflect how consistent she\u2019s been against this team specifically rather than her overall recent form.';
-  vsOppTabContent.appendChild(vsOppAdvNote);
+  appendDefIcon(t7, 'Same games as the table above, same advanced-metrics calculation as the main Advanced Metrics table (EMA/StdDev/IQR/USG%/point-in-time DvP) \u2014 just computed over only her meetings with this specific opponent, so EMA/StdDev/IQR reflect how consistent she\u2019s been against this team specifically rather than her overall recent form.');
   const vsOppAdvContainer = document.createElement('div'); vsOppTabContent.appendChild(vsOppAdvContainer);
 
   function renderVsOpponentTables(opponentShort){
@@ -3563,7 +3547,7 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
   return result;
 }
 
-function buildHeightTierSection(container, playerName, team, pageWindowMode){
+function buildHeightTierSection(container, playerName, team, pageWindowMode, titleEl){
   const heightData = computeHeightTierData(playerName, team);
   if(!heightData){
     const note = document.createElement('div'); note.style.cssText = 'color:var(--sub);font-size:12.5px;';
@@ -3571,9 +3555,7 @@ function buildHeightTierSection(container, playerName, team, pageWindowMode){
     container.appendChild(note);
     return null;
   }
-  const disclaimer = document.createElement('div'); disclaimer.className = 'footnote'; disclaimer.style.marginBottom = '10px';
-  disclaimer.textContent = `Proxy, not real defensive matchup data \u2014 this app has no play-by-play tracking of who actually guarded whom. "Shortest/Middle/Tallest" compares her production against opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} groups (minutes-weighted average height of whichever of them played), grouped into thirds fixed from her full season so the tiers mean the same thing across every window below. Cutoffs: Shortest < ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest > ${heightData.p67.toFixed(1)}in.`;
-  container.appendChild(disclaimer);
+  if(titleEl) appendDefIcon(titleEl, `Proxy, not real defensive matchup data \u2014 this app has no play-by-play tracking of who actually guarded whom. "Shortest/Middle/Tallest" compares her production against opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} groups (minutes-weighted average height of whichever of them played), grouped into thirds fixed from her full season so the tiers mean the same thing across every window below. Cutoffs: Shortest < ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest > ${heightData.p67.toFixed(1)}in.`);
 
   // Driven entirely by the page-level Period selector at the top of the page now, not its own
   // separate toggle -- 'all' maps to null (heightTierStatsForWindow's convention for "full
@@ -3718,7 +3700,8 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   ];
 
   function renderTable(){
-    head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket}</h2><div class="meta">Cutoffs (full season, fixed): Shortest &lt; ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest &gt; ${heightData.p67.toFixed(1)}in. Uncheck a game to exclude it from the totals below. Click a column header to sort.</div>`;
+    head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} <span id="tierDetailInfoIcon"></span></h2>`;
+    appendDefIcon(head.querySelector('#tierDetailInfoIcon'), `Cutoffs (full season, fixed): Shortest &lt; ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest &gt; ${heightData.p67.toFixed(1)}in. Uncheck a game to exclude it from the totals below. Click a column header to sort.`);
     tableHolder.innerHTML = '';
 
     const windowed = activeSize ? heightData.allGames.slice(-activeSize) : heightData.allGames;
@@ -4574,8 +4557,9 @@ async function renderHomePage(){
   let selectedBook = 'best';
   let recompute = null;
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>\ud83c\udfe0 Today\u2019s Top 30 Bets</h2><div class="meta">Pulled live from your linked sportsbooks via your Worker, ranked by historical hit rate over the last 10 and 15 games \u2014 same method as the Live Lines page.</div>`;
+  head.innerHTML = `<h2>\ud83c\udfe0 Today\u2019s Top 30 Bets</h2>`;
   main.appendChild(head);
+  appendDefIcon(head.querySelector('h2'), 'Pulled live from your linked sportsbooks via your Worker, ranked by historical hit rate over the last 10 and 15 games \u2014 same method as the Live Lines page.');
 
   const bookSelectorDiv = document.createElement('div');
   bookSelectorDiv.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;';
@@ -4712,9 +4696,9 @@ function renderOddsPage(){
   main.innerHTML = '';
   removeGameWindowStickyBar();
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>Live Lines <span id="liveLinesInfoIcon"></span></h2><div class="meta">Pulls each team's next scheduled game through your own Cloudflare Worker proxy, across all 6 linked sportsbooks \u2014 your real API key lives only in your Worker's environment, never in this file or in your browser.</div>`;
+  head.innerHTML = `<h2>Live Lines <span id="liveLinesInfoIcon"></span></h2>`;
   main.appendChild(head);
-  appendDefIcon(head.querySelector('#liveLinesInfoIcon'), `<b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else, with <b style="color:var(--gold)">gold</b> instead of green whenever that rate is 96% or higher. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same rule, windowed the same way, and both prop tables can be filtered by any column. Click a game's title to drill into just that matchup with its own window toggle. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom. Full-game Moneyline, Spread, and Total lines also show a small "VSiN: X% handle / Y% bets" line \u2014 DraftKings betting splits pulled from VSiN Pro \u2014 showing "\u2014" wherever VSiN hasn't posted a split yet. VSiN doesn't publish splits for halves, team totals, player props, alt lines, or parlays, so those sections don't show this line at all.`);
+  appendDefIcon(head.querySelector('#liveLinesInfoIcon'), `Pulls each team's next scheduled game through your own Cloudflare Worker proxy, across all 6 linked sportsbooks \u2014 your real API key lives only in your Worker's environment, never in this file or in your browser. <b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else, with <b style="color:var(--gold)">gold</b> instead of green whenever that rate is 96% or higher. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same rule, windowed the same way, and both prop tables can be filtered by any column. Click a game's title to drill into just that matchup with its own window toggle. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom. Full-game Moneyline, Spread, and Total lines also show a small "VSiN: X% handle / Y% bets" line \u2014 DraftKings betting splits pulled from VSiN Pro \u2014 showing "\u2014" wherever VSiN hasn't posted a split yet. VSiN doesn't publish splits for halves, team totals, player props, alt lines, or parlays, so those sections don't show this line at all.`);
 
   // Worker URL config (input, Fetch button, remember/forget) is intentionally NOT rendered --
   // the page auto-loads a saved URL or falls back to the baked-in DEFAULT_WORKER_URL and
@@ -5753,17 +5737,14 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
   sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Standard`;
   container.appendChild(sec);
+  appendDefIcon(sec, `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows (see "Overall %"); ties on that fall back to Season %, and further ties fall back to the L10 EMA's distance from the line (player props only \u2014 team-level bets have no per-player EMA, so they stay tied at that level). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`);
 
   if(todaysGames.length === 0){
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet. (Bets drop out after an estimated end of the 1st quarter \u2014 see the note below.)';
+    msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet. (Bets drop out after an estimated end of the 1st quarter \u2014 tap the \u24d8 above for details.)';
     container.appendChild(msg0);
     return;
   }
-
-  const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows (see "Overall %"); ties on that fall back to Season %, and further ties fall back to the L10 EMA's distance from the line (player props only \u2014 team-level bets have no per-player EMA, so they stay tied at that level). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`;
-  container.appendChild(note);
 
   if(topBets.length === 0){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
@@ -6079,10 +6060,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
   sec.textContent = `\ud83e\udde0 Today\u2019s Top ${topN} Bets \u2014 Advanced Analytics`;
   container.appendChild(sec);
-
-  const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = `Player props only, ranked by a composite edge score \u2014 not the same ranking as the hit-rate table above. A leg only qualifies if at least 3 of its 4 EMA windows (L5/L10/L15/full season) agree with the side DraftKings' line implies, AND the opponent's Defense-vs-Position Index doesn't flatly contradict that direction (beyond 0.85/1.15 the wrong way excludes it outright, not just a discount). What's left is scored by how big the edge is, how volatile she's been (IQR over her last 10 games \u2014 high volatility discounts the score), the DvP Index itself (scaled bonus/penalty short of the hard cutoff above), and a Usage Rate (USG%) trend \u2014 whether her last 5 games show rising or falling involvement versus her season norm, nudging the score up to \u00b115%. Players listed Out or Doubtful are excluded outright; Questionable/Day-to-Day players are kept but flagged and discounted. Same pregame-through-Q1 window and -165 price floor as the table above. This is a second opinion from a different methodology, not a replacement \u2014 worth comparing where the two tables agree and where they don't.`;
-  container.appendChild(note);
+  appendDefIcon(sec, `Player props only, ranked by a composite edge score \u2014 not the same ranking as the hit-rate table above. A leg only qualifies if at least 3 of its 4 EMA windows (L5/L10/L15/full season) agree with the side DraftKings' line implies, AND the opponent's Defense-vs-Position Index doesn't flatly contradict that direction (beyond 0.85/1.15 the wrong way excludes it outright, not just a discount). What's left is scored by how big the edge is, how volatile she's been (IQR over her last 10 games \u2014 high volatility discounts the score), the DvP Index itself (scaled bonus/penalty short of the hard cutoff above), and a Usage Rate (USG%) trend \u2014 whether her last 5 games show rising or falling involvement versus her season norm, nudging the score up to \u00b115%. Players listed Out or Doubtful are excluded outright; Questionable/Day-to-Day players are kept but flagged and discounted. Same pregame-through-Q1 window and -165 price floor as the table above. This is a second opinion from a different methodology, not a replacement \u2014 worth comparing where the two tables agree and where they don't.`);
 
   if(todaysGames.length === 0){
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
@@ -6293,7 +6271,7 @@ function renderTopBets(container, cachedFetch, topN, selectedBook){
     sec0.textContent = `\u2b50 Today\u2019s Top ${topN} Bets (across all games)`;
     container.appendChild(sec0);
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet. (Bets drop out after an estimated end of the 1st quarter \u2014 see the note below.)';
+    msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet. (Bets drop out after an estimated end of the 1st quarter \u2014 tap the \u24d8 above for details.)';
     container.appendChild(msg0);
     return;
   }
@@ -6765,8 +6743,6 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   }
 
   const windowLabelText = windowSize==='all' ? 'Full Season' : `Last ${windowSize}`;
-  const halfNote = document.createElement('div'); halfNote.className='footnote'; halfNote.style.margin='4px 0 10px';
-  halfNote.textContent = 'Half hit rates are derived from this season\u2019s play-by-play data (score at the end of Q2 = 1st half; final minus that = 2nd half). A small number of games can be missing this if their play-by-play log was incomplete \u2014 those are simply excluded from the count rather than treated as a miss, so the games-played figure in the badge may be slightly lower than the full-game one above.';
 
   // Builds a labeled, color-coded chip (green/red/grey background, matching every other hit-rate
   // display in this app) for the O/U expand row and the Alt Lines expand panel -- reuses
@@ -6850,11 +6826,19 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   tabContents.gameLines.appendChild(glTitle2);
   buildTeamTotalsTable(tabContents.gameLines, detailMarkets['team_totals'], true);
 
-  tabContents.half1.appendChild(halfNote.cloneNode(true));
+  const halfInfoWrap1 = document.createElement('div'); halfInfoWrap1.style.cssText = 'margin-bottom:8px;';
+  const halfInfoIcon1 = document.createElement('span'); halfInfoIcon1.textContent = 'About half hit rates'; halfInfoIcon1.style.cssText = 'font-size:12px;color:var(--navy2);cursor:pointer;opacity:.85;';
+  halfInfoWrap1.appendChild(halfInfoIcon1);
+  tabContents.half1.appendChild(halfInfoWrap1);
+  appendDefIcon(halfInfoWrap1, 'Half hit rates are derived from this season\u2019s play-by-play data (score at the end of Q2 = 1st half; final minus that = 2nd half). A small number of games can be missing this if their play-by-play log was incomplete \u2014 those are simply excluded from the count rather than treated as a miss, so the games-played figure in the badge may be slightly lower than the full-game one above.');
   buildFullSpreadTotalTable(tabContents.half1, detailMarkets['h2h_h1'], detailMarkets['spreads_h1'], detailMarkets['totals_h1'], true, 1);
   buildTeamTotalsTable(tabContents.half1, detailMarkets['team_totals_h1'], true, 1);
 
-  tabContents.half2.appendChild(halfNote.cloneNode(true));
+  const halfInfoWrap2 = document.createElement('div'); halfInfoWrap2.style.cssText = 'margin-bottom:8px;';
+  const halfInfoIcon2 = document.createElement('span'); halfInfoIcon2.textContent = 'About half hit rates'; halfInfoIcon2.style.cssText = 'font-size:12px;color:var(--navy2);cursor:pointer;opacity:.85;';
+  halfInfoWrap2.appendChild(halfInfoIcon2);
+  tabContents.half2.appendChild(halfInfoWrap2);
+  appendDefIcon(halfInfoWrap2, 'Half hit rates are derived from this season\u2019s play-by-play data (score at the end of Q2 = 1st half; final minus that = 2nd half). A small number of games can be missing this if their play-by-play log was incomplete \u2014 those are simply excluded from the count rather than treated as a miss, so the games-played figure in the badge may be slightly lower than the full-game one above.');
   buildFullSpreadTotalTable(tabContents.half2, detailMarkets['h2h_h2'], detailMarkets['spreads_h2'], detailMarkets['totals_h2'], true, 2);
   buildTeamTotalsTable(tabContents.half2, detailMarkets['team_totals_h2'], true, 2);
 
@@ -8855,12 +8839,9 @@ async function renderAppTrackerPage(){
   }
 
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>\ud83d\udcca App Tracker</h2><div class="meta">Every Top 30 recommendation (Standard + Advanced Analytics) this app has automatically captured, meant to be taken once per day pre-game \u2014 see the note below for exactly when. Auto-grades against this app's own historical box scores once each game concludes, same as the Bet Tracker.</div>`;
+  head.innerHTML = `<h2>\ud83d\udcca App Tracker <span id="appTrackerInfoIcon"></span></h2>`;
   main.appendChild(head);
-
-  const noteDiv = document.createElement('div'); noteDiv.className='footnote'; noteDiv.style.marginBottom='14px';
-  noteDiv.textContent = 'How this works, honestly: the Top 30 lists are computed entirely in your browser using live odds and this app\u2019s season data \u2014 there\u2019s no backend process that can run that logic on a fixed clock independent of a browser being open. So instead, every time the Home page loads, the app checks whether today\u2019s snapshot (US Eastern date) has already been captured; if it\u2019s on or after 12:00pm ET and it hasn\u2019t, it captures the current Top 30 Standard and Top 30 Advanced lists right then, tagged as pending picks. That means the exact capture time is "whenever the Home page is first opened on or after noon ET that day," not a guaranteed 12:00:00 timestamp \u2014 opening the Home page at least once daily after noon ET is what keeps this consistent.';
-  main.appendChild(noteDiv);
+  appendDefIcon(head.querySelector('#appTrackerInfoIcon'), `Every Top 30 recommendation (Standard + Advanced Analytics) this app has automatically captured, meant to be taken once per day pre-game. Auto-grades against this app's own historical box scores once each game concludes, same as the Bet Tracker.<br><br>How this works, honestly: the Top 30 lists are computed entirely in your browser using live odds and this app\u2019s season data \u2014 there\u2019s no backend process that can run that logic on a fixed clock independent of a browser being open. So instead, every time the Home page loads, the app checks whether today\u2019s snapshot (US Eastern date) has already been captured; if it\u2019s on or after 12:00pm ET and it hasn\u2019t, it captures the current Top 30 Standard and Top 30 Advanced lists right then, tagged as pending picks. That means the exact capture time is "whenever the Home page is first opened on or after noon ET that day," not a guaranteed 12:00:00 timestamp \u2014 opening the Home page at least once daily after noon ET is what keeps this consistent.`);
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
   statusDiv.textContent = 'Loading snapshot history\u2026';
@@ -9396,8 +9377,9 @@ async function renderBetTrackerPage(){
   }
 
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>\ud83d\udcdd Bet Tracker</h2><div class="meta">A mock record of bets you've made or want to track \u2014 stored on your Worker, so it's the same list on any device. Auto-grades against this app's own historical box scores whenever the game is already in our data.</div>`;
+  head.innerHTML = `<h2>\ud83d\udcdd Bet Tracker <span id="betTrackerInfoIcon"></span></h2>`;
   main.appendChild(head);
+  appendDefIcon(head.querySelector('#betTrackerInfoIcon'), `A mock record of bets you've made or want to track \u2014 stored on your Worker, so it's the same list on any device. Auto-grades against this app's own historical box scores whenever the game is already in our data.`);
 
   const acctRow = document.createElement('div'); acctRow.style.cssText='display:flex;align-items:center;gap:12px;margin-bottom:14px;font-size:12.5px;color:var(--sub);';
   const acctLabel = document.createElement('span'); acctLabel.textContent = `Logged in as ${getAuthEmail()}`;
@@ -10743,10 +10725,7 @@ function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailM
   const secParlay = document.createElement('div'); secParlay.className='section-title';
   secParlay.textContent = `Auto-Generated Parlays \u2014 ${qualPct}%+ Cutoff (both Last 10 AND Last 15 games)`;
   wrap.appendChild(secParlay);
-
-  const parlayNote = document.createElement('div'); parlayNote.className='footnote'; parlayNote.style.marginBottom='10px';
-  parlayNote.textContent = `These are built purely from historical hit-rate frequency, independent of the window selector above (always checked against last-10 and last-15 specifically). The same bet can appear in more than one parlay below, and can also appear in both the 75% and 70% sections. Player props additionally require she actually played in at least 60% of the games in both windows (6-of-10, 9-of-15) so a small-sample fluke can\u2019t sneak in. Small samples still mean these aren\u2019t true probabilities \u2014 treat as a research shortlist, not a guarantee.`;
-  wrap.appendChild(parlayNote);
+  appendDefIcon(secParlay, `These are built purely from historical hit-rate frequency, independent of the window selector above (always checked against last-10 and last-15 specifically). The same bet can appear in more than one parlay below, and can also appear in both the 75% and 70% sections. Player props additionally require she actually played in at least 60% of the games in both windows (6-of-10, 9-of-15) so a small-sample fluke can\u2019t sneak in. Small samples still mean these aren\u2019t true probabilities \u2014 treat as a research shortlist, not a guarantee.`);
 
   if(candidates.length < 3){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:16px;';
@@ -10794,7 +10773,7 @@ function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailM
       card.appendChild(cardTitle);
       const oddsLine = document.createElement('div');
       oddsLine.style.cssText = 'font-size:11.5px;color:var(--sub);margin-bottom:8px;';
-      oddsLine.innerHTML = `Est. combined odds (independent math): <b style="color:var(--ink)">${fmtAmerican(americanParlay)}</b> \u2014 <i>not DraftKings' real same-game price; see note above</i>`;
+      oddsLine.innerHTML = `Est. combined odds (independent math): <b style="color:var(--ink)">${fmtAmerican(americanParlay)}</b> \u2014 <i>not DraftKings' real same-game price; tap the \u24d8 below for details</i>`;
       card.appendChild(oddsLine);
       const ul = document.createElement('ul'); ul.style.cssText='margin:0;padding-left:18px;font-size:12.5px;';
       legs.forEach(l=>{
@@ -10809,9 +10788,11 @@ function buildParlaySection(wrap, ev, homeShort, awayShort, gameMarkets, detailM
       parlayGrid.appendChild(card);
     });
     wrap.appendChild(parlayGrid);
-    const oddsCaveat = document.createElement('div'); oddsCaveat.className='footnote'; oddsCaveat.style.marginBottom='16px';
-    oddsCaveat.innerHTML = '<b>On the combined odds above:</b> these legs are all from the same game, so they\u2019re correlated with each other (e.g. one player scoring big and an opposing player scoring low often move together). The odds shown are a naive independent-multiplication estimate \u2014 mathematically valid only for uncorrelated legs \u2014 and will <b>not</b> match DraftKings\u2019 actual same-game-parlay price, which uses a correlation-aware model this app doesn\u2019t have access to (The Odds API doesn\u2019t expose SGP pricing). Always check the real combined price in the DraftKings app before betting \u2014 don\u2019t rely on the number above.';
-    wrap.appendChild(oddsCaveat);
+    const oddsCaveatWrap = document.createElement('div'); oddsCaveatWrap.style.cssText = 'margin-bottom:16px;';
+    const oddsCaveatIcon = document.createElement('span'); oddsCaveatIcon.textContent = 'About the combined odds shown above'; oddsCaveatIcon.style.cssText = 'font-size:12px;color:var(--navy2);cursor:pointer;opacity:.85;';
+    oddsCaveatWrap.appendChild(oddsCaveatIcon);
+    wrap.appendChild(oddsCaveatWrap);
+    appendDefIcon(oddsCaveatWrap, '<b>On the combined odds above:</b> these legs are all from the same game, so they\u2019re correlated with each other (e.g. one player scoring big and an opposing player scoring low often move together). The odds shown are a naive independent-multiplication estimate \u2014 mathematically valid only for uncorrelated legs \u2014 and will <b>not</b> match DraftKings\u2019 actual same-game-parlay price, which uses a correlation-aware model this app doesn\u2019t have access to (The Odds API doesn\u2019t expose SGP pricing). Always check the real combined price in the DraftKings app before betting \u2014 don\u2019t rely on the number above.');
   }
 }
 
