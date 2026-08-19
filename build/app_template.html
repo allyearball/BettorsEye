@@ -794,9 +794,28 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
 // Minutes-weighted average height across the league, over each player's last 5 games played.
 // See computeTeamWeightedHeight()'s own comment for the exact formula and why the accounted-for
 // minutes won't land exactly on 200 for every team.
+// Shared top-of-page toggle between the two Stats pages -- replaces the old "League" nav
+// sidebar group, now that Team pages are reached directly by clicking a team name in the
+// League Stats tables instead of a separate "Teams" nav group.
+function statsPageSwitcher(activeKey){
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;margin-bottom:16px;';
+  const defs = [ {key:'league', label:'League Stats', fn: ()=>renderLeagueStatsPage()}, {key:'height', label:'Team Height', fn: ()=>renderTeamHeightPage()} ];
+  defs.forEach(d=>{
+    const btn = document.createElement('button');
+    btn.textContent = d.label;
+    const isActive = d.key===activeKey;
+    btn.style.cssText = `padding:8px 16px;border-radius:6px;border:1px solid ${isActive?'var(--navy2)':'var(--line)'};background:${isActive?'var(--navy2)':'var(--panel)'};color:${isActive?'#fff':'var(--ink)'};font-size:13px;font-weight:700;cursor:pointer;font-family:var(--sans);`;
+    btn.addEventListener('click', d.fn);
+    row.appendChild(btn);
+  });
+  return row;
+}
 function renderTeamHeightPage(){
   lastRender = () => renderTeamHeightPage();
   main.innerHTML = '';
+  nav.innerHTML = ''; nav.style.display = 'none';
+  main.appendChild(statsPageSwitcher('height'));
 
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83d\udccf Team Height (Last 5 Games) <span id="teamHeightInfoIcon"></span></h2>`;
@@ -842,6 +861,8 @@ function renderLeagueStatsPage(year, mode, windowMode){
   year = year || allYears[allYears.length-1];
   lastRender = () => renderLeagueStatsPage(year, mode, windowMode);
   main.innerHTML = '';
+  nav.innerHTML = ''; nav.style.display = 'none';
+  main.appendChild(statsPageSwitcher('league'));
 
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const head = document.createElement('div'); head.className='pagehead';
@@ -1300,7 +1321,7 @@ function renderGamePage(game){
   appendDefIcon(head.querySelector('#gamePageInfoIcon'), `Full box score, each team in its own table with team totals at the bottom. Click any column header to sort, or a player's name to see her full recent game log.`);
   const back = document.createElement('button'); back.className='addbtn'; back.textContent='← Back';
   back.style.marginBottom='14px';
-  back.addEventListener('click', ()=>{ setActiveNav(game.home); renderTeamPage(game.home); });
+  back.addEventListener('click', ()=>{ renderTeamPage(game.home); });
   main.appendChild(back);
 
   buildBoxScoreContent(main, game);
@@ -2024,7 +2045,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   main.innerHTML = '';
 
   const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
-  back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else buildNav(); });
+  back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderLeagueStatsPage(); });
   main.appendChild(back);
 
   if(!fullLogObj){
@@ -2273,83 +2294,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   });
 }
 
-/* ---------- nav ---------- */
-function navBtn(text, onClick){
-  const b = document.createElement('button'); b.className='navbtn'; b.textContent=text;
-  b.addEventListener('click', ()=>{ [...nav.querySelectorAll('.navbtn')].forEach(x=>x.classList.remove('active')); b.classList.add('active'); onClick(); });
-  return b;
-}
-function setActiveNav(team){
-  [...nav.querySelectorAll('.navbtn')].forEach(x=>x.classList.remove('active'));
-  const btn = [...nav.querySelectorAll('.navbtn')].find(b=>b.dataset.team===team);
-  if(!btn) return;
-  btn.classList.add('active');
-  // If this button lives inside a currently-collapsed group, expand that group (and collapse
-  // the other one) so the now-active button is actually visible, not just marked active while
-  // hidden.
-  const content = btn.closest('.navgroup-content');
-  if(content && content.style.display==='none'){
-    [...nav.querySelectorAll('.navgroup-content')].forEach(c=>{ c.style.display = 'none'; });
-    [...nav.querySelectorAll('.navgroup-btn')].forEach(b=>b.classList.remove('active'));
-    content.style.display = '';
-    const groupBtn = content.previousElementSibling;
-    if(groupBtn && groupBtn.classList.contains('navgroup-btn')) groupBtn.classList.add('active');
-  }
-}
-function buildNav(){
-  nav.innerHTML='';
 
-  const leagueGroupBtn = document.createElement('button'); leagueGroupBtn.className='navgroup-btn'; leagueGroupBtn.textContent='League';
-  nav.appendChild(leagueGroupBtn);
-  const leagueGroupContent = document.createElement('div'); leagueGroupContent.className='navgroup-content';
-  nav.appendChild(leagueGroupContent);
-  const leagueBtn = navBtn('League Stats', ()=>{ renderLeagueStatsPage(); collapseGroups(); });
-  leagueGroupContent.appendChild(leagueBtn);
-  // Menu label is shortened to "Team Height" -- the (L5) detail stays on the page itself
-  // (renderTeamHeightPage's own heading), just not repeated in the nav label.
-  const heightBtn = navBtn('Team Height', ()=>{ renderTeamHeightPage(); collapseGroups(); });
-  leagueGroupContent.appendChild(heightBtn);
-
-  const teamsGroupBtn = document.createElement('button'); teamsGroupBtn.className='navgroup-btn'; teamsGroupBtn.textContent='Teams';
-  nav.appendChild(teamsGroupBtn);
-  const teamsGroupContent = document.createElement('div'); teamsGroupContent.className='navgroup-content';
-  nav.appendChild(teamsGroupContent);
-  // Sorted by full name (city + nickname), not by short nickname alone -- every WNBA team's full
-  // name is "City/Region Nickname" in that order, so sorting the full string IS sorting by city
-  // first, team name second, with no extra parsing needed.
-  const sortedTeams = TEAM_NAMES.slice().sort((a,b)=>{
-    const fullA = FULL_TEAM_NAME[a] || a, fullB = FULL_TEAM_NAME[b] || b;
-    return fullA.localeCompare(fullB);
-  });
-  sortedTeams.forEach(team=>{
-    const btn = navBtn(FULL_TEAM_NAME[team] || team, ()=>{ renderTeamPage(team); collapseGroups(); });
-    btn.dataset.team = team; // setActiveNav matches on this, not on the (now full-name) display text
-    teamsGroupContent.appendChild(btn);
-  });
-
-  // Declared as a function (not const) specifically so it's hoisted -- the navBtn onClick
-  // callbacks above reference it before this line runs, which is fine since those callbacks
-  // only actually execute later, on click, by which point buildNav() has fully finished and
-  // collapseGroups is defined either way.
-  function collapseGroups(){
-    leagueGroupContent.style.display = 'none';
-    teamsGroupContent.style.display = 'none';
-    leagueGroupBtn.classList.remove('active');
-    teamsGroupBtn.classList.remove('active');
-  }
-  function toggleGroup(btn, content){
-    const wasOpen = content.style.display !== 'none';
-    collapseGroups();
-    if(!wasOpen){ content.style.display = ''; btn.classList.add('active'); }
-  }
-  leagueGroupBtn.addEventListener('click', ()=>toggleGroup(leagueGroupBtn, leagueGroupContent));
-  teamsGroupBtn.addEventListener('click', ()=>toggleGroup(teamsGroupBtn, teamsGroupContent));
-
-  collapseGroups();
-  leagueGroupContent.style.display = '';
-  leagueGroupBtn.classList.add('active');
-  leagueBtn.click();
-}
 // Rebuildable so login/logout can refresh just this piece without touching the page nav
 // buttons. Lives in its own small container appended after the page nav buttons inside
 // #toplinks, which naturally puts it furthest right (toplinks is a flex row).
@@ -2537,8 +2482,8 @@ function buildTopLinks(){
   });
   const goExplorer = withLogin(()=>{
     setActiveBoth(explorerBtn, 'tabExplorer');
-    nav.style.display='';
-    buildNav();
+    nav.innerHTML=''; nav.style.display='none';
+    renderLeagueStatsPage();
   });
   const goOdds = withLogin(()=>{
     setActiveBoth(oddsBtn, 'tabOdds');
@@ -2726,16 +2671,13 @@ function teamLinkEl(teamNameOrShort, displayText){
   a.textContent = displayText!==undefined ? displayText : teamNameOrShort;
   a.addEventListener('click', (e)=>{
     if(e && e.stopPropagation) e.stopPropagation();
-    // Coming from the Odds/Top Bets pages, the Team Explorer sidebar is hidden \u2014 bring it
-    // up and mark "Team Explorer" active so the click doesn't strand the user with no way
-    // back to the rest of Team Explorer, same as clicking it from the top nav would.
+    // Coming from the Odds/Top Bets pages, mark "Stats" active in the top nav so the click
+    // doesn't strand the user with no visual indication of where they ended up.
     const explorerBtn = [...document.querySelectorAll('#toplinks button')].find(b=>b.textContent==='Stats');
     document.querySelectorAll('#toplinks button').forEach(b=>b.classList.remove('active'));
     if(explorerBtn) explorerBtn.classList.add('active');
-    nav.style.display = '';
-    buildNav();
+    nav.innerHTML = ''; nav.style.display = 'none';
     renderTeamPage(shortName);
-    setActiveNav(shortName);
   });
   return a;
 }
@@ -5448,7 +5390,6 @@ function findGameIdForTeamDate(team, dateStr){
 function goToGameBox(gid){
   const game = DATA.games[gid];
   if(!game) return;
-  setActiveNav(game.home);
   renderGamePage(game);
 }
 
