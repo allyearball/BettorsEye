@@ -5565,6 +5565,8 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
     const dkDetail = detail ? getBookmakerData(detail, selectedBook) : null;
     const gameMarkets = marketsByKey(dk);
     const detailMarkets = marketsByKey(dkDetail);
+    // Game Total exclusion (see the conversation this came from) lives at the source now, inside
+    // gatherCandidateLegs itself -- applies uniformly to every feature using it, not just here.
     const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL, selectedBook)
       .filter(l => l.price >= MIN_PRICE);
     const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
@@ -7113,7 +7115,13 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
     }
   });
 
-  // Full-game Total, both sides
+  // Full-game Total, both sides -- TEMPORARILY DISABLED (not just in Standard, but everywhere
+  // this function is used: Standard Top 30, Advanced Top 30, Parlay Recommendations) pending a
+  // fix to the underlying hit-rate methodology, which currently uses only one team's own game
+  // log as a proxy for a bet that's actually about both teams' combined score. Team Totals
+  // (a single team's own points, betType 'team_total') are a completely different code path
+  // below and are unaffected. Re-enable by un-commenting this block once that's fixed.
+  /*
   (()=>{
     const market = gameMarkets['totals']; if(!market) return;
     const over = dkOutcome(market,'Over'), under = dkOutcome(market,'Under');
@@ -7130,6 +7138,8 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
         betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     }
   })();
+  */
+
 
   // Team Totals (full game), both sides, both teams
   (()=>{
