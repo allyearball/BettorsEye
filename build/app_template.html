@@ -4701,17 +4701,19 @@ function renderOddsPage(){
       card.innerHTML = `
         <div style="font-size:11px;color:var(--sub);margin-bottom:6px;">${timeStr}${venueStr ? ' \u00b7 '+venueStr : ''}</div>
         <div style="font-weight:800;font-size:13.5px;margin-bottom:8px;">${ev.away_team}${teamRecordParenText(awayShort, currentWindow)} @ ${ev.home_team}${teamRecordParenText(homeShort, currentWindow)}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:11px;color:var(--sub);font-weight:700;text-transform:uppercase;margin-bottom:2px;">
-          <div>Spread</div><div>Total</div><div>ML</div>
+        <div style="display:grid;grid-template-columns:0.6fr 1fr 1fr 0.8fr;gap:4px;font-size:11px;color:var(--sub);font-weight:700;text-transform:uppercase;margin-bottom:2px;">
+          <div></div><div>Spread</div><div>Total</div><div>ML</div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:12px;margin-bottom:4px;">
-          <div>${awaySpread ? (awaySpread.point>0?'+':'')+awaySpread.point : '\u2014'}</div>
-          <div>${over ? 'O '+over.point : '\u2014'}</div>
+        <div style="display:grid;grid-template-columns:0.6fr 1fr 1fr 0.8fr;gap:4px;font-size:12px;margin-bottom:4px;align-items:center;">
+          <div style="font-weight:700;">${awayShort}</div>
+          <div>${awaySpread ? (awaySpread.point>0?'+':'')+awaySpread.point+' ('+fmtAmerican(awaySpread.price)+')' : '\u2014'}</div>
+          <div>${over ? 'O '+over.point+' ('+fmtAmerican(over.price)+')' : '\u2014'}</div>
           <div>${awayML ? fmtAmerican(awayML.price) : '\u2014'}</div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:12px;color:var(--sub);">
-          <div>${homeSpread ? (homeSpread.point>0?'+':'')+homeSpread.point : '\u2014'}</div>
-          <div>${under ? 'U '+under.point : '\u2014'}</div>
+        <div style="display:grid;grid-template-columns:0.6fr 1fr 1fr 0.8fr;gap:4px;font-size:12px;color:var(--sub);align-items:center;">
+          <div style="font-weight:700;">${homeShort}</div>
+          <div>${homeSpread ? (homeSpread.point>0?'+':'')+homeSpread.point+' ('+fmtAmerican(homeSpread.price)+')' : '\u2014'}</div>
+          <div>${under ? 'U '+under.point+' ('+fmtAmerican(under.price)+')' : '\u2014'}</div>
           <div>${homeML ? fmtAmerican(homeML.price) : '\u2014'}</div>
         </div>
       `;
@@ -4731,7 +4733,9 @@ function renderOddsPage(){
       resultsDiv.appendChild(renderGameWindowStickyBar(singleGameWindow, (val)=>{ singleGameWindow = val; renderResultsArea(); }, 'Period (this game):'));
       renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null, false, undefined, selectedBook);
     } else {
-      resultsDiv.appendChild(renderGameWindowStickyBar(currentWindow, (val)=>{ currentWindow = val; renderResultsArea(); renderGameBoxes(); }, 'Period:'));
+      // Period bar intentionally not shown here -- it didn't meaningfully affect anything on
+      // this box-score-only view. Still fully present in the single-game view above, where the
+      // window actually drives every stat shown.
       gameBoxesDiv.style.display = '';
       // Intentionally not looping through cachedFetch to render every game's full odds block
       // here anymore -- Today's Games box scores (rendered separately, above, via
