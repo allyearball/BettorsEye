@@ -4721,14 +4721,14 @@ function renderOddsPage(){
         </div>
         <div style="display:grid;grid-template-columns:0.45fr 1.25fr 1.35fr 0.7fr;gap:4px;font-size:11px;margin-bottom:4px;align-items:center;white-space:nowrap;">
           <div style="font-weight:700;">${awayShort}</div>
-          <div>${awaySpread ? (awaySpread.point>0?'+':'')+awaySpread.point+' '+fmtAmerican(awaySpread.price) : '\u2014'}</div>
-          <div>${over ? 'O '+over.point+' '+fmtAmerican(over.price) : '\u2014'}</div>
+          <div>${awaySpread ? (awaySpread.point>0?'+':'')+awaySpread.point+' ('+fmtAmerican(awaySpread.price)+')' : '\u2014'}</div>
+          <div>${over ? 'O '+over.point+' ('+fmtAmerican(over.price)+')' : '\u2014'}</div>
           <div>${awayML ? fmtAmerican(awayML.price) : '\u2014'}</div>
         </div>
         <div style="display:grid;grid-template-columns:0.45fr 1.25fr 1.35fr 0.7fr;gap:4px;font-size:11px;color:var(--sub);align-items:center;white-space:nowrap;">
           <div style="font-weight:700;">${homeShort}</div>
-          <div>${homeSpread ? (homeSpread.point>0?'+':'')+homeSpread.point+' '+fmtAmerican(homeSpread.price) : '\u2014'}</div>
-          <div>${under ? 'U '+under.point+' '+fmtAmerican(under.price) : '\u2014'}</div>
+          <div>${homeSpread ? (homeSpread.point>0?'+':'')+homeSpread.point+' ('+fmtAmerican(homeSpread.price)+')' : '\u2014'}</div>
+          <div>${under ? 'U '+under.point+' ('+fmtAmerican(under.price)+')' : '\u2014'}</div>
           <div>${homeML ? fmtAmerican(homeML.price) : '\u2014'}</div>
         </div>
       `;
