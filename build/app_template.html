@@ -6677,20 +6677,21 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   ];
   const savedTab = TAB_DEFS.some(t=>t.key===uiState.activeTab) ? uiState.activeTab : 'gameLines';
   const tabBar = document.createElement('div');
-  tabBar.style.cssText = 'display:flex;gap:2px;flex-wrap:wrap;margin-bottom:14px;border-bottom:2px solid var(--line);';
+  tabBar.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px;background:var(--navy2);border-radius:8px;padding:5px;';
   const tabContents = {};
   const tabButtons = {};
   function paintTabs(activeKey){
     TAB_DEFS.forEach(t=>{
       tabContents[t.key].style.display = t.key===activeKey ? '' : 'none';
-      tabButtons[t.key].style.color = t.key===activeKey ? 'var(--navy2)' : 'var(--sub)';
-      tabButtons[t.key].style.borderBottomColor = t.key===activeKey ? 'var(--navy2)' : 'transparent';
+      const isActive = t.key===activeKey;
+      tabButtons[t.key].style.background = isActive ? '#ffffff' : 'transparent';
+      tabButtons[t.key].style.color = isActive ? 'var(--navy2)' : '#ffffff';
     });
   }
   TAB_DEFS.forEach(t=>{
     const btn = document.createElement('button');
     btn.textContent = t.label;
-    btn.style.cssText = 'padding:8px 12px;border:none;border-bottom:3px solid transparent;background:none;font-size:12.5px;font-weight:700;cursor:pointer;font-family:var(--sans);white-space:nowrap;';
+    btn.style.cssText = 'padding:8px 12px;border:none;border-radius:6px;background:transparent;font-size:12.5px;font-weight:700;cursor:pointer;font-family:var(--sans);white-space:nowrap;color:#ffffff;';
     btn.addEventListener('click', ()=>{ uiState.activeTab = t.key; paintTabs(t.key); });
     tabButtons[t.key] = btn;
     tabBar.appendChild(btn);
