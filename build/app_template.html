@@ -398,9 +398,12 @@ function makeTable(container, columns, rows, opts){
         } else if(col.teamLink && r[col.key]){
           // Renders as a clickable team link without touching the underlying string value, so
           // sorting this column alphabetically still works normally (cmp() only special-cases
-          // plain strings, not DOM nodes). teamLinkEl already stops click propagation internally,
-          // so this correctly doesn't also trigger the column-highlight click handler on td.
-          td.appendChild(teamLinkEl(r[col.key], fmtVal(r[col.key], col, r)));
+          // plain strings, not DOM nodes), and so teamFor callbacks elsewhere (e.g. the Player
+          // column's goToPlayer lookup, keyed by short code) keep working unchanged. Only the
+          // DISPLAY text is upgraded to the full city+nickname name. teamLinkEl already stops
+          // click propagation internally, so this correctly doesn't also trigger the
+          // column-highlight click handler on td.
+          td.appendChild(teamLinkEl(r[col.key], FULL_TEAM_NAME[r[col.key]] || fmtVal(r[col.key], col, r)));
         } else {
           td.textContent = fmtVal(r[col.key], col, r);
         }
@@ -1041,7 +1044,7 @@ function renderTeamPage(team, year, month, windowMode){
 
   main.innerHTML = '';
   const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>${team} \u2014 ${year}, ${monthLabel}, ${windowLabelText} (${gameIds.length} Games) <span id="teamPageInfoIcon"></span></h2>`;
+  head.innerHTML = `<h2>${FULL_TEAM_NAME[team]||team} \u2014 ${year}, ${monthLabel}, ${windowLabelText} (${gameIds.length} Games) <span id="teamPageInfoIcon"></span></h2>`;
   main.appendChild(head);
   appendDefIcon(head.querySelector('#teamPageInfoIcon'), `Player totals, per-game averages, opponent output, and individual game box scores. Click any player's name to see her full recent game log.`);
 
@@ -1070,6 +1073,12 @@ function renderTeamPage(team, year, month, windowMode){
   const seasonBox = document.createElement('div');
   seasonBox.innerHTML = `<span style="color:var(--sub);">Season Record:</span> <b style="color:var(--navy2);">${seasonRec ? `${seasonRec.w}-${seasonRec.l}` : '\u2014'}</b>`;
   recordBox.appendChild(seasonBox);
+  const cityVenue = (DATA.teamVenues && DATA.teamVenues[team]) || {};
+  if(cityVenue.city){
+    const cityBox = document.createElement('div');
+    cityBox.innerHTML = `<span style="color:var(--sub);">Based in:</span> <b style="color:var(--navy2);">${cityVenue.city}${cityVenue.state ? ', '+cityVenue.state : ''}</b>`;
+    recordBox.appendChild(cityBox);
+  }
   if(windowMode !== 'all'){
     const windowRec = winLossFor(gameIds);
     const windowBox = document.createElement('div');
@@ -6818,6 +6827,13 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       applyFilter();
     });
     filterBar.appendChild(clearBtn);
+    const expandAllGroup = document.createElement('div'); expandAllGroup.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    const expandAllLbl = document.createElement('label'); expandAllLbl.style.cssText = 'font-size:10px;color:var(--sub);font-weight:700;text-transform:uppercase;letter-spacing:.03em;'; expandAllLbl.textContent = 'Show Details';
+    const expandAllRow = document.createElement('label'); expandAllRow.style.cssText = 'display:flex;align-items:center;gap:6px;cursor:pointer;padding-top:2px;';
+    const expandAllCb = document.createElement('input'); expandAllCb.type = 'checkbox'; expandAllCb.checked = true;
+    expandAllRow.appendChild(expandAllCb); expandAllRow.appendChild(document.createTextNode('Expand all'));
+    expandAllGroup.appendChild(expandAllLbl); expandAllGroup.appendChild(expandAllRow);
+    filterBar.appendChild(expandAllGroup);
     container.appendChild(filterBar);
 
     const marketTh = showMarketColumn ? '<th class="left" style="padding:6px 8px;border-bottom:2px solid var(--line);">Market</th>' : '';
@@ -6874,32 +6890,43 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       (showMarketColumn ? [tdName, tdMarket, tdLine, tdOver, tdUnder, tdTrack] : [tdName, tdLine, tdOver, tdUnder, tdTrack]).forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
 
-      const detailTr = document.createElement('tr'); detailTr.style.display = 'none';
+      const detailTr = document.createElement('tr');
       const detailTd = document.createElement('td'); detailTd.colSpan = colCount; detailTd.style.cssText = 'padding:10px 14px;background:#f7f8fa;border-bottom:2px solid var(--line);font-size:12px;';
       detailTr.appendChild(detailTd);
       tbody.appendChild(detailTr);
 
+      function buildDetailContent(){
+        if(detailTd.dataset.built) return;
+        detailTd.dataset.built = '1';
+        const oppTeam = r.team===homeShort?awayShort:homeShort;
+        const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
+        statsRow.appendChild(buildLabeledChip('L5', r.hr5));
+        statsRow.appendChild(buildLabeledChip('L10', r.hr10));
+        statsRow.appendChild(buildLabeledChip('L15', r.hr15));
+        statsRow.appendChild(buildLabeledChip('Season', r.hrAll));
+        detailTd.appendChild(statsRow);
+        const extraRow = document.createElement('div'); extraRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;margin-top:6px;align-items:center;';
+        const defWrap = document.createElement('span'); defWrap.innerHTML = '<b>Opp Def Rank: </b>'; defWrap.appendChild(defRankCell(oppTeam, statKey, r.pname, r.team, marketLabel));
+        const allowedWrap = document.createElement('span'); allowedWrap.innerHTML = '<b>Allowed/Gm: </b>'; allowedWrap.appendChild(defAllowedCell(oppTeam, statKey, r.pname, r.team));
+        extraRow.appendChild(defWrap); extraRow.appendChild(allowedWrap);
+        detailTd.appendChild(extraRow);
+      }
+      // Expand All defaults to checked, so every row's detail starts built and visible,
+      // matching the reference screenshot -- individual rows can still be toggled by hand on
+      // top of whatever the checkbox's bulk state is.
+      buildDetailContent();
+      detailTr.style.display = expandAllCb.checked ? '' : 'none';
       tr.addEventListener('click', ()=>{
         const isOpen = detailTr.style.display !== 'none';
         detailTr.style.display = isOpen ? 'none' : '';
-        if(!isOpen && !detailTd.dataset.built){
-          detailTd.dataset.built = '1';
-          const oppTeam = r.team===homeShort?awayShort:homeShort;
-          const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
-          statsRow.appendChild(buildLabeledChip('L5', r.hr5));
-          statsRow.appendChild(buildLabeledChip('L10', r.hr10));
-          statsRow.appendChild(buildLabeledChip('L15', r.hr15));
-          statsRow.appendChild(buildLabeledChip('Season', r.hrAll));
-          detailTd.appendChild(statsRow);
-          const extraRow = document.createElement('div'); extraRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;margin-top:6px;align-items:center;';
-          const defWrap = document.createElement('span'); defWrap.innerHTML = '<b>Opp Def Rank: </b>'; defWrap.appendChild(defRankCell(oppTeam, statKey, r.pname, r.team, marketLabel));
-          const allowedWrap = document.createElement('span'); allowedWrap.innerHTML = '<b>Allowed/Gm: </b>'; allowedWrap.appendChild(defAllowedCell(oppTeam, statKey, r.pname, r.team));
-          extraRow.appendChild(defWrap); extraRow.appendChild(allowedWrap);
-          detailTd.appendChild(extraRow);
-        }
+        buildDetailContent();
       });
 
-      filterableRows.push({tr, pname: r.pname, r});
+      filterableRows.push({tr, pname: r.pname, r, detailTr});
+    });
+
+    expandAllCb.addEventListener('change', ()=>{
+      filterableRows.forEach(({detailTr})=>{ detailTr.style.display = expandAllCb.checked ? '' : 'none'; });
     });
 
     function applyFilter(){
