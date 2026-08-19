@@ -6677,6 +6677,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
 
   // ================= Tab bar =================
   const TAB_DEFS = [
+    {key:'all', label:'All'},
     {key:'gameLines', label:'Game Lines'}, {key:'half1', label:'1st Half'}, {key:'half2', label:'2nd Half'},
     {key:'points', label:'Points'}, {key:'rebounds', label:'Rebounds'}, {key:'assists', label:'Assists'},
     {key:'threes', label:'3PM'}, {key:'pra', label:'P+R+A'}, {key:'parlays', label:'Parlay Recommendations'},
@@ -6728,9 +6729,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   // (L5/L10/L15/Season %+record, Opp Def Rank, Allowed/Gm). Filter dims non-matching rows rather
   // than removing them, and is scoped to this table only -- separate from the Alt Lines filter
   // below it, per the request that the two stay independent. =================
-  function buildOUTable(container, rows, statKey, marketLabel){
+  function buildOUTable(container, rows, showMarketColumn){
     if(!rows.length){
-      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;'; na.textContent = `No ${marketLabel} O/U lines posted by DraftKings for this game yet.`;
+      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;'; na.textContent = `No O/U lines posted by DraftKings for this game yet.`;
       container.appendChild(na);
       return;
     }
@@ -6760,13 +6761,16 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     filterBar.appendChild(clearBtn);
     container.appendChild(filterBar);
 
+    const marketTh = showMarketColumn ? '<th class="left" style="padding:6px 8px;border-bottom:2px solid var(--line);">Market</th>' : '';
     const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-bottom:20px;';
-    table.innerHTML = '<thead><tr><th class="left" style="padding:6px 8px;border-bottom:2px solid var(--line);">Player</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Line</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Over</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Under</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Track</th></tr></thead>';
+    table.innerHTML = `<thead><tr><th class="left" style="padding:6px 8px;border-bottom:2px solid var(--line);">Player</th>${marketTh}<th style="padding:6px 8px;border-bottom:2px solid var(--line);">Line</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Over</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Under</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Track</th></tr></thead>`;
     const tbody = document.createElement('tbody'); table.appendChild(tbody);
     container.appendChild(table);
+    const colCount = showMarketColumn ? 6 : 5;
 
     const filterableRows = [];
     rows.forEach(r=>{
+      const statKey = r.statKey, marketLabel = r.marketLabel;
       const overRate = (r.hr && r.hr.found) ? r.hr.rate : null;
       const underRate = overRate!==null ? 1-overRate : null;
       const overIsBetter = overRate!==null && overRate > underRate;
@@ -6777,6 +6781,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link'; link.textContent = r.pname;
       link.addEventListener('click', (e)=>{ e.stopPropagation(); goToPlayer(r.pname, r.team); });
       tdName.appendChild(link);
+      const tdMarket = document.createElement('td'); tdMarket.className='left'; tdMarket.style.cssText='padding:6px 8px;color:var(--sub);'; tdMarket.textContent = marketLabel;
       const tdLine = document.createElement('td'); tdLine.style.cssText='padding:6px 8px;text-align:center;'; tdLine.textContent = r.line;
 
       const tdOver = document.createElement('td'); tdOver.style.cssText='padding:6px 8px;text-align:center;';
@@ -6807,11 +6812,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         tdTrack.appendChild(btn);
       }
 
-      [tdName, tdLine, tdOver, tdUnder, tdTrack].forEach(td=>tr.appendChild(td));
+      (showMarketColumn ? [tdName, tdMarket, tdLine, tdOver, tdUnder, tdTrack] : [tdName, tdLine, tdOver, tdUnder, tdTrack]).forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
 
       const detailTr = document.createElement('tr'); detailTr.style.display = 'none';
-      const detailTd = document.createElement('td'); detailTd.colSpan = 5; detailTd.style.cssText = 'padding:10px 14px;background:#f7f8fa;border-bottom:2px solid var(--line);font-size:12px;';
+      const detailTd = document.createElement('td'); detailTd.colSpan = colCount; detailTd.style.cssText = 'padding:10px 14px;background:#f7f8fa;border-bottom:2px solid var(--line);font-size:12px;';
       detailTr.appendChild(detailTd);
       tbody.appendChild(detailTr);
 
@@ -6856,10 +6861,10 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   // ================= Alt Lines horizontal-scroll grid for one stat -- smallest to largest
   // threshold, odds shown beneath each number, click a cell to expand the same detail stats as
   // the O/U table above. Own filter, separate from the O/U table's. =================
-  function buildAltLinesGrid(container, altPlayers, statKey, marketLabel){
-    const playerNames = Object.keys(altPlayers);
-    if(!playerNames.length){
-      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;'; na.textContent = `No ${marketLabel} alternate lines posted by DraftKings for this game yet.`;
+  function buildAltLinesGrid(container, altPlayers, showMarketLabel){
+    const playerKeys = Object.keys(altPlayers);
+    if(!playerKeys.length){
+      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;'; na.textContent = `No alternate lines posted by DraftKings for this game yet.`;
       container.appendChild(na);
       return;
     }
@@ -6890,14 +6895,19 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
 
     const playerBoxes = [];
     const allCells = [];
-    playerNames.forEach(pname=>{
-      const {team, levels} = altPlayers[pname];
+    playerKeys.forEach(key=>{
+      const {pname, team, levels, statKey, marketLabel} = altPlayers[key];
       const oppTeam = team===homeShort?awayShort:homeShort;
       const playerBox = document.createElement('div'); playerBox.style.cssText = 'margin-bottom:16px;';
       const nameRow = document.createElement('div'); nameRow.style.cssText='font-weight:700;font-size:13px;margin-bottom:6px;';
       const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link'; link.textContent = pname;
       link.addEventListener('click', ()=>goToPlayer(pname, team));
       nameRow.appendChild(link);
+      if(showMarketLabel){
+        const marketSpan = document.createElement('span'); marketSpan.style.cssText = 'color:var(--sub);font-weight:400;font-size:11.5px;margin-left:6px;';
+        marketSpan.textContent = marketLabel;
+        nameRow.appendChild(marketSpan);
+      }
       playerBox.appendChild(nameRow);
 
       const scrollWrap = document.createElement('div'); scrollWrap.style.cssText = 'overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:6px;';
@@ -6970,6 +6980,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     threes: {ou:'player_threes', alt:'player_threes_alternate'},
     pra: {ou:'player_points_rebounds_assists', alt:'player_points_rebounds_assists_alternate'},
   };
+  const allOuRows = [];
+  const allAltPlayers = {};
   Object.keys(STAT_TAB_MARKETS).forEach(tabKey=>{
     const {ou: ouKey, alt: altKey} = STAT_TAB_MARKETS[tabKey];
     const statKey = PROP_MARKET_TO_STAT[ouKey];
@@ -6990,7 +7002,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         const team = findPlayerTeam(pname, homeShort, awayShort);
         if(!team) return;
         ouRows.push({
-          pname, team, overO, underO, line,
+          pname, team, overO, underO, line, statKey, marketLabel,
           hr: hitRateFor(pname, team, statKey, line, windowSize),
           hr5: hitRateFor(pname, team, statKey, line, 5),
           hr10: hitRateFor(pname, team, statKey, line, 10),
@@ -6999,7 +7011,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         });
       });
     }
-    buildOUTable(container, ouRows, statKey, marketLabel);
+    buildOUTable(container, ouRows, false);
+    allOuRows.push(...ouRows);
 
     const altTitle = document.createElement('div'); altTitle.className='section-title'; altTitle.style.marginTop='16px'; altTitle.textContent = `${marketLabel} \u2014 Alternate Lines`;
     container.appendChild(altTitle);
@@ -7011,11 +7024,33 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         const team = findPlayerTeam(pname, homeShort, awayShort);
         if(!team) return;
         const levels = altMarket.outcomes.filter(o=>o.name==='Over' && o.description===pname).sort((a,b)=>a.point-b.point);
-        if(levels.length) altPlayers[pname] = {team, levels};
+        if(levels.length){
+          altPlayers[pname] = {pname, team, levels, statKey, marketLabel};
+          allAltPlayers[`${pname}|${statKey}`] = {pname, team, levels, statKey, marketLabel};
+        }
       });
     }
-    buildAltLinesGrid(container, altPlayers, statKey, marketLabel);
+    buildAltLinesGrid(container, altPlayers, false);
   });
+
+  // ================= All tab -- every player prop bet across all 5 stats combined, with one
+  // shared filter bar per section (O/U filters separate from Alt Lines filters, applying across
+  // every stat at once rather than per-stat). Game Lines/1st Half/2nd Half are also included
+  // since those are bets too, just shown as their own read-only sections above the props (they
+  // don't share the player/odds/hit-rate filter shape those need a "player" to filter on). =================
+  const allTabContainer = tabContents.all;
+  const allGameLinesTitle = document.createElement('div'); allGameLinesTitle.className='section-title'; allGameLinesTitle.textContent = `Full Game \u2014 ${windowLabelText} Hit Rate`;
+  allTabContainer.appendChild(allGameLinesTitle);
+  buildFullSpreadTotalTable(allTabContainer, gameMarkets['h2h'], gameMarkets['spreads'], gameMarkets['totals'], true);
+  const allTeamTotalsTitle = document.createElement('div'); allTeamTotalsTitle.className='section-title'; allTeamTotalsTitle.textContent = `Team Totals (Full Game) \u2014 ${windowLabelText} Hit Rate`;
+  allTabContainer.appendChild(allTeamTotalsTitle);
+  buildTeamTotalsTable(allTabContainer, detailMarkets['team_totals'], true);
+  const allOuTitle = document.createElement('div'); allOuTitle.className='section-title'; allOuTitle.style.marginTop='16px'; allOuTitle.textContent = `All Player Props O/U \u2014 ${windowLabelText} Hit Rate`;
+  allTabContainer.appendChild(allOuTitle);
+  buildOUTable(allTabContainer, allOuRows, true);
+  const allAltTitle = document.createElement('div'); allAltTitle.className='section-title'; allAltTitle.style.marginTop='16px'; allAltTitle.textContent = 'All Player Props \u2014 Alternate Lines';
+  allTabContainer.appendChild(allAltTitle);
+  buildAltLinesGrid(allTabContainer, allAltPlayers, true);
 
   // ================= Parlay Recommendations tab =================
   buildParlaySection(tabContents.parlays, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.75, selectedBook);
