@@ -4733,14 +4733,10 @@ function renderOddsPage(){
     } else {
       resultsDiv.appendChild(renderGameWindowStickyBar(currentWindow, (val)=>{ currentWindow = val; renderResultsArea(); renderGameBoxes(); }, 'Period:'));
       gameBoxesDiv.style.display = '';
-      cachedFetch.forEach(({ev, detail}) => {
-        if(!gameUiState[ev.id]) gameUiState[ev.id] = {collapsed: undefined, sections: {}};
-        renderGameOddsBlock(resultsDiv, ev, detail, currentWindow, ()=>{
-          viewingSingleGame = {ev, detail};
-          singleGameWindow = 'all';
-          renderResultsArea();
-        }, undefined, gameUiState[ev.id], selectedBook);
-      });
+      // Intentionally not looping through cachedFetch to render every game's full odds block
+      // here anymore -- Today's Games box scores (rendered separately, above, via
+      // renderGameBoxes()) are now the only thing shown on the main page. Click a card to drill
+      // into that one game's full bet list instead.
     }
   }
 
