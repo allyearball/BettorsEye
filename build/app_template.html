@@ -6654,260 +6654,300 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   }
 
   const windowLabelText = windowSize==='all' ? 'Full Season' : `Last ${windowSize}`;
-
-  // Small helper: a clickable ▶/▼ header that shows/hides a content block below it.
-  function makeCollapsibleSection(parentEl, titleText, startExpanded, sectionKey){
-    if(sectionKey && uiState.sections[sectionKey] !== undefined) startExpanded = uiState.sections[sectionKey];
-    const headerRow = document.createElement('div');
-    headerRow.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;margin-top:4px;';
-    const arrow = document.createElement('span');
-    arrow.textContent = startExpanded ? '\u25be' : '\u25b8';
-    arrow.style.cssText = 'font-size:22px;color:var(--navy2);display:inline-block;width:24px;flex-shrink:0;line-height:1;';
-    const titleEl = document.createElement('div'); titleEl.className='section-title'; titleEl.style.margin='0';
-    titleEl.textContent = titleText;
-    headerRow.appendChild(arrow); headerRow.appendChild(titleEl);
-    parentEl.appendChild(headerRow);
-    const content = document.createElement('div');
-    content.style.display = startExpanded ? '' : 'none';
-    parentEl.appendChild(content);
-    headerRow.addEventListener('click', ()=>{
-      const isExpanded = content.style.display !== 'none';
-      content.style.display = isExpanded ? 'none' : '';
-      arrow.textContent = isExpanded ? '\u25b8' : '\u25be';
-      if(sectionKey) uiState.sections[sectionKey] = !isExpanded;
-    });
-    return content;
-  }
-
-  const sec1Content = makeCollapsibleSection(gameContentDiv, `Full Game \u2014 ${windowLabelText} Hit Rate`, true, 'fullGame');
-  buildFullSpreadTotalTable(sec1Content, gameMarkets['h2h'], gameMarkets['spreads'], gameMarkets['totals'], true);
-
-  const secTTContent = makeCollapsibleSection(gameContentDiv, `Team Totals (Full Game) \u2014 ${windowLabelText} Hit Rate`, true, 'teamTotals');
-  buildTeamTotalsTable(secTTContent, detailMarkets['team_totals'], true);
-
   const halfNote = document.createElement('div'); halfNote.className='footnote'; halfNote.style.margin='4px 0 10px';
   halfNote.textContent = 'Half hit rates are derived from this season\u2019s play-by-play data (score at the end of Q2 = 1st half; final minus that = 2nd half). A small number of games can be missing this if their play-by-play log was incomplete \u2014 those are simply excluded from the count rather than treated as a miss, so the games-played figure in the badge may be slightly lower than the full-game one above.';
 
-  const sec2Content = makeCollapsibleSection(gameContentDiv, '1st Half', false, 'half1');
-  sec2Content.appendChild(halfNote.cloneNode(true));
-  buildFullSpreadTotalTable(sec2Content, detailMarkets['h2h_h1'], detailMarkets['spreads_h1'], detailMarkets['totals_h1'], true, 1);
-  buildTeamTotalsTable(sec2Content, detailMarkets['team_totals_h1'], true, 1);
+  // Formats a hit-rate result as "67% (10-5)" -- used by both the O/U expand row and the Alt
+  // Lines expand panel, so both show percent AND the actual record behind it, not just a bare
+  // percentage.
+  function fmtHrPct(hr){ return (hr && hr.found) ? `${Math.round(hr.rate*100)}% (${hr.hits}-${hr.gp-hr.hits})` : '\u2014'; }
 
-  const sec3Content = makeCollapsibleSection(gameContentDiv, '2nd Half', false, 'half2');
-  buildFullSpreadTotalTable(sec3Content, detailMarkets['h2h_h2'], detailMarkets['spreads_h2'], detailMarkets['totals_h2'], true, 2);
-  buildTeamTotalsTable(sec3Content, detailMarkets['team_totals_h2'], true, 2);
-
-  const sec4Content = makeCollapsibleSection(gameContentDiv, `Player Props (Points / Rebounds / Assists / Threes / Pts+Reb+Ast) \u2014 ${windowLabelText} Hit Rate`, true, 'playerProps');
-
-  const propDataRows = [];
-  const propMarketsSeen = new Set();
-  ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists'].forEach(mkey=>{
-    const market = detailMarkets[mkey];
-    if(!market) return;
-    const statKey = PROP_MARKET_TO_STAT[mkey];
-    const marketLabel = PROP_MARKET_LABEL[mkey];
-    propMarketsSeen.add(marketLabel);
-    // group outcomes by player description
-    const players = [...new Set(market.outcomes.map(o=>o.description))];
-    players.forEach(pname=>{
-      const overO = market.outcomes.find(o=>o.description===pname && o.name==='Over');
-      const underO = market.outcomes.find(o=>o.description===pname && o.name==='Under');
-      if(!overO && !underO) return;
-      const line = (overO||underO).point;
-      const team = findPlayerTeam(pname, homeShort, awayShort);
-      const hr = team ? hitRateFor(pname, team, statKey, line, windowSize) : null; // still powers the Hit Rate % filter/sort column below, tied to the sticky bar's selected window
-      const hr5 = team ? hitRateFor(pname, team, statKey, line, 5) : null;
-      const hr10 = team ? hitRateFor(pname, team, statKey, line, 10) : null;
-      const hr15 = team ? hitRateFor(pname, team, statKey, line, 15) : null;
-
-      let nameCell;
-      if(team){
-        const abbr = TEAM_CITY_ABBR[team];
-        const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link';
-        link.textContent = pname;
-        link.addEventListener('click', ()=>{ goToPlayer(pname, team); });
-        if(abbr){
-          const wrap = document.createElement('span');
-          wrap.appendChild(document.createTextNode(abbr + ' '));
-          wrap.appendChild(link);
-          nameCell = wrap;
-        } else {
-          nameCell = link;
-        }
-      } else { nameCell = pname; }
-
-      const overThreshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
-      const trackCell = document.createElement('div'); trackCell.style.cssText='display:flex;gap:4px;justify-content:center;';
-      if(overO && team){
-        const overBtn = makeTrackAndHistoryButtons({
-          label:`${pname} Over ${line} ${marketLabel}`, price:overO.price, betType:'player_prop',
-          team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'over',
-          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id,
-        }, 10);
-        // Relabel only the inner Track button (first child) \u2014 setting .textContent on the
-        // whole wrapper would also wipe out the \ud83d\udcc8 history button living inside it as its second child.
-        overBtn.children[0].textContent = '+O'; overBtn.children[0].title = 'Track the Over';
-        trackCell.appendChild(overBtn);
-      }
-      if(underO && team){
-        const underBtn = makeTrackAndHistoryButtons({
-          label:`${pname} Under ${line} ${marketLabel}`, price:underO.price, betType:'player_prop',
-          team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line, side:'under',
-          thresholdToHit: overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id,
-        }, 10);
-        underBtn.children[0].textContent = '+U'; underBtn.children[0].title = 'Track the Under';
-        trackCell.appendChild(underBtn);
-      }
-
-      const opponentTeam = team===homeShort?awayShort:homeShort;
-      const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
-      const defCellL5 = team ? defRankL5Cell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
-      const defAllowed = team ? defAllowedCell(opponentTeam, statKey, pname, team) : document.createTextNode('\u2014');
-      const posText = team ? (getPlayerPosition(pname, team) || '\u2014') : '\u2014';
-      const edgeCell = team ? buildEdgeCell(pname, team, opponentTeam, statKey, line, marketLabel) : document.createTextNode('\u2014');
-
-      const lineCell = document.createElement('span');
-      lineCell.appendChild(document.createTextNode(line!==undefined?line:'\u2014'));
-      if(line!==undefined && team){
-        const liveSpan = document.createElement('span');
-        liveSpan.className = 'live-amount';
-        liveSpan.setAttribute('data-live-player', pname);
-        liveSpan.setAttribute('data-live-stat', statKey);
-        liveSpan.style.cssText = 'display:block;font-size:10.5px;font-weight:700;color:var(--red);';
-        lineCell.appendChild(liveSpan);
-      }
-
-      const edgeVerdictText = team ? edgeVerdict(computeRowSignal(pname, team, opponentTeam, statKey, line)).text : 'Mixed / No Signal';
-      propDataRows.push({
-        filterValues: {
-          pos: posText, player: pname, market: marketLabel, line: line, edge: edgeVerdictText,
-          over: overO ? overO.price : null, under: underO ? underO.price : null,
-          hitRate5: (hr5 && hr5.found) ? Math.round(hr5.rate*100) : null,
-          hitRate10: (hr10 && hr10.found) ? Math.round(hr10.rate*100) : null,
-          hitRate15: (hr15 && hr15.found) ? Math.round(hr15.rate*100) : null,
-        },
-        cells: [posText, nameCell, edgeCell, marketLabel, lineCell,
-                overO ? fmtAmerican(overO.price) : '\u2014', underO ? fmtAmerican(underO.price) : '\u2014',
-                propSportsbookText(overO, underO, selectedBook),
-                singleWindowChip(null, hr5), singleWindowChip(null, hr10), singleWindowChip(null, hr15), defCell, defAllowed, trackCell],
-      });
+  // ================= Tab bar =================
+  const TAB_DEFS = [
+    {key:'gameLines', label:'Game Lines'}, {key:'half1', label:'1st Half'}, {key:'half2', label:'2nd Half'},
+    {key:'points', label:'Points'}, {key:'rebounds', label:'Rebounds'}, {key:'assists', label:'Assists'},
+    {key:'threes', label:'3PM'}, {key:'pra', label:'P+R+A'}, {key:'parlays', label:'Parlay Recommendations'},
+  ];
+  const savedTab = TAB_DEFS.some(t=>t.key===uiState.activeTab) ? uiState.activeTab : 'gameLines';
+  const tabBar = document.createElement('div');
+  tabBar.style.cssText = 'display:flex;gap:2px;flex-wrap:wrap;margin-bottom:14px;border-bottom:2px solid var(--line);';
+  const tabContents = {};
+  const tabButtons = {};
+  function paintTabs(activeKey){
+    TAB_DEFS.forEach(t=>{
+      tabContents[t.key].style.display = t.key===activeKey ? '' : 'none';
+      tabButtons[t.key].style.color = t.key===activeKey ? 'var(--navy2)' : 'var(--sub)';
+      tabButtons[t.key].style.borderBottomColor = t.key===activeKey ? 'var(--navy2)' : 'transparent';
     });
+  }
+  TAB_DEFS.forEach(t=>{
+    const btn = document.createElement('button');
+    btn.textContent = t.label;
+    btn.style.cssText = 'padding:8px 12px;border:none;border-bottom:3px solid transparent;background:none;font-size:12.5px;font-weight:700;cursor:pointer;font-family:var(--sans);white-space:nowrap;';
+    btn.addEventListener('click', ()=>{ uiState.activeTab = t.key; paintTabs(t.key); });
+    tabButtons[t.key] = btn;
+    tabBar.appendChild(btn);
+    tabContents[t.key] = document.createElement('div');
   });
+  gameContentDiv.appendChild(tabBar);
+  TAB_DEFS.forEach(t=>gameContentDiv.appendChild(tabContents[t.key]));
+  paintTabs(savedTab);
 
-  if(propDataRows.length){
-    buildFilterableTable(sec4Content, [
-      {key:'pos', label:'Pos', type:'select', options:[...new Set(propDataRows.map(r=>r.filterValues.pos))].filter(p=>p!=='\u2014'), align:'left'},
-      {key:'player', label:'Player', type:'text', align:'left'},
-      {key:'edge', label:'Edge', type:'select', options:['Strong Over','Lean Over','Mixed','Lean Under','Strong Under','Mixed / No Signal'], def:'A one-glance verdict combining the L5/L10/L15/season EMA consensus, matchup (DvP Index), and consistency (IQR) into a single read \u2014 Strong/Lean Over or Under, or Mixed if the signals don\u2019t agree. Tap the badge itself for the full breakdown behind it.', align:'left'},
-      {key:'market', label:'Market', type:'select', options:[...propMarketsSeen], align:'left'},
-      {key:'line', label:'Line', type:'numRange'},
-      {key:'over', label:'Over', type:'numRange'},
-      {key:'under', label:'Under', type:'numRange'},
-      {key:'sportsbook', label:'Sportsbook', align:'left'},
-      {key:'hitRate5', label:'L5%', type:'numRange'},
-      {key:'hitRate10', label:'L10%', type:'numRange'},
-      {key:'hitRate15', label:'L15%', type:'numRange'},
-      {key:'defRank', label:'Opp Def Rank'},
-      {key:'defAllowed', label:'Allowed/Gm'},
-      {key:'track', label:'Track'},
-    ], propDataRows);
-  } else {
-    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;'; na.textContent='No player props posted by DraftKings for this game yet.';
-    sec4Content.appendChild(na);
+  // ================= Game Lines / 1st Half / 2nd Half tabs =================
+  const glTitle1 = document.createElement('div'); glTitle1.className='section-title'; glTitle1.textContent = `Full Game \u2014 ${windowLabelText} Hit Rate`;
+  tabContents.gameLines.appendChild(glTitle1);
+  buildFullSpreadTotalTable(tabContents.gameLines, gameMarkets['h2h'], gameMarkets['spreads'], gameMarkets['totals'], true);
+  const glTitle2 = document.createElement('div'); glTitle2.className='section-title'; glTitle2.textContent = `Team Totals (Full Game) \u2014 ${windowLabelText} Hit Rate`;
+  tabContents.gameLines.appendChild(glTitle2);
+  buildTeamTotalsTable(tabContents.gameLines, detailMarkets['team_totals'], true);
+
+  tabContents.half1.appendChild(halfNote.cloneNode(true));
+  buildFullSpreadTotalTable(tabContents.half1, detailMarkets['h2h_h1'], detailMarkets['spreads_h1'], detailMarkets['totals_h1'], true, 1);
+  buildTeamTotalsTable(tabContents.half1, detailMarkets['team_totals_h1'], true, 1);
+
+  tabContents.half2.appendChild(halfNote.cloneNode(true));
+  buildFullSpreadTotalTable(tabContents.half2, detailMarkets['h2h_h2'], detailMarkets['spreads_h2'], detailMarkets['totals_h2'], true, 2);
+  buildTeamTotalsTable(tabContents.half2, detailMarkets['team_totals_h2'], true, 2);
+
+  // ================= O/U table for one stat -- highlights whichever side (Over/Under) has hit
+  // more often over the page's selected window, with a click-to-expand detail row per player
+  // (L5/L10/L15/Season %+record, Opp Def Rank, Allowed/Gm). Filter dims non-matching rows rather
+  // than removing them, and is scoped to this table only -- separate from the Alt Lines filter
+  // below it, per the request that the two stay independent. =================
+  function buildOUTable(container, rows, statKey, marketLabel){
+    if(!rows.length){
+      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;'; na.textContent = `No ${marketLabel} O/U lines posted by DraftKings for this game yet.`;
+      container.appendChild(na);
+      return;
+    }
+    const filterState = {player:''};
+    const filterBar = document.createElement('div');
+    filterBar.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;align-items:center;';
+    const playerInput = document.createElement('input'); playerInput.type='text'; playerInput.placeholder='Filter by player\u2026';
+    playerInput.style.cssText = 'padding:6px 10px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;font-family:var(--sans);flex:1;max-width:220px;';
+    playerInput.addEventListener('input', ()=>{ filterState.player = playerInput.value.trim().toLowerCase(); applyFilter(); });
+    filterBar.appendChild(playerInput);
+    container.appendChild(filterBar);
+
+    const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-bottom:20px;';
+    table.innerHTML = '<thead><tr><th class="left" style="padding:6px 8px;border-bottom:2px solid var(--line);">Player</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Line</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Over</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Under</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Track</th></tr></thead>';
+    const tbody = document.createElement('tbody'); table.appendChild(tbody);
+    container.appendChild(table);
+
+    const filterableRows = [];
+    rows.forEach(r=>{
+      const overRate = (r.hr && r.hr.found) ? r.hr.rate : null;
+      const underRate = overRate!==null ? 1-overRate : null;
+      const overIsBetter = overRate!==null && overRate > underRate;
+      const underIsBetter = underRate!==null && underRate > overRate;
+
+      const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);cursor:pointer;';
+      const tdName = document.createElement('td'); tdName.className='left'; tdName.style.padding='6px 8px';
+      const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link'; link.textContent = r.pname;
+      link.addEventListener('click', (e)=>{ e.stopPropagation(); goToPlayer(r.pname, r.team); });
+      tdName.appendChild(link);
+      const tdLine = document.createElement('td'); tdLine.style.cssText='padding:6px 8px;text-align:center;'; tdLine.textContent = r.line;
+
+      const tdOver = document.createElement('td'); tdOver.style.cssText='padding:6px 8px;text-align:center;';
+      if(r.overO){
+        const box = document.createElement('span'); box.textContent = 'O '+fmtAmerican(r.overO.price);
+        box.style.cssText = `display:inline-block;padding:3px 8px;border-radius:5px;${overIsBetter?'border:2px solid var(--green);font-weight:800;':'border:2px solid transparent;'}`;
+        tdOver.appendChild(box);
+      } else tdOver.textContent = '\u2014';
+
+      const tdUnder = document.createElement('td'); tdUnder.style.cssText='padding:6px 8px;text-align:center;';
+      if(r.underO){
+        const box = document.createElement('span'); box.textContent = 'U '+fmtAmerican(r.underO.price);
+        box.style.cssText = `display:inline-block;padding:3px 8px;border-radius:5px;${underIsBetter?'border:2px solid var(--green);font-weight:800;':'border:2px solid transparent;'}`;
+        tdUnder.appendChild(box);
+      } else tdUnder.textContent = '\u2014';
+
+      const tdTrack = document.createElement('td'); tdTrack.style.cssText='padding:6px 8px;text-align:center;';
+      tdTrack.addEventListener('click', e=>e.stopPropagation());
+      const overThreshold = Number.isInteger(r.line) ? r.line+1 : Math.ceil(r.line);
+      if(r.overO){
+        const btn = makeTrackAndHistoryButtons({label:`${r.pname} Over ${r.line} ${marketLabel}`, price:r.overO.price, betType:'player_prop', team:r.team, opponent: r.team===homeShort?awayShort:homeShort, player:r.pname, statKey, line:r.line, side:'over', thresholdToHit:overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id}, 10);
+        btn.children[0].textContent = '+O'; btn.children[0].title = 'Track the Over';
+        tdTrack.appendChild(btn);
+      }
+      if(r.underO){
+        const btn = makeTrackAndHistoryButtons({label:`${r.pname} Under ${r.line} ${marketLabel}`, price:r.underO.price, betType:'player_prop', team:r.team, opponent: r.team===homeShort?awayShort:homeShort, player:r.pname, statKey, line:r.line, side:'under', thresholdToHit:overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id}, 10);
+        btn.children[0].textContent = '+U'; btn.children[0].title = 'Track the Under';
+        tdTrack.appendChild(btn);
+      }
+
+      [tdName, tdLine, tdOver, tdUnder, tdTrack].forEach(td=>tr.appendChild(td));
+      tbody.appendChild(tr);
+
+      const detailTr = document.createElement('tr'); detailTr.style.display = 'none';
+      const detailTd = document.createElement('td'); detailTd.colSpan = 5; detailTd.style.cssText = 'padding:10px 14px;background:#f7f8fa;border-bottom:2px solid var(--line);font-size:12px;';
+      detailTr.appendChild(detailTd);
+      tbody.appendChild(detailTr);
+
+      tr.addEventListener('click', ()=>{
+        const isOpen = detailTr.style.display !== 'none';
+        detailTr.style.display = isOpen ? 'none' : '';
+        if(!isOpen && !detailTd.dataset.built){
+          detailTd.dataset.built = '1';
+          const oppTeam = r.team===homeShort?awayShort:homeShort;
+          const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;';
+          statsRow.innerHTML = `<div><b>L5:</b> ${fmtHrPct(r.hr5)}</div><div><b>L10:</b> ${fmtHrPct(r.hr10)}</div><div><b>L15:</b> ${fmtHrPct(r.hr15)}</div><div><b>Season:</b> ${fmtHrPct(r.hrAll)}</div>`;
+          detailTd.appendChild(statsRow);
+          const extraRow = document.createElement('div'); extraRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;margin-top:6px;align-items:center;';
+          const defWrap = document.createElement('span'); defWrap.innerHTML = '<b>Opp Def Rank: </b>'; defWrap.appendChild(defRankCell(oppTeam, statKey, r.pname, r.team, marketLabel));
+          const allowedWrap = document.createElement('span'); allowedWrap.innerHTML = '<b>Allowed/Gm: </b>'; allowedWrap.appendChild(defAllowedCell(oppTeam, statKey, r.pname, r.team));
+          extraRow.appendChild(defWrap); extraRow.appendChild(allowedWrap);
+          detailTd.appendChild(extraRow);
+        }
+      });
+
+      filterableRows.push({tr, pname: r.pname});
+    });
+
+    function applyFilter(){
+      filterableRows.forEach(({tr, pname})=>{
+        const matches = !filterState.player || pname.toLowerCase().includes(filterState.player);
+        tr.style.opacity = matches ? '1' : '0.32';
+      });
+    }
   }
 
-  // ================= Alternate lines (multiple X+ milestone levels per player) =================
-  const sec5Content = makeCollapsibleSection(gameContentDiv, `Player Props \u2014 Multiple Levels (Alt Lines, incl. Pts+Reb+Ast) \u2014 ${windowLabelText} Hit Rate`, false, 'altLines');
+  // ================= Alt Lines horizontal-scroll grid for one stat -- smallest to largest
+  // threshold, odds shown beneath each number, click a cell to expand the same detail stats as
+  // the O/U table above. Own filter, separate from the O/U table's. =================
+  function buildAltLinesGrid(container, altPlayers, statKey, marketLabel){
+    const playerNames = Object.keys(altPlayers);
+    if(!playerNames.length){
+      const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;'; na.textContent = `No ${marketLabel} alternate lines posted by DraftKings for this game yet.`;
+      container.appendChild(na);
+      return;
+    }
+    const filterState = {player:''};
+    const filterBar = document.createElement('div');
+    filterBar.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;align-items:center;';
+    const playerInput = document.createElement('input'); playerInput.type='text'; playerInput.placeholder='Filter by player\u2026';
+    playerInput.style.cssText = 'padding:6px 10px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;font-family:var(--sans);flex:1;max-width:220px;';
+    filterBar.appendChild(playerInput);
+    container.appendChild(filterBar);
 
-  const altDataRows = [];
-  const altMarketsSeen = new Set();
-  ['player_points_alternate','player_rebounds_alternate','player_assists_alternate','player_threes_alternate','player_points_rebounds_assists_alternate'].forEach(mkey=>{
-    const market = detailMarkets[mkey];
-    if(!market) return;
-    const statKey = PROP_MARKET_TO_STAT[mkey];
-    const marketLabel = PROP_MARKET_LABEL[mkey];
-    // group "Over" outcomes by player, since DraftKings shows alt lines as milestone (X+) prices —
-    // functionally the Over side of each available threshold, same as the screenshot's "20+ / 22+ / 25+"
-    const players = [...new Set(market.outcomes.filter(o=>o.name==='Over').map(o=>o.description))];
-    players.forEach(pname=>{
-      const levels = market.outcomes
-        .filter(o=>o.name==='Over' && o.description===pname)
-        .sort((a,b)=>a.point-b.point);
-      if(!levels.length) return;
-      const team = findPlayerTeam(pname, homeShort, awayShort);
+    const playerBoxes = [];
+    playerNames.forEach(pname=>{
+      const {team, levels} = altPlayers[pname];
+      const oppTeam = team===homeShort?awayShort:homeShort;
+      const playerBox = document.createElement('div'); playerBox.style.cssText = 'margin-bottom:16px;';
+      const nameRow = document.createElement('div'); nameRow.style.cssText='font-weight:700;font-size:13px;margin-bottom:6px;';
+      const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link'; link.textContent = pname;
+      link.addEventListener('click', ()=>goToPlayer(pname, team));
+      nameRow.appendChild(link);
+      playerBox.appendChild(nameRow);
+
+      const scrollWrap = document.createElement('div'); scrollWrap.style.cssText = 'overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:6px;';
+      const cellRow = document.createElement('div'); cellRow.style.cssText = 'display:inline-flex;gap:6px;';
+      const detailContainer = document.createElement('div'); detailContainer.style.cssText = 'display:none;padding:10px 14px;background:#f7f8fa;border-radius:6px;margin-top:6px;font-size:12px;';
+
       levels.forEach(lvl=>{
-        altMarketsSeen.add(marketLabel);
-        const hr = team ? altHitRateFor(pname, team, statKey, lvl.point, windowSize) : null; // still powers the Hit Rate % filter/sort column
-        const hr5 = team ? altHitRateFor(pname, team, statKey, lvl.point, 5) : null;
-        const hr10 = team ? altHitRateFor(pname, team, statKey, lvl.point, 10) : null;
-        const hr15 = team ? altHitRateFor(pname, team, statKey, lvl.point, 15) : null;
+        const hr5 = altHitRateFor(pname, team, statKey, lvl.point, 5);
+        const hr10 = altHitRateFor(pname, team, statKey, lvl.point, 10);
+        const hr15 = altHitRateFor(pname, team, statKey, lvl.point, 15);
+        const hrAll = altHitRateFor(pname, team, statKey, lvl.point, 'all');
+        const cell = document.createElement('div');
+        cell.style.cssText = 'flex-shrink:0;min-width:58px;text-align:center;border:2px solid var(--line);border-radius:6px;padding:6px 8px;cursor:pointer;';
+        cell.innerHTML = `<div style="font-weight:700;font-size:13px;">${lvl.point}+</div><div style="font-size:11px;color:var(--sub);">${fmtAmerican(lvl.price)}</div>`;
+        cell.addEventListener('click', ()=>{
+          const alreadyOpenForThis = detailContainer.style.display!=='none' && detailContainer.dataset.forLevel===String(lvl.point);
+          [...cellRow.children].forEach(c=>{ c.style.borderColor='var(--line)'; });
+          if(alreadyOpenForThis){ detailContainer.style.display = 'none'; return; }
+          cell.style.borderColor = 'var(--navy2)';
+          detailContainer.dataset.forLevel = String(lvl.point);
+          detailContainer.innerHTML = '';
+          const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;';
+          statsRow.innerHTML = `<div><b>L5:</b> ${fmtHrPct(hr5)}</div><div><b>L10:</b> ${fmtHrPct(hr10)}</div><div><b>L15:</b> ${fmtHrPct(hr15)}</div><div><b>Season:</b> ${fmtHrPct(hrAll)}</div>`;
+          detailContainer.appendChild(statsRow);
+          const extraRow = document.createElement('div'); extraRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;margin-top:6px;align-items:center;';
+          const defWrap = document.createElement('span'); defWrap.innerHTML = '<b>Opp Def Rank: </b>'; defWrap.appendChild(defRankCell(oppTeam, statKey, pname, team, marketLabel));
+          const allowedWrap = document.createElement('span'); allowedWrap.innerHTML = '<b>Allowed/Gm: </b>'; allowedWrap.appendChild(defAllowedCell(oppTeam, statKey, pname, team));
+          extraRow.appendChild(defWrap); extraRow.appendChild(allowedWrap);
+          detailContainer.appendChild(extraRow);
+          detailContainer.style.display = '';
+        });
+        cellRow.appendChild(cell);
+      });
+      scrollWrap.appendChild(cellRow);
+      playerBox.appendChild(scrollWrap);
+      playerBox.appendChild(detailContainer);
+      container.appendChild(playerBox);
+      playerBoxes.push({playerBox, pname});
+    });
 
-        let nameCell;
-        if(team){
-          const abbr = TEAM_CITY_ABBR[team];
-          const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link';
-          link.textContent = pname;
-          link.addEventListener('click', ()=>{ goToPlayer(pname, team); });
-          if(abbr){
-            const wrap = document.createElement('span');
-            wrap.appendChild(document.createTextNode(abbr + ' '));
-            wrap.appendChild(link);
-            nameCell = wrap;
-          } else {
-            nameCell = link;
-          }
-        } else { nameCell = pname; }
+    playerInput.addEventListener('input', ()=>{
+      filterState.player = playerInput.value.trim().toLowerCase();
+      playerBoxes.forEach(({playerBox, pname})=>{
+        const matches = !filterState.player || pname.toLowerCase().includes(filterState.player);
+        playerBox.style.opacity = matches ? '1' : '0.32';
+      });
+    });
+  }
 
-        const trackBtn = team ? makeTrackAndHistoryButtons({
-          label:`${pname} Over ${lvl.point} ${marketLabel}`, price:lvl.price, betType:'player_prop_alt',
-          team, opponent: team===homeShort?awayShort:homeShort, player:pname, statKey, line:lvl.point, side:'over',
-          thresholdToHit: lvl.point, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id,
-        }, 10) : null;
+  // ================= Points / Rebounds / Assists / 3PM / P+R+A tabs -- each combines its O/U
+  // table and Alt Lines grid together, per the request. =================
+  const STAT_TAB_MARKETS = {
+    points: {ou:'player_points', alt:'player_points_alternate'},
+    rebounds: {ou:'player_rebounds', alt:'player_rebounds_alternate'},
+    assists: {ou:'player_assists', alt:'player_assists_alternate'},
+    threes: {ou:'player_threes', alt:'player_threes_alternate'},
+    pra: {ou:'player_points_rebounds_assists', alt:'player_points_rebounds_assists_alternate'},
+  };
+  Object.keys(STAT_TAB_MARKETS).forEach(tabKey=>{
+    const {ou: ouKey, alt: altKey} = STAT_TAB_MARKETS[tabKey];
+    const statKey = PROP_MARKET_TO_STAT[ouKey];
+    const marketLabel = PROP_MARKET_LABEL[ouKey];
+    const container = tabContents[tabKey];
 
-        const opponentTeam = team===homeShort?awayShort:homeShort;
-        const defCell = team ? defRankCell(opponentTeam, statKey, pname, team, marketLabel) : document.createTextNode('\u2014');
-        const defAllowed = team ? defAllowedCell(opponentTeam, statKey, pname, team) : document.createTextNode('\u2014');
-        const posText = team ? (getPlayerPosition(pname, team) || '\u2014') : '\u2014';
-        const edgeCell = team ? buildEdgeCell(pname, team, opponentTeam, statKey, lvl.point, marketLabel) : document.createTextNode('\u2014');
-
-        const edgeVerdictText = team ? edgeVerdict(computeRowSignal(pname, team, opponentTeam, statKey, lvl.point)).text : 'Mixed / No Signal';
-        altDataRows.push({
-          filterValues: {
-            pos: posText, player: pname, market: marketLabel, level: lvl.point, price: lvl.price, edge: edgeVerdictText,
-            hitRate5: (hr5 && hr5.found) ? Math.round(hr5.rate*100) : null,
-            hitRate10: (hr10 && hr10.found) ? Math.round(hr10.rate*100) : null,
-            hitRate15: (hr15 && hr15.found) ? Math.round(hr15.rate*100) : null,
-          },
-          cells: [posText, nameCell, edgeCell, marketLabel, `${lvl.point}+`, fmtAmerican(lvl.price), bookSourceLabel(lvl, selectedBook) || '\u2014', singleWindowChip(null, hr5), singleWindowChip(null, hr10), singleWindowChip(null, hr15), defCell, defAllowed, trackBtn || '\u2014'],
+    const ouTitle = document.createElement('div'); ouTitle.className='section-title'; ouTitle.textContent = `${marketLabel} O/U \u2014 ${windowLabelText} Hit Rate`;
+    container.appendChild(ouTitle);
+    const ouMarket = detailMarkets[ouKey];
+    const ouRows = [];
+    if(ouMarket){
+      const players = [...new Set(ouMarket.outcomes.map(o=>o.description))];
+      players.forEach(pname=>{
+        const overO = ouMarket.outcomes.find(o=>o.description===pname && o.name==='Over');
+        const underO = ouMarket.outcomes.find(o=>o.description===pname && o.name==='Under');
+        if(!overO && !underO) return;
+        const line = (overO||underO).point;
+        const team = findPlayerTeam(pname, homeShort, awayShort);
+        if(!team) return;
+        ouRows.push({
+          pname, team, overO, underO, line,
+          hr: hitRateFor(pname, team, statKey, line, windowSize),
+          hr5: hitRateFor(pname, team, statKey, line, 5),
+          hr10: hitRateFor(pname, team, statKey, line, 10),
+          hr15: hitRateFor(pname, team, statKey, line, 15),
+          hrAll: hitRateFor(pname, team, statKey, line, 'all'),
         });
       });
-    });
+    }
+    buildOUTable(container, ouRows, statKey, marketLabel);
+
+    const altTitle = document.createElement('div'); altTitle.className='section-title'; altTitle.style.marginTop='16px'; altTitle.textContent = `${marketLabel} \u2014 Alternate Lines`;
+    container.appendChild(altTitle);
+    const altMarket = detailMarkets[altKey];
+    const altPlayers = {};
+    if(altMarket){
+      const players = [...new Set(altMarket.outcomes.filter(o=>o.name==='Over').map(o=>o.description))];
+      players.forEach(pname=>{
+        const team = findPlayerTeam(pname, homeShort, awayShort);
+        if(!team) return;
+        const levels = altMarket.outcomes.filter(o=>o.name==='Over' && o.description===pname).sort((a,b)=>a.point-b.point);
+        if(levels.length) altPlayers[pname] = {team, levels};
+      });
+    }
+    buildAltLinesGrid(container, altPlayers, statKey, marketLabel);
   });
 
-  if(altDataRows.length){
-    buildFilterableTable(sec5Content, [
-      {key:'pos', label:'Pos', type:'select', options:[...new Set(altDataRows.map(r=>r.filterValues.pos))].filter(p=>p!=='\u2014'), align:'left'},
-      {key:'player', label:'Player', type:'text', align:'left'},
-      {key:'edge', label:'Edge', type:'select', options:['Strong Over','Lean Over','Mixed','Lean Under','Strong Under','Mixed / No Signal'], def:'A one-glance verdict combining the L5/L10/L15/season EMA consensus, matchup (DvP Index), and consistency (IQR) into a single read \u2014 Strong/Lean Over or Under, or Mixed if the signals don\u2019t agree. Tap the badge itself for the full breakdown behind it.', align:'left'},
-      {key:'market', label:'Market', type:'select', options:[...altMarketsSeen], align:'left'},
-      {key:'level', label:'Level', type:'numRange'},
-      {key:'price', label:'Price', type:'numRange'},
-      {key:'sportsbook', label:'Sportsbook', align:'left'},
-      {key:'hitRate5', label:'L5%', type:'numRange'},
-      {key:'hitRate10', label:'L10%', type:'numRange'},
-      {key:'hitRate15', label:'L15%', type:'numRange'},
-      {key:'defRank', label:'Opp Def Rank'},
-      {key:'defAllowed', label:'Allowed/Gm'},
-      {key:'track', label:'Track'},
-    ], altDataRows);
-  } else {
-    const na2 = document.createElement('div'); na2.style.cssText='color:var(--sub);font-size:13px;'; na2.textContent='No alternate-line (multiple level) player props posted by DraftKings for this game yet.';
-    sec5Content.appendChild(na2);
-  }
+  // ================= Parlay Recommendations tab =================
+  buildParlaySection(tabContents.parlays, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.75, selectedBook);
+  buildParlaySection(tabContents.parlays, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.70, selectedBook);
 
-  const sec6Content = makeCollapsibleSection(gameContentDiv, 'Auto-Generated Parlays', false, 'parlays');
-  buildParlaySection(sec6Content, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.75, selectedBook);
-  buildParlaySection(sec6Content, ev, homeShort, awayShort, gameMarkets, detailMarkets, 0.70, selectedBook);
 
   container.appendChild(wrap);
   if(dt <= new Date()){
