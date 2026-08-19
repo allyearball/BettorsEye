@@ -3343,17 +3343,68 @@ const TEAMMATE_OUT_INSIGNIFICANT_THRESHOLD = {pts:1.0, reb:1.0, ast:1.0, pra:2.0
 // window's own min/max would make the tiers incomparable across window sizes.
 // This is a proxy, not real defensive matchup data -- "opposing players at her position," not
 // "who actually guarded her." No box-score source tracks real defensive assignments.
-function computeHeightTierData(playerName, team){
+// Current in-app season -- the one live data actually covers right now. Update this the day a
+// new season's data replaces this as "current" (and DATA.fullPlayerLogs/DATA.games start
+// reflecting that new season instead).
+const CURRENT_SEASON = '2026';
+
+// Historical seasons are expected to eventually live at DATA.historicalSeasons[year], each
+// shaped exactly like the top-level current-season data: {fullPlayerLogs: {...}, games: {...}}
+// with the same key conventions (fullPlayerLogs keyed by "PlayerName|TEAM", games keyed by
+// gameId). That data doesn't exist yet -- until it's added to the pipeline and uploaded, every
+// season other than CURRENT_SEASON will correctly report "no data" rather than silently break.
+function getSeasonData(season){
+  if(!season || season===CURRENT_SEASON) return { fullPlayerLogs: DATA.fullPlayerLogs, games: DATA.games };
+  return (DATA.historicalSeasons && DATA.historicalSeasons[season]) || null;
+}
+// Every season currently loaded (current + whichever historical years actually have data) --
+// used both to populate the season dropdown and to build the "All" (career) combined view.
+function availableSeasonsForDropdown(){
+  const years = [CURRENT_SEASON];
+  if(DATA.historicalSeasons) Object.keys(DATA.historicalSeasons).forEach(y=>{ if(!years.includes(y)) years.push(y); });
+  return years.sort().reverse(); // most recent first
+}
+
+function computeHeightTierData(playerName, team, season){
   const key = playerName+'|'+team;
-  const rec = DATA.fullPlayerLogs[key];
-  if(!rec) return null;
+  let combinedLog = [];
+  let gamesLookup = {};
+  if(season==='all'){
+    // Combine every season currently loaded -- right now that's just CURRENT_SEASON, but this
+    // automatically picks up historical years the moment they're added to DATA.historicalSeasons,
+    // no further code changes needed here.
+    let anyFound = false;
+    availableSeasonsForDropdown().forEach(yr=>{
+      const sd = getSeasonData(yr);
+      if(sd && sd.fullPlayerLogs[key]){
+        anyFound = true;
+        combinedLog = combinedLog.concat(sd.fullPlayerLogs[key].log.map(g=>Object.assign({}, g, {_season:yr})));
+        // CAVEAT for whenever historical data actually gets built: if gameIds are ever reused
+        // across seasons (e.g. each season's numbering restarts from a similar range), this
+        // Object.assign would silently let a later season's game overwrite an earlier season's
+        // same-numbered game. Worth a quick check against the real pipeline output once historical
+        // seasons are actually wired in -- if IDs collide, this needs a season-namespaced key
+        // instead (e.g. `${yr}-${gameId}`) on both this lookup and findGameIdForTeamDate below.
+        Object.assign(gamesLookup, sd.games);
+      }
+    });
+    if(!anyFound) return null;
+  } else {
+    const sd = getSeasonData(season);
+    if(!sd) return { noData: true, season }; // season selected but not loaded into the app yet
+    const rec = sd.fullPlayerLogs[key];
+    if(!rec) return null;
+    combinedLog = rec.log;
+    gamesLookup = sd.games;
+  }
+
   const bucket = positionBucket(getPlayerPosition(playerName, team));
   if(!bucket) return null;
 
-  const gamesWithOppHeight = rec.log.filter(g=>!g.dnp).map(g=>{
+  const gamesWithOppHeight = combinedLog.filter(g=>!g.dnp).map(g=>{
     const gameId = findGameIdForTeamDate(team, g.date);
     if(!gameId) return null;
-    const gameRec = DATA.games[gameId];
+    const gameRec = gamesLookup[gameId];
     if(!gameRec) return null;
     const oppRows = gameRec.rows.filter(r=>r.team!==team && !r.dnp && positionBucket(r.pos)===bucket && (r.min||0)>0);
     if(!oppRows.length) return null;
@@ -3588,18 +3639,47 @@ const TIER_LABEL = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
 // the same window that was active when it was clicked), one checkbox per game (checked by
 // default), with Total/Min/Max/Average/Median/Mode recalculating live from only the checked
 // rows -- same footer stat set this app already uses elsewhere (e.g. Opponent Totals by Game).
-function renderHeightTierDetailPage(playerName, team, initialTier, initialWindowSize, returnTo){
-  lastRender = () => renderHeightTierDetailPage(playerName, team, initialTier, initialWindowSize, returnTo);
+function renderHeightTierDetailPage(playerName, team, initialTier, initialWindowSize, returnTo, initialSeason){
+  const activeSeason = initialSeason || CURRENT_SEASON;
+  lastRender = () => renderHeightTierDetailPage(playerName, team, initialTier, initialWindowSize, returnTo, activeSeason);
   main.innerHTML = '';
 
   const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
   back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderPlayerPage(playerName, team); });
   main.appendChild(back);
 
-  const heightData = computeHeightTierData(playerName, team);
+  // Season selector -- lets you view this same breakdown for a prior year, or "All" for her
+  // whole career combined, once historical seasons actually exist in DATA.historicalSeasons
+  // (see getSeasonData/CURRENT_SEASON above computeHeightTierData). Re-renders the whole page
+  // with the new season on change, same pattern as switching tiers/window elsewhere here.
+  const seasonRow = document.createElement('div'); seasonRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px;';
+  const seasonLbl = document.createElement('label'); seasonLbl.textContent = 'Season:'; seasonLbl.style.cssText = 'font-weight:700;color:var(--navy2);font-size:13px;';
+  const seasonSelect = document.createElement('select');
+  seasonSelect.style.cssText = 'padding:6px 10px;border:1px solid var(--line);border-radius:6px;font-size:13px;font-family:var(--sans);background:var(--panel);';
+  availableSeasonsForDropdown().forEach(yr=>{
+    const opt = document.createElement('option'); opt.value = yr; opt.textContent = yr===CURRENT_SEASON ? `${yr} (current)` : yr;
+    if(yr===activeSeason) opt.selected = true;
+    seasonSelect.appendChild(opt);
+  });
+  const allOpt = document.createElement('option'); allOpt.value = 'all'; allOpt.textContent = 'All (career)';
+  if(activeSeason==='all') allOpt.selected = true;
+  seasonSelect.appendChild(allOpt);
+  seasonSelect.addEventListener('change', ()=>{
+    renderHeightTierDetailPage(playerName, team, initialTier, initialWindowSize, returnTo, seasonSelect.value);
+  });
+  seasonRow.appendChild(seasonLbl); seasonRow.appendChild(seasonSelect);
+  main.appendChild(seasonRow);
+
+  const heightData = computeHeightTierData(playerName, team, activeSeason);
+  if(heightData && heightData.noData){
+    const head = document.createElement('div'); head.className='pagehead';
+    head.innerHTML = `<h2>${playerName}</h2><div class="meta">${activeSeason} isn\u2019t loaded into this app yet \u2014 only ${CURRENT_SEASON} is available right now. Historical seasons will show up here automatically once they\u2019re added.</div>`;
+    main.appendChild(head);
+    return;
+  }
   if(!heightData){
     const head = document.createElement('div'); head.className='pagehead';
-    head.innerHTML = `<h2>${playerName}</h2><div class="meta">Not enough games with identifiable opposing-position height data to break this out.</div>`;
+    head.innerHTML = `<h2>${playerName}</h2><div class="meta">Not enough games with identifiable opposing-position height data to break this out${activeSeason==='all'?' across her career so far':(activeSeason!==CURRENT_SEASON?' for '+activeSeason:'')}.</div>`;
     main.appendChild(head);
     return;
   }
