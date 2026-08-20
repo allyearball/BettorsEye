@@ -751,7 +751,7 @@ function computeLeagueDefenseRow(team, teamGames, opponents, mode){
 // scroll position -- per request, so the period can be changed from anywhere within a page
 // without scrolling back up. In Full mode (no bottom tab bar to sit above), stays a normal
 // in-flow element at the top of the caller's content, same as before.
-const GAME_WINDOW_OPTIONS = [ {label:'Full', value:'all'}, {label:'L15', value:15}, {label:'L10', value:10}, {label:'L5', value:5} ];
+const GAME_WINDOW_OPTIONS = [ {label:'Last 5', value:5}, {label:'Last 10', value:10}, {label:'Last 15', value:15}, {label:'Full Season', value:'all'} ];
 function removeGameWindowStickyBar(){
   const existing = document.getElementById('gameWindowStickyBar');
   if(existing) existing.remove();
@@ -769,24 +769,21 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
   } else {
     bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:16px;';
   }
-  if(labelText){
-    const label = document.createElement('div');
-    label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:13px;margin-bottom:8px;';
-    label.textContent = labelText;
-    bar.appendChild(label);
-  }
+  // Label text intentionally no longer rendered -- just the buttons themselves now, per
+  // request. The labelText parameter is still accepted (existing callers still pass it) but
+  // is now simply unused, rather than requiring every call site to be touched to remove it.
   // Always one row of 4 equal-width buttons, never wrapping regardless of screen size --
   // flex:1 on each with min-width:0 (so long labels can't force overflow) rather than the old
   // radio+label pairs, which could wrap awkwardly on narrow screens.
   const btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;flex-direction:row;gap:6px;width:100%;';
+  btnRow.style.cssText = 'display:flex;flex-direction:row;gap:4px;width:100%;';
   const buttons = [];
   GAME_WINDOW_OPTIONS.forEach(opt=>{
     const btn = document.createElement('button');
     btn.textContent = opt.label;
     function paint(){
       const isActive = String(opt.value) === String(currentWindowMode);
-      btn.style.cssText = `flex:1 1 0;min-width:0;padding:10px 4px;border-radius:6px;border:1px solid ${isActive?'var(--navy2)':'var(--line)'};background:${isActive?'var(--navy2)':'var(--panel)'};color:${isActive?'#fff':'var(--ink)'};font-size:13px;font-weight:700;cursor:pointer;font-family:var(--sans);white-space:nowrap;`;
+      btn.style.cssText = `flex:1 1 0;min-width:0;padding:10px 1px;border-radius:6px;border:1px solid ${isActive?'var(--navy2)':'var(--line)'};background:${isActive?'var(--navy2)':'var(--panel)'};color:${isActive?'#fff':'var(--ink)'};font-size:10.5px;font-weight:700;cursor:pointer;font-family:var(--sans);white-space:nowrap;`;
     }
     paint();
     btn.addEventListener('click', ()=>{
@@ -811,7 +808,7 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
   // otherwise these would silently stack up in the DOM rather than being replaced.
   removeGameWindowStickyBar();
   const spacer = document.createElement('div');
-  spacer.style.cssText = `height:${labelText ? '92px' : '68px'};`;
+  spacer.style.cssText = `height:68px;`; // label is never rendered now, so the bar is always this height regardless of whether labelText was passed
   document.body.appendChild(bar);
   return spacer;
 }
