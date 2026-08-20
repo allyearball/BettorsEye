@@ -3889,7 +3889,7 @@ function buildInjuryBanner(awayShort, homeShort){
   if(!noteworthy.length) return null;
 
   const full = document.createElement('div');
-  full.style.cssText = 'display:flex;align-items:baseline;flex-wrap:wrap;gap:0;padding:6px 2px;margin:2px 0 12px;border-left:3px solid #f0b83c;padding-left:10px;';
+  full.style.cssText = 'display:flex;align-items:baseline;flex-wrap:wrap;gap:0;padding:8px 10px;margin:2px 0 12px;border-left:3px solid #f0b83c;border-radius:0 6px 6px 0;background:#fdf6e3;';
   const icon = document.createElement('span');
   icon.style.cssText = 'font-size:12.5px;margin-right:6px;';
   icon.textContent = '\u26a0\ufe0f';
@@ -6519,7 +6519,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   function recordText(rec){ return rec ? `${rec.w}-${rec.l}` : '\u2014'; }
   function statPill(label, value){
     const pill = document.createElement('div');
-    pill.style.cssText = 'background:var(--bg);border-radius:5px;padding:4px 8px;';
+    pill.style.cssText = 'background:var(--panel);border-radius:5px;padding:4px 8px;';
     const lbl = document.createElement('span'); lbl.style.cssText = 'font-size:10.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.02em;'; lbl.textContent = label;
     const val = document.createElement('span'); val.style.cssText = 'font-size:12.5px;font-weight:700;color:var(--ink);margin-left:5px;'; val.appendChild(value instanceof Node ? value : document.createTextNode(value));
     pill.appendChild(lbl); pill.appendChild(val);
@@ -6528,7 +6528,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   [ {short: awayShort, full: ev.away_team, isHome:false}, {short: homeShort, full: ev.home_team, isHome:true} ].forEach(t=>{
     const rec = DATA.teamRecords[t.short];
     const card = document.createElement('div');
-    card.style.cssText = 'flex:1;min-width:220px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;';
+    card.style.cssText = 'flex:1;min-width:220px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;';
     const nameLink = teamLinkEl(t.short, t.full); nameLink.style.cssText = 'color:var(--ink);font-weight:800;font-size:13px;display:block;margin-bottom:6px;';
     card.appendChild(nameLink);
     if(!rec){
@@ -6545,11 +6545,13 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     const pillRow = document.createElement('div'); pillRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     pillRow.appendChild(statPill('Overall', recordText(rec.overall)));
     pillRow.appendChild(statPill(homeAwayLabel, recordText(homeAwayRec)));
-    const oppLink = teamLinkEl(oppShort, oppFull); oppLink.style.fontSize='12.5px'; oppLink.style.fontWeight='700';
+    const oppLink = teamLinkEl(oppShort, oppFull); oppLink.style.cssText = 'font-size:12.5px;font-weight:700;';
     const vsPill = document.createElement('div');
-    vsPill.style.cssText = 'background:var(--bg);border-radius:5px;padding:4px 8px;';
+    vsPill.style.cssText = 'background:var(--panel);border-radius:5px;padding:4px 8px;';
     const vsLbl = document.createElement('span'); vsLbl.style.cssText = 'font-size:10.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.02em;'; vsLbl.textContent = 'Vs ';
-    vsPill.appendChild(vsLbl); vsPill.appendChild(oppLink); vsPill.appendChild(document.createTextNode(`: ${recordText(h2h)}`));
+    const vsVal = document.createElement('span'); vsVal.style.cssText = 'font-size:12.5px;font-weight:700;color:var(--ink);';
+    vsVal.appendChild(oppLink); vsVal.appendChild(document.createTextNode(`: ${recordText(h2h)}`));
+    vsPill.appendChild(vsLbl); vsPill.appendChild(vsVal);
     pillRow.appendChild(vsPill);
     card.appendChild(pillRow);
     recordsDiv.appendChild(card);
