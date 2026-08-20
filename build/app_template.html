@@ -2101,6 +2101,15 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   head.innerHTML = `<h2>${playerName}</h2><span class="meta" style="color:var(--sub);font-size:13px;">${team}</span>`;
   main.appendChild(head);
 
+  const myInjury = teamInjuries(team).find(inj=>inj.player===playerName);
+  if(myInjury && noteworthyInjuryStatus(myInjury.status)){
+    const color = INJURY_SEVERITY_COLOR[injuryStatusSeverity(myInjury.status)] || '#7a5200';
+    const injuryLine = document.createElement('div');
+    injuryLine.style.cssText = 'font-size:13px;padding:6px 2px;margin:6px 0 4px;border-left:3px solid #f0b83c;padding-left:10px;color:#7a5200;';
+    injuryLine.innerHTML = `\u26a0\ufe0f <b style="color:${color};">${myInjury.status||'Status unclear'}</b>`;
+    main.appendChild(injuryLine);
+  }
+
   if(bio){
     const bioDiv = document.createElement('div'); bioDiv.className='player-bio';
     const position = getPlayerPosition(playerName, team);
@@ -3888,13 +3897,15 @@ function buildInjuryBanner(awayShort, homeShort){
     sep.innerHTML = i>0 ? '&nbsp;&middot;&nbsp;' : '&nbsp;';
     full.appendChild(sep);
     const color = INJURY_SEVERITY_COLOR[injuryStatusSeverity(inj.status)] || '#7a5200';
-    const nameSpan = document.createElement('b');
-    nameSpan.style.cssText = `font-size:12.5px;color:${color};`;
-    nameSpan.textContent = inj.player;
-    full.appendChild(nameSpan);
+    const nameLink = document.createElement('a');
+    nameLink.href = 'javascript:void(0)';
+    nameLink.style.cssText = `font-size:12.5px;font-weight:700;color:${color};text-decoration:underline;cursor:pointer;`;
+    nameLink.textContent = inj.player;
+    nameLink.addEventListener('click', ()=>goToPlayer(inj.player, inj.team));
+    full.appendChild(nameLink);
     const restSpan = document.createElement('span');
     restSpan.style.cssText = 'font-size:12.5px;color:#7a5200;';
-    restSpan.textContent = ` (${inj.team}${inj.position?', '+inj.position:''}) \u2014 ${inj.status||'Status unclear'}`;
+    restSpan.textContent = `\u00a0(${inj.team}${inj.position?', '+inj.position:''}) \u2014 ${inj.status||'Status unclear'}`;
     full.appendChild(restSpan);
   });
 
@@ -6440,9 +6451,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   const MONTH_ABBR3 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const dateStr = `${MONTH_ABBR3[dt.getMonth()]} ${dt.getDate()}, ${dt.getFullYear()}`;
   const timeStr = dt.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit'});
-  const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
-  const awayLink = teamLinkEl(awayShort, ev.away_team); awayLink.style.color='#000000';
-  const homeLink = teamLinkEl(homeShort, ev.home_team); homeLink.style.color='#000000';
+  const titleWrap = document.createElement('div');
+  titleWrap.style.cssText = 'background:#000000;border-radius:8px;padding:12px 14px;margin-bottom:14px;';
+  const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;color:#ffffff;';
+  const awayLink = teamLinkEl(awayShort, ev.away_team); awayLink.style.color='#ffffff';
+  const homeLink = teamLinkEl(homeShort, ev.home_team); homeLink.style.color='#ffffff';
   title.appendChild(awayLink);
   title.appendChild(document.createTextNode(' @ '));
   title.appendChild(homeLink);
@@ -6451,7 +6464,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     const stillEligible = isEligibleForTopBets(ev, new Date());
     const liveBadge = document.createElement('span');
     liveBadge.textContent = stillEligible ? '\ud83d\udd34 LIVE \u2014 IN TOP BETS WINDOW' : '\ud83d\udd34 LIVE \u2014 PAST Q1';
-    liveBadge.style.cssText = 'font-size:11px;font-weight:800;color:var(--red);border:1px solid var(--red);border-radius:4px;padding:2px 6px;cursor:pointer;';
+    liveBadge.style.cssText = 'font-size:11px;font-weight:800;color:#ff6b6b;border:1px solid #ff6b6b;border-radius:4px;padding:2px 6px;cursor:pointer;';
     const liveBadgeText = stillEligible
       ? `This game has tipped off but is still within the Top Bets eligibility window (within an estimated ${TOP_BETS_QUARTER_GRACE_MINUTES} minutes of tipoff, standing in for end of the 1st quarter \u2014 this app has no live game clock to know the actual time). It'll drop out of Top Bets after that.`
       : `This game tipped off more than an estimated ${TOP_BETS_QUARTER_GRACE_MINUTES} minutes ago (standing in for past the 1st quarter) and has dropped out of the Top Bets rankings. DraftKings\u2019 lines below still reflect current in-game reality, but the hit rates here are computed against full-game historical performance \u2014 that comparison gets less meaningful the further into the game it is.`;
@@ -6461,13 +6474,21 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   if(onTitleClick){
     const drillIn = document.createElement('a');
     drillIn.href = 'javascript:void(0)';
-    drillIn.style.cssText='font-size:12.5px;font-weight:700;color:var(--navy2);text-decoration:none;border-bottom:1px dashed var(--navy2);cursor:pointer;';
+    drillIn.style.cssText='font-size:12.5px;font-weight:700;color:#ffffff;text-decoration:none;border-bottom:1px dashed #ffffff;cursor:pointer;';
     drillIn.textContent = 'View this matchup \u2192';
     drillIn.title = 'Click to view just this matchup';
     drillIn.addEventListener('click', onTitleClick);
     title.appendChild(drillIn);
   }
-  wrap.appendChild(title);
+  titleWrap.appendChild(title);
+  const venue = (DATA.teamVenues && DATA.teamVenues[homeShort]) || {};
+  if(venue.name){
+    const venueLine = document.createElement('div');
+    venueLine.style.cssText = 'font-size:12px;color:#ffffff;opacity:.75;margin-top:4px;';
+    venueLine.textContent = `${venue.name}${venue.city ? ' \u2014 '+venue.city+(venue.state?', '+venue.state:'') : ''}`;
+    titleWrap.appendChild(venueLine);
+  }
+  wrap.appendChild(titleWrap);
 
   const injuryBanner = buildInjuryBanner(awayShort, homeShort);
 
