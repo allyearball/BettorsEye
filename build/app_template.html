@@ -6430,31 +6430,26 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     container.appendChild(allWrap);
     return;
   }
-  // uiState (if provided) is this specific game's persisted {collapsed, sections} — falls back
-  // to the old hardcoded defaults only the very first time this game is ever rendered.
-  const hasSaved = !!uiState;
-  if(!uiState) uiState = {collapsed: undefined, sections: {}};
-  startCollapsed = uiState.collapsed !== undefined ? uiState.collapsed : (startCollapsed===undefined ? true : startCollapsed);
+  // uiState (if provided) is this specific game's persisted {sections} from before -- kept for
+  // section-level state elsewhere on this page, though the whole-card collapse/expand concept
+  // itself no longer applies now that every game is reached by clicking into it directly (no
+  // more list of many collapsed games to scan through).
+  if(!uiState) uiState = {sections: {}};
   const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
   const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
   const wrap = document.createElement('div'); wrap.className='table-wrap'; wrap.style.padding='16px'; wrap.style.marginBottom='20px';
 
-  const titleRow = document.createElement('div'); titleRow.style.cssText = 'display:flex;align-items:center;gap:8px;';
-  const gameArrow = document.createElement('span');
-  gameArrow.textContent = startCollapsed ? '\u25b8' : '\u25be';
-  gameArrow.style.cssText = 'font-size:38px;color:var(--navy2);cursor:pointer;user-select:none;display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;flex-shrink:0;line-height:1;';
-  titleRow.appendChild(gameArrow);
-
   const dt = new Date(ev.commence_time);
+  const MONTH_ABBR3 = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dateStr = `${MONTH_ABBR3[dt.getMonth()]} ${dt.getDate()}, ${dt.getFullYear()}`;
+  const timeStr = dt.toLocaleTimeString(undefined, {hour:'numeric', minute:'2-digit'});
   const title = document.createElement('div'); title.style.cssText='font-weight:800;font-size:15px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
   const awayLink = teamLinkEl(awayShort, ev.away_team); awayLink.style.color='#000000';
   const homeLink = teamLinkEl(homeShort, ev.home_team); homeLink.style.color='#000000';
   title.appendChild(awayLink);
-  title.appendChild(document.createTextNode(teamRecordParenText(awayShort, windowSize)));
   title.appendChild(document.createTextNode(' @ '));
   title.appendChild(homeLink);
-  title.appendChild(document.createTextNode(teamRecordParenText(homeShort, windowSize)));
-  title.appendChild(document.createTextNode(`\u2014 ${dt.toLocaleString()}`));
+  title.appendChild(document.createTextNode(`\u2014 ${dateStr} \u2014 ${timeStr}`));
   if(dt <= new Date()){
     const stillEligible = isEligibleForTopBets(ev, new Date());
     const liveBadge = document.createElement('span');
@@ -6475,21 +6470,12 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     drillIn.addEventListener('click', onTitleClick);
     title.appendChild(drillIn);
   }
-  titleRow.appendChild(title);
-  wrap.appendChild(titleRow);
+  wrap.appendChild(title);
 
   const injuryBanner = buildInjuryBanner(awayShort, homeShort);
 
   const gameContentDiv = document.createElement('div'); gameContentDiv.style.marginTop = '6px';
-  if(startCollapsed) gameContentDiv.style.display = 'none';
   wrap.appendChild(gameContentDiv);
-  if(injuryBanner) gameContentDiv.appendChild(injuryBanner);
-  gameArrow.addEventListener('click', ()=>{
-    const isExpanded = gameContentDiv.style.display !== 'none';
-    gameContentDiv.style.display = isExpanded ? 'none' : '';
-    gameArrow.textContent = isExpanded ? '\u25b8' : '\u25be';
-    uiState.collapsed = isExpanded; // now collapsed, since it was just expanded
-  });
 
   const recordsDiv = document.createElement('div');
   recordsDiv.style.cssText = 'display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line);';
@@ -6532,6 +6518,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     recordsDiv.appendChild(card);
   });
   gameContentDiv.appendChild(recordsDiv);
+  if(injuryBanner) gameContentDiv.appendChild(injuryBanner);
 
   const dk = getBookmakerData(ev, selectedBook);
   const dkDetail = detail ? getBookmakerData(detail, selectedBook) : null;
@@ -6777,7 +6764,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   ];
   const savedTab = TAB_DEFS.some(t=>t.key===uiState.activeTab) ? uiState.activeTab : 'gameLines';
   const tabBar = document.createElement('div');
-  tabBar.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px;background:var(--navy2);border-radius:8px;padding:5px;';
+  tabBar.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px;background:#000000;border-radius:8px;padding:5px;';
   const tabContents = {};
   const tabButtons = {};
   function paintTabs(activeKey){
@@ -6785,7 +6772,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       tabContents[t.key].style.display = t.key===activeKey ? '' : 'none';
       const isActive = t.key===activeKey;
       tabButtons[t.key].style.background = isActive ? '#ffffff' : 'transparent';
-      tabButtons[t.key].style.color = isActive ? 'var(--navy2)' : '#ffffff';
+      tabButtons[t.key].style.color = isActive ? '#000000' : '#ffffff';
     });
   }
   TAB_DEFS.forEach(t=>{
