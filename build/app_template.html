@@ -3861,13 +3861,10 @@ function noteworthyInjuryStatus(status){
   return null;
 }
 
-// Returns {preview, full} or null. `preview` is a minimal, always-visible indicator (no player
-// names or status text -- just enough to flag "check this before betting it") meant to sit next
-// to the game header without competing for tap space with the expand triangle. `full` is the
-// complete detail (same content as before) meant to only show once the card is expanded. Every
-// text-bearing element gets an explicit font-size rather than relying on inheritance, since iOS
-// Safari does not always scale emoji glyphs to match surrounding text size the way it scales
-// regular characters, which was making the emoji render visibly larger than the rest of the line.
+// Returns a single element with the complete injury detail, or null if nothing noteworthy.
+// Used to also build a separate minimal "preview" indicator for a collapsed-card state that
+// no longer exists in the current single-game layout (every game view is always expanded now)
+// -- removed along with that dead code path rather than left rendering redundant with this.
 function buildInjuryBanner(awayShort, homeShort){
   const relevant = [];
   [awayShort, homeShort].forEach(team=>{
@@ -3877,23 +3874,16 @@ function buildInjuryBanner(awayShort, homeShort){
   });
   const noteworthy = relevant.filter(inj => noteworthyInjuryStatus(inj.status));
   if(!noteworthy.length) return null;
-  const hasOut = noteworthy.some(inj => noteworthyInjuryStatus(inj.status)==='out');
-
-  const preview = document.createElement('div');
-  preview.style.cssText = 'background:var(--panel)4e5;border:1px solid #f0b83c;border-radius:6px;padding:6px 12px;margin:8px 0 4px;';
-  const previewLabel = document.createElement('span');
-  previewLabel.style.cssText = 'font-size:12.5px;font-weight:700;color:#7a5200;';
-  previewLabel.textContent = 'Watch:';
-  const previewIcon = document.createElement('span');
-  previewIcon.style.cssText = 'font-size:12.5px;margin-left:6px;';
-  previewIcon.textContent = hasOut ? '\u26a0\ufe0f \ud83d\uded1' : '\u26a0\ufe0f';
-  preview.appendChild(previewLabel); preview.appendChild(previewIcon);
 
   const full = document.createElement('div');
-  full.style.cssText = 'background:var(--panel)4e5;border:1px solid #f0b83c;border-radius:6px;padding:8px 12px;margin:0 0 12px;';
+  full.style.cssText = 'display:flex;align-items:baseline;flex-wrap:wrap;gap:0;padding:6px 2px;margin:2px 0 12px;border-left:3px solid #f0b83c;padding-left:10px;';
+  const icon = document.createElement('span');
+  icon.style.cssText = 'font-size:12.5px;margin-right:6px;';
+  icon.textContent = '\u26a0\ufe0f';
+  full.appendChild(icon);
   const fullLabel = document.createElement('span');
   fullLabel.style.cssText = 'font-size:12.5px;font-weight:700;color:#7a5200;';
-  fullLabel.textContent = 'Key Player Injury Watch:';
+  fullLabel.textContent = 'Injury Watch:';
   full.appendChild(fullLabel);
   relevant.forEach((inj, i)=>{
     const sep = document.createElement('span');
@@ -3911,7 +3901,7 @@ function buildInjuryBanner(awayShort, homeShort){
     full.appendChild(restSpan);
   });
 
-  return {preview, full};
+  return full;
 }
 
 
@@ -6489,12 +6479,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   wrap.appendChild(titleRow);
 
   const injuryBanner = buildInjuryBanner(awayShort, homeShort);
-  if(injuryBanner) wrap.appendChild(injuryBanner.preview);
 
   const gameContentDiv = document.createElement('div'); gameContentDiv.style.marginTop = '6px';
   if(startCollapsed) gameContentDiv.style.display = 'none';
   wrap.appendChild(gameContentDiv);
-  if(injuryBanner) gameContentDiv.appendChild(injuryBanner.full);
+  if(injuryBanner) gameContentDiv.appendChild(injuryBanner);
   gameArrow.addEventListener('click', ()=>{
     const isExpanded = gameContentDiv.style.display !== 'none';
     gameContentDiv.style.display = isExpanded ? 'none' : '';
@@ -6503,24 +6492,44 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   });
 
   const recordsDiv = document.createElement('div');
-  recordsDiv.style.cssText = 'display:flex;gap:28px;flex-wrap:wrap;font-size:12.5px;color:var(--sub);margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line);';
+  recordsDiv.style.cssText = 'display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line);';
   function recordText(rec){ return rec ? `${rec.w}-${rec.l}` : '\u2014'; }
+  function statPill(label, value){
+    const pill = document.createElement('div');
+    pill.style.cssText = 'background:var(--bg);border-radius:5px;padding:4px 8px;';
+    const lbl = document.createElement('span'); lbl.style.cssText = 'font-size:10.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.02em;'; lbl.textContent = label;
+    const val = document.createElement('span'); val.style.cssText = 'font-size:12.5px;font-weight:700;color:var(--ink);margin-left:5px;'; val.appendChild(value instanceof Node ? value : document.createTextNode(value));
+    pill.appendChild(lbl); pill.appendChild(val);
+    return pill;
+  }
   [ {short: awayShort, full: ev.away_team, isHome:false}, {short: homeShort, full: ev.home_team, isHome:true} ].forEach(t=>{
     const rec = DATA.teamRecords[t.short];
-    const recBox = document.createElement('div');
-    if(!rec){ recBox.appendChild(teamLinkEl(t.short, t.full)); recBox.appendChild(document.createTextNode(': record not available')); recordsDiv.appendChild(recBox); return; }
+    const card = document.createElement('div');
+    card.style.cssText = 'flex:1;min-width:220px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;';
+    const nameLink = teamLinkEl(t.short, t.full); nameLink.style.cssText = 'color:var(--ink);font-weight:800;font-size:13px;display:block;margin-bottom:6px;';
+    card.appendChild(nameLink);
+    if(!rec){
+      const na = document.createElement('div'); na.style.cssText = 'font-size:12px;color:var(--sub);'; na.textContent = 'Record not available';
+      card.appendChild(na);
+      recordsDiv.appendChild(card);
+      return;
+    }
     const oppShort = t.isHome ? awayShort : homeShort;
     const oppFull = t.isHome ? ev.away_team : ev.home_team;
     const h2h = rec.vsOpponent[oppShort];
     const homeAwayLabel = t.isHome ? 'Home' : 'Away';
     const homeAwayRec = t.isHome ? rec.home : rec.away;
-    const nameLink = teamLinkEl(t.short, t.full); nameLink.style.cssText = 'color:var(--ink);font-weight:700;';
-    recBox.appendChild(nameLink);
-    const oppLink = teamLinkEl(oppShort, oppFull); oppLink.style.fontSize='12.5px';
-    recBox.appendChild(document.createTextNode(` \u2014 Overall: ${recordText(rec.overall)} \u00a0|\u00a0 ${homeAwayLabel}: ${recordText(homeAwayRec)} \u00a0|\u00a0 vs `));
-    recBox.appendChild(oppLink);
-    recBox.appendChild(document.createTextNode(`: ${recordText(h2h)}`));
-    recordsDiv.appendChild(recBox);
+    const pillRow = document.createElement('div'); pillRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    pillRow.appendChild(statPill('Overall', recordText(rec.overall)));
+    pillRow.appendChild(statPill(homeAwayLabel, recordText(homeAwayRec)));
+    const oppLink = teamLinkEl(oppShort, oppFull); oppLink.style.fontSize='12.5px'; oppLink.style.fontWeight='700';
+    const vsPill = document.createElement('div');
+    vsPill.style.cssText = 'background:var(--bg);border-radius:5px;padding:4px 8px;';
+    const vsLbl = document.createElement('span'); vsLbl.style.cssText = 'font-size:10.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.02em;'; vsLbl.textContent = 'Vs ';
+    vsPill.appendChild(vsLbl); vsPill.appendChild(oppLink); vsPill.appendChild(document.createTextNode(`: ${recordText(h2h)}`));
+    pillRow.appendChild(vsPill);
+    card.appendChild(pillRow);
+    recordsDiv.appendChild(card);
   });
   gameContentDiv.appendChild(recordsDiv);
 
