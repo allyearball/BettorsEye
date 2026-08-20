@@ -839,6 +839,7 @@ function statsPageSwitcher(activeKey){
 function renderTeamHeightPage(){
   lastRender = () => renderTeamHeightPage();
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   nav.innerHTML = ''; nav.style.display = 'none';
   main.appendChild(statsPageSwitcher('height'));
 
@@ -983,7 +984,7 @@ function renderLeagueStatsPage(year, mode, windowMode){
   main.appendChild(t3);
   appendDefIcon(t3, `Same advanced-metrics engine as each player\u2019s own page, applied league-wide. EMA/StdDev/IQR reflect her most recent played game (current rolling form, same number her own player page shows right now, independent of the Game Window selector above); USG% and DvP Faced are season averages instead, since a single game\u2019s usage or single game\u2019s matchup wouldn\u2019t represent a season the way a trailing average does. Tap any column header\u2019s \u24d8 for the full definition.<br><br>Team shooting percentages (FG%/3P%/FT%) are computed from the team\u2019s combined makes/attempts across the selected games, not averaged from individual players\u2019 percentages \u2014 that\u2019s the only mathematically correct way to roll them up. "Avg Height (Wtd)" weights each player\u2019s height by her total minutes played in the selected games, so rotation players count more than bench players who barely played.`);
   const leagueAdvRows = computeLeagueAdvancedRows(year);
-  makeTable(main, LEAGUE_ADV_COLS, leagueAdvRows, {defaultSort:'ptsEma', defaultDir:'desc', teamFor:r=>r.team});
+  makeTable(main, LEAGUE_ADV_COLS, leagueAdvRows, {defaultSort:'ptsEma', defaultDir:'desc', teamFor:r=>r.team, defaultHideDNP:true});
 
   // ---- Minutes Trend: flags players whose recent minutes have moved sharply vs. their own
   // prior stretch -- independent of the year/window controls above, since it's inherently a
@@ -1174,10 +1175,10 @@ function renderTeamPage(team, year, month, windowMode){
   }
 
   const t1 = document.createElement('div'); t1.className='section-title'; t1.textContent='Player Totals'; playersTabContent.appendChild(t1);
-  makeTable(playersTabContent, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team});
+  makeTable(playersTabContent, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team, defaultHideDNP:true});
 
   const t2 = document.createElement('div'); t2.className='section-title'; t2.textContent='Player Averages (Per Game Played)'; playersTabContent.appendChild(t2);
-  makeTable(playersTabContent, AVG_COLS, summary.averages, {defaultSort:'pts', teamFor:()=>team});
+  makeTable(playersTabContent, AVG_COLS, summary.averages, {defaultSort:'pts', teamFor:()=>team, defaultHideDNP:true});
 
   const t2b = document.createElement('div'); t2b.className='section-title'; t2b.textContent='Advanced Metrics \u2014 Offense vs. Defense (Usage Rate, Volatility, Trend)'; playersTabContent.appendChild(t2b);
   appendDefIcon(t2b, `Computed from the same ${gameIds.length}-game range selected above. USG% is the standard Basketball-Reference formula (share of team possessions used while on the floor). EMA is an exponential moving average (recent games weighted more heavily than older ones) using a span of up to 10 games. StdDev/IQR measure game-to-game volatility \u2014 a high value means the mean/average is a less reliable predictor of any single game than it looks. The two footer rows are directly comparable: "TEAM TOTAL" is this team's own scoring trend, "TEAM DEFENSE" is what opponents have scored against them, using the same PTS/REB/AST EMA-StdDev-IQR columns either way. Not shown: "Potential Assists" genuinely isn't computable from this app's data source (ESPN's free box scores don't log passer-to-shooter events, only completed assists) \u2014 that one would need a paid feed like Her Hoop Stats.`);
@@ -1186,7 +1187,7 @@ function renderTeamPage(team, year, month, windowMode){
   const advFooterRows = [];
   if(advResult.teamFooter) advFooterRows.push({label:'TEAM TOTAL (own scoring per game)', values: advResult.teamFooter});
   if(defenseTrend) advFooterRows.push({label:'TEAM DEFENSE (opponent scoring per game)', values: defenseTrend});
-  makeTable(playersTabContent, TEAM_ADV_COLS, advResult.rows, {defaultSort:'usgPct', teamFor:()=>team, footerRows: advFooterRows});
+  makeTable(playersTabContent, TEAM_ADV_COLS, advResult.rows, {defaultSort:'usgPct', teamFor:()=>team, footerRows: advFooterRows, defaultHideDNP:true});
 
   const t2c = document.createElement('div'); t2c.className='section-title'; t2c.textContent='Team Defense by Position (Season, Full-Season DvP)'; teamTabContent.appendChild(t2c);
   appendDefIcon(t2c, 'Always season-long regardless of the Season/Game Window selected above \u2014 position splits need the bigger sample to mean anything. Same DvP Index used on the Odds page and player pages: above 1.05 means this team allows notably more than league average to that position (plus matchup for the Over); below 0.95 means notably less (tougher matchup). Directly comparable to any player\u2019s own PTS/REB/AST EMA above \u2014 e.g. a high-EMA guard facing a team with a high PTS DvP Index against guards is a stacked signal, not just one data point.');
@@ -3598,6 +3599,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   const activeSeason = initialSeason || CURRENT_SEASON;
   lastRender = () => renderHeightTierDetailPage(playerName, team, initialTier, initialWindowSize, returnTo, activeSeason);
   main.innerHTML = '';
+  removeGameWindowStickyBar();
 
   const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
   back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderPlayerPage(playerName, team); });
@@ -7471,6 +7473,7 @@ function americanPayoutProfit(price, stake){
 // a password, get logged in) -- just hitting the account-setup endpoint instead of reset.
 function renderAccountSetupPage(token){
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   const wrap = document.createElement('div');
   wrap.style.cssText = 'max-width:380px;margin:60px auto;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);';
 
@@ -7531,6 +7534,7 @@ function renderAccountSetupPage(token){
 // first), so this must not depend on DATA, TEAM_NAMES, or anything else app-data-related.
 function renderResetPasswordPage(token){
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   const wrap = document.createElement('div');
   wrap.style.cssText = 'max-width:380px;margin:60px auto;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);';
 
@@ -7620,6 +7624,7 @@ function renderVerifyEmailBanner(container){
 
 function renderVerifyEmailPage(token){
   main.innerHTML = '';
+  removeGameWindowStickyBar();
   const wrap = document.createElement('div');
   wrap.style.cssText = 'max-width:380px;margin:60px auto;padding:24px;border:1px solid var(--line);border-radius:8px;background:var(--panel);text-align:center;';
   const status = document.createElement('div'); status.className = 'footnote';
