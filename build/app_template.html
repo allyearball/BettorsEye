@@ -5230,6 +5230,60 @@ function worstCaseRate(bet){
   return Math.min(...rates);
 }
 
+// ================= "Strong signal" confidence highlight =================
+// A stricter bar than the baseline Top 30 ranking already requires -- both tables already only
+// show bets that cleared a qualification threshold; this flags the subset that clears a
+// meaningfully higher one. Computed fresh from whatever bets are actually showing at any given
+// time (not a fixed, one-time pick), so it stays accurate as odds and games change day to day.
+// Standard: requires ALL FOUR windows (L5/L10/L15/Season) at 75%+, not just the worst-case
+// three the base ranking uses -- and a real season sample behind it, so a 3-game hot streak
+// with a thin Season count can't qualify.
+function computeStdConfidence(bet){
+  const windows = [
+    {label:'L5', rate:bet.rate5, gp:bet.gp5},
+    {label:'L10', rate:bet.rate10, gp:bet.gp10},
+    {label:'L15', rate:bet.rate15, gp:bet.gp15},
+    {label:'Season', rate:bet.rateAll, gp:bet.gpAll},
+  ];
+  if(windows.some(w => w.rate===null || w.rate===undefined)) return null;
+  if(windows.some(w => w.rate < 0.75)) return null;
+  if(!windows[3].gp || windows[3].gp < 8) return null;
+  return { windows, minRate: Math.min(...windows.map(w=>w.rate)), avgRate: windows.reduce((a,w)=>a+w.rate,0)/4 };
+}
+function stdConfidenceExplanation(bet, conf){
+  const pctStr = w => `${w.label} ${Math.round(w.rate*100)}%${w.gp?` (${Math.round(w.rate*w.gp)}/${w.gp})`:''}`;
+  return `All four windows agree, not just a recent hot stretch: ${conf.windows.map(pctStr).join(', ')} \u2014 every one at 75% or higher, including a real season-long sample (${conf.windows[3].gp} games). Still historical frequency, not a guarantee \u2014 worth checking the matchup (Opp Def Rank) before betting it.`;
+}
+// Advanced: requires all 4 EMA windows to agree with the side (the base ranking only needs
+// 3-of-4), a genuinely favorable matchup (DvP Index materially past the base 0.85/1.15 cutoff,
+// not just past it), and no current injury concern flagged for the player.
+function computeAdvConfidence(bet){
+  if(!bet.edge || bet.edge.agreement < 1 || bet.edge.dvp===null || bet.edge.dvp===undefined) return null;
+  const dvpFavorable = bet.side==='over' ? bet.edge.dvp > 1.10 : bet.edge.dvp < 0.90;
+  if(!dvpFavorable) return null;
+  if(bet.injuryNote){
+    const sev = injuryStatusSeverity(bet.injuryNote);
+    if(sev==='out' || sev==='doubtful') return null;
+  }
+  return { agreement: bet.edge.agreement, dvp: bet.edge.dvp };
+}
+function advConfidenceExplanation(bet, conf){
+  const dvpDir = bet.side==='over' ? 'favors the Over (opponent allows more than average to this position)' : 'favors the Under (opponent allows less than average to this position)';
+  const injuryPart = bet.injuryNote ? ` Currently listed ${bet.injuryNote}, but not Out/Doubtful.` : '';
+  return `All 4 EMA windows (L5/L10/L15/Season) agree with the ${bet.side==='over'?'Over':'Under'} \u2014 not just the 3-of-4 minimum this table already requires \u2014 and the matchup (DvP Index ${conf.dvp.toFixed(2)}) clearly ${dvpDir}, well past the baseline cutoff.${injuryPart} Still a composite score from historical data, not a guarantee.`;
+}
+// Shared visual: gold left-accent + background tint on the row, plus a tappable info icon
+// (reusing the same appendDefIcon component used for every other info tooltip in this app)
+// showing the specific numbers behind why this particular bet qualified.
+function applyConfidenceHighlight(tr, iconAnchorTd, explanation){
+  tr.style.backgroundColor = 'rgba(212,175,55,0.14)';
+  tr.style.boxShadow = 'inset 4px 0 0 0 #D4AF37';
+  const icon = document.createElement('span');
+  icon.style.cssText = 'margin-left:4px;';
+  iconAnchorTd.appendChild(icon);
+  appendDefIcon(icon, explanation);
+}
+
 // L10 EMA tiebreaker -- only meaningful for player props (team-level bets like moneyline/
 // spread/total have no individual player to compute this from, so this returns null for those,
 // same as it always has for any per-player metric on a team bet).
@@ -5930,6 +5984,8 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
 
     const tdRank = document.createElement('td'); tdRank.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
     tdRank.textContent = idx+1;
+    const stdConf = computeStdConfidence(bet);
+    if(stdConf) applyConfidenceHighlight(tr, tdRank, stdConfidenceExplanation(bet, stdConf));
     const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
     tdPos.textContent = isProp ? (getPlayerPosition(bet.player, bet.team) || '\u2014') : '\u2014';
 
@@ -6188,6 +6244,8 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     }
     const tdRank = document.createElement('td'); tdRank.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
     tdRank.textContent = idx+1;
+    const advConf = computeAdvConfidence(bet);
+    if(advConf) applyConfidenceHighlight(tr, tdRank, advConfidenceExplanation(bet, advConf));
     const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
     tdPos.textContent = getPlayerPosition(bet.player, bet.team) || '\u2014';
     const tdLabel = document.createElement('td'); tdLabel.className='left'; tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
