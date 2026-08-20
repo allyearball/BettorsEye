@@ -747,12 +747,10 @@ function computeLeagueDefenseRow(team, teamGames, opponents, mode){
 // client-side are selectable in the Season dropdown (that's whatever the pipeline has pulled in);
 // a full 2015-2025 historical backfill is a separate, larger pipeline project.
 // ================= "Game window" period selector bar =================
-// Used to be a fixed bar pinned to the bottom of the viewport. Now that pages are meaningfully
-// shorter (tabs on player pages, compact-hide columns everywhere), that's no longer needed --
-// this now returns a normal in-flow element for the caller to place at the top of their own
-// page content instead, right where the rest of the controls are. removeGameWindowStickyBar()
-// is kept as a safe no-op (rather than ripped out of every call site) in case anything still
-// calls it out of habit -- there's nothing fixed/lingering left for it to actually clean up.
+// In Compact mode, fixed just above the bottom tab bar so it travels with you regardless of
+// scroll position -- per request, so the period can be changed from anywhere within a page
+// without scrolling back up. In Full mode (no bottom tab bar to sit above), stays a normal
+// in-flow element at the top of the caller's content, same as before.
 const GAME_WINDOW_OPTIONS = [ {label:'Full', value:'all'}, {label:'L15', value:15}, {label:'L10', value:10}, {label:'L5', value:5} ];
 function removeGameWindowStickyBar(){
   const existing = document.getElementById('gameWindowStickyBar');
@@ -760,8 +758,17 @@ function removeGameWindowStickyBar(){
   document.body.style.paddingBottom = '';
 }
 function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
+  const isCompact = getLayoutMode()==='compact';
   const bar = document.createElement('div');
-  bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:16px;';
+  bar.id = 'gameWindowStickyBar';
+  if(isCompact){
+    // Same height formula as #bottomTabBar itself (padding:6px top + 56px min button height +
+    // 6px bottom + safe-area-inset), so this sits flush above it on every device regardless of
+    // notch/home-indicator size, without needing to measure the actual rendered bar via JS.
+    bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px 8px 0 0;padding:8px 12px;position:fixed;left:0;right:0;bottom:calc(68px + env(safe-area-inset-bottom, 0px));z-index:850;box-shadow:0 -2px 10px rgba(0,0,0,.1);';
+  } else {
+    bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:16px;';
+  }
   if(labelText){
     const label = document.createElement('div');
     label.style.cssText = 'font-weight:700;color:var(--navy2);font-size:13px;margin-bottom:8px;';
@@ -791,7 +798,22 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
     btnRow.appendChild(btn);
   });
   bar.appendChild(btnRow);
-  return bar;
+
+  if(!isCompact) return bar;
+
+  // Compact mode: the bar itself is fixed (out of normal flow), so a same-height spacer is
+  // returned in its place -- this is what the caller actually appendChild()s, keeping their
+  // layout code completely unchanged (still just one element to insert) while reserving the
+  // right amount of vertical space where the bar would otherwise have pushed content down.
+  // The real bar is appended straight to <body> instead, positioned fixed independent of
+  // whatever scrollable container the caller's own content lives in. This function re-runs on
+  // every period change/tab switch/etc, so any previously-appended bar is removed first --
+  // otherwise these would silently stack up in the DOM rather than being replaced.
+  removeGameWindowStickyBar();
+  const spacer = document.createElement('div');
+  spacer.style.cssText = `height:${labelText ? '92px' : '68px'};`;
+  document.body.appendChild(bar);
+  return spacer;
 }
 
 // Minutes-weighted average height across the league, over each player's last 5 games played.
@@ -6836,12 +6858,13 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     filterBar.appendChild(expandAllGroup);
     container.appendChild(filterBar);
 
-    const marketTh = showMarketColumn ? '<th class="left" style="padding:6px 8px;border-bottom:2px solid var(--line);">Market</th>' : '';
-    const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-bottom:20px;';
-    table.innerHTML = `<thead><tr><th class="left" style="padding:6px 8px;border-bottom:2px solid var(--line);">Player</th>${marketTh}<th style="padding:6px 8px;border-bottom:2px solid var(--line);">Line</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Over</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Under</th><th style="padding:6px 8px;border-bottom:2px solid var(--line);">Track</th></tr></thead>`;
+    const marketTh = showMarketColumn ? '<th class="left" style="padding:4px 3px;border-bottom:2px solid var(--line);width:16%;">Mkt</th>' : '';
+    const nameWidth = showMarketColumn ? '26%' : '30%';
+    const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-bottom:20px;table-layout:fixed;font-size:11px;';
+    table.innerHTML = `<thead><tr><th class="left" style="padding:4px 3px;border-bottom:2px solid var(--line);width:${nameWidth};">Player</th>${marketTh}<th style="padding:4px 3px;border-bottom:2px solid var(--line);width:27%;">Over</th><th style="padding:4px 3px;border-bottom:2px solid var(--line);width:27%;">Under</th><th style="padding:4px 3px;border-bottom:2px solid var(--line);width:20%;">Track</th></tr></thead>`;
     const tbody = document.createElement('tbody'); table.appendChild(tbody);
     container.appendChild(table);
-    const colCount = showMarketColumn ? 6 : 5;
+    const colCount = showMarketColumn ? 5 : 4;
 
     const filterableRows = [];
     rows.forEach(r=>{
@@ -6852,42 +6875,47 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const underIsBetter = underRate!==null && underRate > overRate;
 
       const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);cursor:pointer;';
-      const tdName = document.createElement('td'); tdName.className='left'; tdName.style.padding='6px 8px';
-      const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link'; link.textContent = r.pname;
+      const tdName = document.createElement('td'); tdName.className='left'; tdName.style.cssText='padding:4px 3px;font-size:11px;overflow-wrap:break-word;';
+      const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link'; link.style.fontSize='11px'; link.textContent = r.pname;
       link.addEventListener('click', (e)=>{ e.stopPropagation(); goToPlayer(r.pname, r.team); });
       tdName.appendChild(link);
-      const tdMarket = document.createElement('td'); tdMarket.className='left'; tdMarket.style.cssText='padding:6px 8px;color:var(--sub);'; tdMarket.textContent = marketLabel;
-      const tdLine = document.createElement('td'); tdLine.style.cssText='padding:6px 8px;text-align:center;'; tdLine.textContent = r.line;
+      const tdMarket = document.createElement('td'); tdMarket.className='left'; tdMarket.style.cssText='padding:4px 3px;color:var(--sub);font-size:10px;'; tdMarket.textContent = marketLabel;
 
-      const tdOver = document.createElement('td'); tdOver.style.cssText='padding:6px 8px;text-align:center;';
+      const tdOver = document.createElement('td'); tdOver.style.cssText='padding:4px 3px;text-align:center;';
       if(r.overO){
-        const box = document.createElement('span'); box.textContent = 'O '+fmtAmerican(r.overO.price);
-        box.style.cssText = `display:inline-block;padding:3px 8px;border-radius:5px;${overIsBetter?'border:2px solid var(--green);font-weight:800;':'border:2px solid transparent;'}`;
+        const box = document.createElement('span'); box.textContent = `O ${r.line} (${fmtAmerican(r.overO.price)})`;
+        box.style.cssText = `display:inline-block;padding:2px 4px;border-radius:5px;font-size:10.5px;white-space:nowrap;${overIsBetter?'border:2px solid var(--green);font-weight:800;':'border:2px solid transparent;'}`;
         tdOver.appendChild(box);
       } else tdOver.textContent = '\u2014';
 
-      const tdUnder = document.createElement('td'); tdUnder.style.cssText='padding:6px 8px;text-align:center;';
+      const tdUnder = document.createElement('td'); tdUnder.style.cssText='padding:4px 3px;text-align:center;';
       if(r.underO){
-        const box = document.createElement('span'); box.textContent = 'U '+fmtAmerican(r.underO.price);
-        box.style.cssText = `display:inline-block;padding:3px 8px;border-radius:5px;${underIsBetter?'border:2px solid var(--green);font-weight:800;':'border:2px solid transparent;'}`;
+        const box = document.createElement('span'); box.textContent = `U ${r.line} (${fmtAmerican(r.underO.price)})`;
+        box.style.cssText = `display:inline-block;padding:2px 4px;border-radius:5px;font-size:10.5px;white-space:nowrap;${underIsBetter?'border:2px solid var(--green);font-weight:800;':'border:2px solid transparent;'}`;
         tdUnder.appendChild(box);
       } else tdUnder.textContent = '\u2014';
 
-      const tdTrack = document.createElement('td'); tdTrack.style.cssText='padding:6px 8px;text-align:center;';
+      const tdTrack = document.createElement('td'); tdTrack.style.cssText='padding:4px 2px;text-align:center;';
       tdTrack.addEventListener('click', e=>e.stopPropagation());
       const overThreshold = Number.isInteger(r.line) ? r.line+1 : Math.ceil(r.line);
+      // Stacked vertically (Over's pair on top, Under's below) rather than side by side --
+      // side-by-side would need 4 small buttons in a row, which doesn't fit a phone screen
+      // without horizontal scrolling. Both makeTrackButton/makeHistoryButton stay their normal
+      // shared size (used all over the app); scaled down with CSS specifically in this cell only.
       if(r.overO){
         const btn = makeTrackAndHistoryButtons({label:`${r.pname} Over ${r.line} ${marketLabel}`, price:r.overO.price, betType:'player_prop', team:r.team, opponent: r.team===homeShort?awayShort:homeShort, player:r.pname, statKey, line:r.line, side:'over', thresholdToHit:overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id}, 10);
         btn.children[0].textContent = '+O'; btn.children[0].title = 'Track the Over';
+        btn.style.cssText = 'display:flex;justify-content:center;transform:scale(0.78);transform-origin:center;margin:0 auto;';
         tdTrack.appendChild(btn);
       }
       if(r.underO){
         const btn = makeTrackAndHistoryButtons({label:`${r.pname} Under ${r.line} ${marketLabel}`, price:r.underO.price, betType:'player_prop', team:r.team, opponent: r.team===homeShort?awayShort:homeShort, player:r.pname, statKey, line:r.line, side:'under', thresholdToHit:overThreshold, gameLabel:`${ev.away_team} @ ${ev.home_team}`, gameDate:toEasternDateStr(ev.commence_time), eventId: ev.id}, 10);
         btn.children[0].textContent = '+U'; btn.children[0].title = 'Track the Under';
+        btn.style.cssText = 'display:flex;justify-content:center;transform:scale(0.78);transform-origin:center;margin:0 auto;';
         tdTrack.appendChild(btn);
       }
 
-      (showMarketColumn ? [tdName, tdMarket, tdLine, tdOver, tdUnder, tdTrack] : [tdName, tdLine, tdOver, tdUnder, tdTrack]).forEach(td=>tr.appendChild(td));
+      (showMarketColumn ? [tdName, tdMarket, tdOver, tdUnder, tdTrack] : [tdName, tdOver, tdUnder, tdTrack]).forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
 
       const detailTr = document.createElement('tr');
@@ -6898,14 +6926,15 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       function buildDetailContent(){
         if(detailTd.dataset.built) return;
         detailTd.dataset.built = '1';
+        detailTd.style.fontSize = '11px';
         const oppTeam = r.team===homeShort?awayShort:homeShort;
-        const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
+        const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
         statsRow.appendChild(buildLabeledChip('L5', r.hr5));
         statsRow.appendChild(buildLabeledChip('L10', r.hr10));
         statsRow.appendChild(buildLabeledChip('L15', r.hr15));
         statsRow.appendChild(buildLabeledChip('Season', r.hrAll));
         detailTd.appendChild(statsRow);
-        const extraRow = document.createElement('div'); extraRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;margin-top:6px;align-items:center;';
+        const extraRow = document.createElement('div'); extraRow.style.cssText = 'display:flex;gap:10px;flex-wrap:wrap;margin-top:6px;align-items:center;';
         const defWrap = document.createElement('span'); defWrap.innerHTML = '<b>Opp Def Rank: </b>'; defWrap.appendChild(defRankCell(oppTeam, statKey, r.pname, r.team, marketLabel));
         const allowedWrap = document.createElement('span'); allowedWrap.innerHTML = '<b>Allowed/Gm: </b>'; allowedWrap.appendChild(defAllowedCell(oppTeam, statKey, r.pname, r.team));
         extraRow.appendChild(defWrap); extraRow.appendChild(allowedWrap);
