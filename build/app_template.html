@@ -746,18 +746,17 @@ function computeLeagueDefenseRow(team, teamGames, opponents, mode){
 // individual player's season line, side by side. Currently only the season(s) already loaded
 // client-side are selectable in the Season dropdown (that's whatever the pipeline has pulled in);
 // a full 2015-2025 historical backfill is a separate, larger pipeline project.
-// ================= "Game window" period selector bar =================
-// In Compact mode, fixed just above the bottom tab bar so it travels with you regardless of
-// scroll position -- per request, so the period can be changed from anywhere within a page
-// without scrolling back up. In Full mode (no bottom tab bar to sit above), stays a normal
-// in-flow element at the top of the caller's content, same as before.
-const GAME_WINDOW_OPTIONS = [ {label:'Last 5', value:5}, {label:'Last 10', value:10}, {label:'Last 15', value:15}, {label:'Full Season', value:'all'} ];
+// ================= Generic sticky-bottom button-row pattern =================
+// Shared by the "period" selector (Last 5/Last 10/Last 15/Full Season) and any other same-style
+// tab switcher (e.g. Standard/Advanced on the Home page) -- only one is ever meant to be active
+// on a given page at a time, so they intentionally share one element id/cleanup function rather
+// than needing separate ones.
 function removeGameWindowStickyBar(){
   const existing = document.getElementById('gameWindowStickyBar');
   if(existing) existing.remove();
   document.body.style.paddingBottom = '';
 }
-function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
+function renderStickyBottomBar(options, currentValue, onSelect){
   const isCompact = getLayoutMode()==='compact';
   const bar = document.createElement('div');
   bar.id = 'gameWindowStickyBar';
@@ -769,25 +768,22 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
   } else {
     bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:16px;';
   }
-  // Label text intentionally no longer rendered -- just the buttons themselves now, per
-  // request. The labelText parameter is still accepted (existing callers still pass it) but
-  // is now simply unused, rather than requiring every call site to be touched to remove it.
-  // Always one row of 4 equal-width buttons, never wrapping regardless of screen size --
+  // Always one row of equal-width buttons, never wrapping regardless of screen size --
   // flex:1 on each with min-width:0 (so long labels can't force overflow) rather than the old
   // radio+label pairs, which could wrap awkwardly on narrow screens.
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;flex-direction:row;gap:4px;width:100%;';
   const buttons = [];
-  GAME_WINDOW_OPTIONS.forEach(opt=>{
+  options.forEach(opt=>{
     const btn = document.createElement('button');
     btn.textContent = opt.label;
     function paint(){
-      const isActive = String(opt.value) === String(currentWindowMode);
+      const isActive = String(opt.value) === String(currentValue);
       btn.style.cssText = `flex:1 1 0;min-width:0;padding:10px 1px;border-radius:6px;border:1px solid ${isActive?'var(--navy2)':'var(--line)'};background:${isActive?'var(--navy2)':'var(--panel)'};color:${isActive?'#fff':'var(--ink)'};font-size:10.5px;font-weight:700;cursor:pointer;font-family:var(--sans);white-space:nowrap;`;
     }
     paint();
     btn.addEventListener('click', ()=>{
-      currentWindowMode = opt.value;
+      currentValue = opt.value;
       buttons.forEach(b=>b.paint());
       onSelect(opt.value);
     });
@@ -808,9 +804,20 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
   // otherwise these would silently stack up in the DOM rather than being replaced.
   removeGameWindowStickyBar();
   const spacer = document.createElement('div');
-  spacer.style.cssText = `height:68px;`; // label is never rendered now, so the bar is always this height regardless of whether labelText was passed
+  spacer.style.cssText = `height:68px;`;
   document.body.appendChild(bar);
   return spacer;
+}
+// ================= "Game window" period selector bar =================
+// In Compact mode, fixed just above the bottom tab bar so it travels with you regardless of
+// scroll position -- per request, so the period can be changed from anywhere within a page
+// without scrolling back up. In Full mode (no bottom tab bar to sit above), stays a normal
+// in-flow element at the top of the caller's content, same as before.
+const GAME_WINDOW_OPTIONS = [ {label:'Last 5', value:5}, {label:'Last 10', value:10}, {label:'Last 15', value:15}, {label:'Full Season', value:'all'} ];
+function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
+  // labelText intentionally unused now -- just the buttons, per request. Parameter still
+  // accepted since every existing caller still passes it.
+  return renderStickyBottomBar(GAME_WINDOW_OPTIONS, currentWindowMode, onSelect);
 }
 
 // Minutes-weighted average height across the league, over each player's last 5 games played.
@@ -4550,28 +4557,40 @@ async function renderHomePage(){
   bookSelect.addEventListener('change', ()=>{ selectedBook = bookSelect.value; if(recompute) recompute(); });
   bookSelectorDiv.appendChild(bookLabel);
   bookSelectorDiv.appendChild(bookSelect);
+
+  const refreshBtn = document.createElement('button'); refreshBtn.className='util-btn'; refreshBtn.textContent = '\u21bb Refresh';
+  refreshBtn.addEventListener('click', ()=>renderHomePage());
+  bookSelectorDiv.appendChild(refreshBtn);
+
+  const screenshotBtn = document.createElement('button'); screenshotBtn.className='util-btn'; screenshotBtn.textContent = '\ud83d\udcf7 Screenshot';
+  bookSelectorDiv.appendChild(screenshotBtn);
   main.appendChild(bookSelectorDiv);
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
   statusDiv.textContent = 'Loading today\u2019s games\u2026';
   main.appendChild(statusDiv);
 
-  const refreshBtn = document.createElement('button'); refreshBtn.className='util-btn'; refreshBtn.textContent = '\u21bb Refresh';
-  refreshBtn.style.marginBottom = '14px';
-  refreshBtn.addEventListener('click', ()=>renderHomePage());
-  main.appendChild(refreshBtn);
-
-  const screenshotBtn = document.createElement('button'); screenshotBtn.className='util-btn'; screenshotBtn.textContent = '\ud83d\udcf7 Screenshot';
-  screenshotBtn.style.cssText = 'margin-bottom:14px;margin-left:8px;';
-  main.appendChild(screenshotBtn);
-
+  // Standard/Advanced tab switcher -- same sticky-bottom-bar pattern as the period selector
+  // (Last 5/Last 10/Last 15/Full Season) used elsewhere, so only one table shows at a time
+  // instead of both stacked on the page together.
+  let activeHomeTab = 'standard';
   const contentDiv = document.createElement('div');
-  main.appendChild(contentDiv);
   // Separate container (not the one the screenshot buttons target) for the second, advanced-
   // analytics-ranked table below the original hit-rate-ranked one.
   const contentDiv2 = document.createElement('div');
   contentDiv2.style.marginTop = '24px';
+  function paintHomeTabVisibility(){
+    contentDiv.style.display = activeHomeTab==='standard' ? '' : 'none';
+    contentDiv2.style.display = activeHomeTab==='advanced' ? '' : 'none';
+  }
+  main.appendChild(renderStickyBottomBar(
+    [{label:'Standard', value:'standard'}, {label:'Advanced', value:'advanced'}],
+    activeHomeTab,
+    (val)=>{ activeHomeTab = val; paintHomeTabVisibility(); }
+  ));
+  main.appendChild(contentDiv);
   main.appendChild(contentDiv2);
+  paintHomeTabVisibility();
 
   // Captures the WHOLE table -- every row and every column, including ones off-screen or
   // requiring horizontal scroll to see live -- not just what's currently visible in the
