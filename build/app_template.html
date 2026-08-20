@@ -5761,7 +5761,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   // itself a legitimate selection -- it means the Season window, not "nothing selected").
   const dvpSort = { active: false, key: null, dir: 'desc' };
 
-  const stdFilters = { pos:'', minOverall:null, minL5:null, minL10:null, minL15:null, minPrice:null, maxPrice:null };
+  const stdFilters = { pos:'', minOverall:null, minL5:null, minL10:null, minL15:null, minSeason:null, minPrice:null, maxPrice:null };
   const filterBar = document.createElement('div');
   filterBar.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;padding:8px 10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;';
   function fGroup(label){
@@ -5778,7 +5778,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   posSel.addEventListener('change', ()=>{ stdFilters.pos = posSel.value; renderStdTable(); });
   posGroup.appendChild(posSel); filterBar.appendChild(posGroup);
 
-  [['Min Overall%','minOverall'],['Min L5%','minL5'],['Min L10%','minL10'],['Min L15%','minL15']].forEach(([lbl,key])=>{
+  [['Min Overall%','minOverall'],['Min L5%','minL5'],['Min L10%','minL10'],['Min L15%','minL15'],['Min Season%','minSeason']].forEach(([lbl,key])=>{
     const g = fGroup(lbl);
     const inp = document.createElement('input'); inp.type='number'; inp.min='0'; inp.max='100'; inp.placeholder='any';
     inp.style.cssText = 'width:52px;padding:4px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:var(--sans);';
@@ -5872,6 +5872,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     if(stdFilters.minL5!==null && (bet.rate5===null||bet.rate5===undefined||Math.round(bet.rate5*100)<stdFilters.minL5)) return false;
     if(stdFilters.minL10!==null && (bet.rate10===null||bet.rate10===undefined||Math.round(bet.rate10*100)<stdFilters.minL10)) return false;
     if(stdFilters.minL15!==null && (bet.rate15===null||bet.rate15===undefined||Math.round(bet.rate15*100)<stdFilters.minL15)) return false;
+    if(stdFilters.minSeason!==null && (bet.rateAll===null||bet.rateAll===undefined||Math.round(bet.rateAll*100)<stdFilters.minSeason)) return false;
     if(stdFilters.minPrice!==null && bet.price < stdFilters.minPrice) return false;
     if(stdFilters.maxPrice!==null && bet.price > stdFilters.maxPrice) return false;
     return true;
@@ -6519,7 +6520,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   function recordText(rec){ return rec ? `${rec.w}-${rec.l}` : '\u2014'; }
   function statPill(label, value){
     const pill = document.createElement('div');
-    pill.style.cssText = 'background:var(--panel);border-radius:5px;padding:4px 8px;';
+    pill.style.cssText = 'background:var(--bg);border-radius:5px;padding:4px 8px;';
     const lbl = document.createElement('span'); lbl.style.cssText = 'font-size:10.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.02em;'; lbl.textContent = label;
     const val = document.createElement('span'); val.style.cssText = 'font-size:12.5px;font-weight:700;color:var(--ink);margin-left:5px;'; val.appendChild(value instanceof Node ? value : document.createTextNode(value));
     pill.appendChild(lbl); pill.appendChild(val);
@@ -6547,7 +6548,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     pillRow.appendChild(statPill(homeAwayLabel, recordText(homeAwayRec)));
     const oppLink = teamLinkEl(oppShort, oppFull); oppLink.style.cssText = 'font-size:12.5px;font-weight:700;';
     const vsPill = document.createElement('div');
-    vsPill.style.cssText = 'background:var(--panel);border-radius:5px;padding:4px 8px;';
+    vsPill.style.cssText = 'background:var(--bg);border-radius:5px;padding:4px 8px;';
     const vsLbl = document.createElement('span'); vsLbl.style.cssText = 'font-size:10.5px;color:var(--sub);text-transform:uppercase;letter-spacing:.02em;'; vsLbl.textContent = 'Vs ';
     const vsVal = document.createElement('span'); vsVal.style.cssText = 'font-size:12.5px;font-weight:700;color:var(--ink);';
     vsVal.appendChild(oppLink); vsVal.appendChild(document.createTextNode(`: ${recordText(h2h)}`));
