@@ -312,7 +312,7 @@ function makeTable(container, columns, rows, opts){
   const state = {sortKey: opts.defaultSort||(columns[0]&&columns[0].key), sortDir: opts.defaultDir||'desc', highlightKey: null};
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const controls = document.createElement('div'); controls.className='controls';
-  const hasPlayedConcept = rows.length>0 && ('min' in rows[0] || 'gp' in rows[0]);
+  const hasPlayedConcept = !opts.noHideDNP && rows.length>0 && ('min' in rows[0] || 'gp' in rows[0]);
   let cb = null;
   if(hasPlayedConcept){
     const label = document.createElement('label');
@@ -755,6 +755,8 @@ function removeGameWindowStickyBar(){
   const existing = document.getElementById('gameWindowStickyBar');
   if(existing) existing.remove();
   document.body.style.paddingBottom = '';
+  const layoutEl = document.querySelector('.layout');
+  if(layoutEl) layoutEl.style.paddingBottom = ''; // let the CSS default (bottom-nav-only) padding apply again
 }
 function renderStickyBottomBar(options, currentValue, onSelect){
   const isCompact = getLayoutMode()==='compact';
@@ -806,6 +808,13 @@ function renderStickyBottomBar(options, currentValue, onSelect){
   const spacer = document.createElement('div');
   spacer.style.cssText = `height:68px;`;
   document.body.appendChild(bar);
+  // .layout's own CSS only reserves room for the bottom tab bar (88px) -- with this sticky bar
+  // also fixed above it, that's not enough room and the last row of whatever page content is
+  // showing ends up hidden underneath this bar. Extends that reservation for as long as this
+  // bar is showing; removeGameWindowStickyBar() (called at the top of every page's render
+  // function) puts it back to the CSS default the moment this bar goes away.
+  const layoutEl = document.querySelector('.layout');
+  if(layoutEl) layoutEl.style.paddingBottom = '156px';
   return spacer;
 }
 // ================= "Game window" period selector bar =================
@@ -959,7 +968,7 @@ function renderLeagueStatsPage(year, mode, windowMode){
     const leader = teamRows.reduce((best,r)=> (r.wins-r.losses) > (best.wins-best.losses) ? r : best, teamRows[0]);
     teamRows.forEach(r=>{ r.gbNum = ((leader.wins-r.wins)+(r.losses-leader.losses))/2; });
   }
-  makeTable(main, LEAGUE_TEAM_COLS, teamRows, {defaultSort:'pts', defaultDir:'desc'});
+  makeTable(main, LEAGUE_TEAM_COLS, teamRows, {defaultSort:'pts', defaultDir:'desc', noHideDNP:true});
 
   const t1b = document.createElement('div'); t1b.className='section-title';
   t1b.textContent = `Defensive Team ${mode==='totals'?'Totals':'Averages'} (Opponent Output) \u2014 ${windowLabelText}`;
@@ -968,7 +977,7 @@ function renderLeagueStatsPage(year, mode, windowMode){
     const {gameIds, summary} = perTeam[team];
     return computeLeagueDefenseRow(team, gameIds.length, summary.opponents, mode);
   });
-  makeTable(main, LEAGUE_DEF_COLS, defRows, {defaultSort:'oppPts', defaultDir:'asc'});
+  makeTable(main, LEAGUE_DEF_COLS, defRows, {defaultSort:'oppPts', defaultDir:'asc', noHideDNP:true});
 
   const t2 = document.createElement('div'); t2.className='section-title';
   t2.textContent = `Individual Player ${mode==='totals'?'Totals':'Averages'} \u2014 ${windowLabelText}`;
@@ -3300,7 +3309,7 @@ function injuryStatusSeverity(status){
   if(s.includes('questionable') || s.includes('day-to-day') || s.includes('day to day') || s.includes('game-time')) return 'questionable';
   return 'other';
 }
-const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', questionable:'#b8860b', other:'var(--sub)', unknown:'var(--sub)'};
+const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', questionable:'var(--ink)', other:'var(--sub)', unknown:'var(--sub)'};
 
 // How this player's per-game production has differed, historically, in games her teammate
 // missed vs played -- for every teammate CURRENTLY listed as officially out. Cross-references
