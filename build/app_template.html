@@ -341,12 +341,22 @@ function makeTable(container, columns, rows, opts){
   // compactHide columns to reveal -- same escape hatch pattern as the Standard Top 30 table,
   // now available to every table built through makeTable without needing per-table wiring.
   if(columns.some(c=>c.compactHide)){
-    wrap.classList.add('has-compact-hide'); // marks this table as one that legitimately has a collapsed/expanded state -- the table-layout:fixed squeeze in the CSS only applies when this class is present, so tables with no compactHide columns at all (e.g. the Admin Users table) are never forced into it and just use their natural width/scroll
-    const compactLabel = document.createElement('label'); compactLabel.className='compact-only';
-    const compactCb = document.createElement('input'); compactCb.type='checkbox';
-    compactCb.addEventListener('change', ()=>{ wrap.classList.toggle('compact-show-all', compactCb.checked); });
-    compactLabel.appendChild(compactCb); compactLabel.appendChild(document.createTextNode('Show All Details'));
-    topControls.appendChild(compactLabel);
+    if(opts.showAllColumns){
+      // Permanently expanded: every compactHide column is visible from the start and there's no
+      // toggle at all. Deliberately does NOT add has-compact-hide -- that class exists only to
+      // opt a table into the collapsed table-layout:fixed squeeze, which a table that never
+      // collapses has no use for. Same pattern as the Top Bets table, which has always shipped
+      // this way. (Horizontal scroll carries the extra width, as it does whenever the toggle
+      // is switched on manually.)
+      wrap.classList.add('compact-show-all');
+    } else {
+      wrap.classList.add('has-compact-hide'); // marks this table as one that legitimately has a collapsed/expanded state -- the table-layout:fixed squeeze in the CSS only applies when this class is present, so tables with no compactHide columns at all (e.g. the Admin Users table) are never forced into it and just use their natural width/scroll
+      const compactLabel = document.createElement('label'); compactLabel.className='compact-only';
+      const compactCb = document.createElement('input'); compactCb.type='checkbox';
+      compactCb.addEventListener('change', ()=>{ wrap.classList.toggle('compact-show-all', compactCb.checked); });
+      compactLabel.appendChild(compactCb); compactLabel.appendChild(document.createTextNode('Show All Details'));
+      topControls.appendChild(compactLabel);
+    }
   }
   const table = document.createElement('table');
   const thead = document.createElement('thead'); const trh = document.createElement('tr');
@@ -1315,10 +1325,10 @@ function renderTeamPage(team, year, month, windowMode){
   }
 
   const t1 = document.createElement('div'); t1.className='section-title'; t1.textContent='Player Totals'; playersTabContent.appendChild(t1);
-  makeTable(playersTabContent, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team, defaultHideDNP:true});
+  makeTable(playersTabContent, TOTALS_COLS, summary.totals, {defaultSort:'pts', teamFor:()=>team, defaultHideDNP:true, showAllColumns:true});
 
   const t2 = document.createElement('div'); t2.className='section-title'; t2.textContent='Player Averages (Per Game Played)'; playersTabContent.appendChild(t2);
-  makeTable(playersTabContent, AVG_COLS, summary.averages, {defaultSort:'pts', teamFor:()=>team, defaultHideDNP:true});
+  makeTable(playersTabContent, AVG_COLS, summary.averages, {defaultSort:'pts', teamFor:()=>team, defaultHideDNP:true, showAllColumns:true});
 
   const t2b = document.createElement('div'); t2b.className='section-title'; t2b.textContent='Advanced Metrics \u2014 Offense vs. Defense (Usage Rate, Volatility, Trend)'; playersTabContent.appendChild(t2b);
   appendDefIcon(t2b, `Computed from the same ${gameIds.length}-game range selected above. USG% is the standard Basketball-Reference formula (share of team possessions used while on the floor). EMA is an exponential moving average (recent games weighted more heavily than older ones) using a span of up to 10 games. StdDev/IQR measure game-to-game volatility \u2014 a high value means the mean/average is a less reliable predictor of any single game than it looks. The two footer rows are directly comparable: "TEAM TOTAL" is this team's own scoring trend, "TEAM DEFENSE" is what opponents have scored against them, using the same PTS/REB/AST EMA-StdDev-IQR columns either way. Not shown: "Potential Assists" genuinely isn't computable from this app's data source (ESPN's free box scores don't log passer-to-shooter events, only completed assists) \u2014 that one would need a paid feed like Her Hoop Stats.`);
@@ -1327,11 +1337,11 @@ function renderTeamPage(team, year, month, windowMode){
   const advFooterRows = [];
   if(advResult.teamFooter) advFooterRows.push({label:'TEAM TOTAL', values: advResult.teamFooter});
   if(defenseTrend) advFooterRows.push({label:'TEAM DEFENSE', values: defenseTrend});
-  makeTable(playersTabContent, TEAM_ADV_COLS, advResult.rows, {defaultSort:'usgPct', teamFor:()=>team, footerRows: advFooterRows, defaultHideDNP:true});
+  makeTable(playersTabContent, TEAM_ADV_COLS, advResult.rows, {defaultSort:'usgPct', teamFor:()=>team, footerRows: advFooterRows, defaultHideDNP:true, showAllColumns:true});
 
   const t2c = document.createElement('div'); t2c.className='section-title'; t2c.textContent='Team Defense by Position (Season, Full-Season DvP)'; teamTabContent.appendChild(t2c);
   appendDefIcon(t2c, 'Always season-long regardless of the Season/Game Window selected above \u2014 position splits need the bigger sample to mean anything. Same DvP Index used on the Odds page and player pages: above 1.05 means this team allows notably more than league average to that position (plus matchup for the Over); below 0.95 means notably less (tougher matchup). Directly comparable to any player\u2019s own PTS/REB/AST EMA above \u2014 e.g. a high-EMA guard facing a team with a high PTS DvP Index against guards is a stacked signal, not just one data point.');
-  makeTable(teamTabContent, TEAM_DEF_BY_POS_COLS, computeTeamDefenseByPosition(team), {defaultSort:'ptsAllowed', defaultDir:'desc', footerRows: [{label:'TEAM TOTAL (all positions)', values: computeTeamDefenseTotalRow(team)}]});
+  makeTable(teamTabContent, TEAM_DEF_BY_POS_COLS, computeTeamDefenseByPosition(team), {defaultSort:'ptsAllowed', defaultDir:'desc', footerRows: [{label:'TEAM TOTAL (all positions)', values: computeTeamDefenseTotalRow(team)}], showAllColumns:true});
 
   const t3a = document.createElement('div'); t3a.className='section-title'; t3a.textContent='Team Totals by Game'; teamTabContent.appendChild(t3a);
   const TEAM_GAME_NUMERIC_KEYS = TEAM_GAME_COLS.filter(c=>!c.left).map(c=>c.key);
@@ -1349,7 +1359,7 @@ function renderTeamPage(team, year, month, windowMode){
     TEAM_GAME_NUMERIC_KEYS.forEach(k=>{ values[k] = fn(summary.teamGames.map(r=>r[k]).filter(v=>v!==null && v!==undefined)); });
     teamGameFooterRows.push({label, values});
   });
-  makeTable(teamTabContent, TEAM_GAME_COLS, summary.teamGames, {defaultSort:'date', defaultDir:'asc', footerRows: teamGameFooterRows});
+  makeTable(teamTabContent, TEAM_GAME_COLS, summary.teamGames, {defaultSort:'date', defaultDir:'asc', footerRows: teamGameFooterRows, showAllColumns:true});
 
   const t3 = document.createElement('div'); t3.className='section-title'; t3.textContent='Opponent Totals by Game'; teamTabContent.appendChild(t3);
   const OPP_NUMERIC_KEYS = OPP_COLS.filter(c=>!c.left).map(c=>c.key);
@@ -1367,7 +1377,7 @@ function renderTeamPage(team, year, month, windowMode){
     OPP_NUMERIC_KEYS.forEach(k=>{ values[k] = fn(summary.opponents.map(r=>r[k]).filter(v=>v!==null && v!==undefined)); });
     oppFooterRows.push({label, values});
   });
-  makeTable(teamTabContent, OPP_COLS, summary.opponents, {defaultSort:'date', defaultDir:'asc', footerRows: oppFooterRows});
+  makeTable(teamTabContent, OPP_COLS, summary.opponents, {defaultSort:'date', defaultDir:'asc', footerRows: oppFooterRows, showAllColumns:true});
 
   const t4 = document.createElement('div'); t4.className='section-title'; t4.textContent='Individual Games (click to expand box score)'; boxScoresTabContent.appendChild(t4);
   const list = document.createElement('div'); list.className='gamelist';
