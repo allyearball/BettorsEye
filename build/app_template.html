@@ -57,6 +57,10 @@
   table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;}
   th,td{padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap;text-align:right;font-size:12.5px;color:var(--ink);}
   th:first-child, td:first-child, th.left, td.left{text-align:left;}
+  /* The header ROW needs the background too, not just the cells: a frozen header cell paints with
+     background-color:inherit, and inheriting from a transparent <tr> would let the columns
+     scrolling underneath show straight through it. */
+  thead tr{background:#eef1f6;}
   thead th{position:sticky;top:0;background:#eef1f6;color:var(--navy2);font-size:11px;text-transform:uppercase;cursor:pointer;user-select:none;border-bottom:2px solid var(--line);}
   thead th.col-highlighted{background:#cfe0fc;}
   td.col-highlighted{background:#eaf1fd;}
@@ -64,8 +68,41 @@
   tbody tr:hover td.col-highlighted{background:#d5e5fa;}
   thead th:hover{background:#e2e7f0;}
   thead th .arrow{font-size:9px;margin-left:3px;color:var(--sub);}
+  /* Odd rows need an EXPLICIT background (not just the wrapper's) so the frozen identity
+     columns below can use background-color:inherit and still be opaque -- a transparent sticky
+     cell lets the scrolled-under columns show straight through it. */
+  tbody tr{background:var(--panel);}
   tbody tr:nth-child(even){background:#fafbfd;}
   tbody tr:hover{background:#eef4ff;}
+
+  /* ===== Frozen identity columns =====
+     On a table too wide for the screen, the leading identity columns (Date + Opponent, or
+     Player, etc.) stay pinned to the left edge while the stats scroll underneath, so a row of
+     numbers never loses the name attached to it. Which columns get pinned, their left offsets,
+     and whether the table overflows at all are all decided at runtime by
+     applyStickyIdentityColumns() -- the CSS here only describes what a pinned cell looks like.
+     background-color (not the `background` shorthand) so nothing else about the cell's
+     background is clobbered. */
+  td.sticky-col, th.sticky-col{position:sticky;z-index:2;background-color:inherit;}
+  /* Above the pinned body cells, and above the already-sticky header, respectively. */
+  thead th{z-index:3;}
+  thead th.sticky-col{z-index:4;}
+  /* Column highlighting has to keep winning over the inherited row background on pinned cells,
+     which it otherwise wouldn't -- these mirror the three .col-highlighted rules above. */
+  td.sticky-col.col-highlighted{background-color:#eaf1fd;}
+  tbody tr:nth-child(even) td.sticky-col.col-highlighted{background-color:#e0ebfb;}
+  tbody tr:hover td.sticky-col.col-highlighted{background-color:#d5e5fa;}
+  /* The seam is only drawn once there's actually something scrolled underneath it, so a table
+     sitting at scrollLeft 0 looks exactly as it did before. Drawn as an ::after gradient rather
+     than a box-shadow: these tables are border-collapse:collapse, where shadows on cells paint
+     unreliably. position:sticky already makes the cell a containing block, so the strip anchors
+     to it and rides along as the table scrolls. */
+  .table-wrap.is-scrolled-x td.sticky-col-last::after,
+  .table-wrap.is-scrolled-x th.sticky-col-last::after{
+    content:'';position:absolute;top:0;bottom:0;right:0;width:9px;transform:translateX(100%);
+    background:linear-gradient(to right, rgba(16,24,40,.19), rgba(16,24,40,0));
+    pointer-events:none;
+  }
   tbody tr.starter td.left{font-weight:700;}
   tbody tr.starter td.left.no-starter-bold{font-weight:400;}
   td.col-highlighted:not(.left){font-weight:700;}
@@ -367,6 +404,136 @@ function syncTableHeaderAlignment(root){
   });
 }
 
+// ============ Frozen identity columns ============
+// On a table wider than its container, pins the leading identity columns to the left edge so a
+// row of numbers never scrolls away from the name attached to it. Which columns those are is
+// read off the HEADER LABELS rather than any column config, so the hand-rolled tables in this
+// file get the same treatment as everything built through makeTable, with no per-table wiring.
+//
+// "Identity" is the thing the row IS (Date, Opponent, Player, Season, Team). "Connectors" are the
+// narrow columns that can sit BETWEEN two identity columns -- on the Team Totals by Game table
+// the order is Date, W/L, H/A, Opponent, so pinning Date and Opponent means pinning what's
+// between them too. A run of connectors trailing off the end is trimmed back off, so a table
+// that reads Player, #, Pos, Start, MIN... pins Player alone.
+// Matched against the column's KEY where one is available (makeTable stamps data-col-key on
+// every header, so wording changes like "Position Allowed To" can't break the match), falling
+// back to the header text for the hand-rolled tables that have no column config.
+const STICKY_IDENTITY_LABELS = new Set(['date','opponent','opp','player','season','team','game','position']);
+const STICKY_CONNECTOR_LABELS = new Set(['w/l','h/a','wl','homeaway','start','starter','dnp','#','jersey','pos']);
+// A leading control column (the tier detail table's checkbox) has a blank header and rides along
+// with whatever identity columns follow it.
+const STICKY_CONTROL_LABELS = new Set(['']);
+// Identity columns that describe the GROUP a row belongs to rather than the row itself. On the
+// league-wide player tables the leading run is Team, Player -- if the screen is too narrow to pin
+// both, pinning Team alone would be worse than pinning nothing, because the column that actually
+// names the row is the one that scrolled away. Date is deliberately NOT in here: on a game log,
+// one row per date, the date alone identifies the row perfectly well on its own.
+const STICKY_GROUP_LABELS = new Set(['team','season']);
+// Two independent ceilings, both of which have to hold. The fraction stops the frozen block from
+// swallowing a narrow screen; the absolute minimum guarantees there's still a usable amount of
+// table left to scroll through on any screen.
+const STICKY_MAX_WIDTH_FRACTION = 0.6;
+const STICKY_MIN_SCROLLABLE_PX = 140;
+
+function _stickyLabel(th){
+  // A column key stamped by makeTable wins over the visible label; '' is a real value there and
+  // means a control column, so it's checked for explicitly rather than treated as absent.
+  const key = th.dataset ? th.dataset.colKey : undefined;
+  if(key !== undefined) return String(key).toLowerCase();
+  return th.textContent.replace(/[ⓘ▲▼]/g, '').trim().toLowerCase();
+}
+
+// classList.add()/toggle() re-serialize and re-set the class attribute even when the token set
+// doesn't actually change, and a re-set attribute still queues a MutationRecord. Since this whole
+// pass is *driven* by a MutationObserver, writing unconditionally means every pass schedules
+// another one and the loop never settles. These only touch the DOM on a genuine change.
+function _setClass(el, cls, on){
+  if(el.classList.contains(cls) !== !!on) el.classList.toggle(cls, !!on);
+}
+function _setStyleProp(el, prop, value){
+  if(el.style[prop] !== value) el.style[prop] = value;
+}
+
+function applyStickyIdentityColumns(root){
+  (root || document).querySelectorAll('.table-wrap').forEach(wrap=>{
+    const table = wrap.querySelector('table');
+    if(!table || !table.tHead || !table.tHead.rows.length) return;
+    const headRow = table.tHead.rows[table.tHead.rows.length - 1];
+    const ths = [...headRow.cells];
+    const clear = ()=>{
+      table.querySelectorAll('.sticky-col').forEach(c=>{
+        _setClass(c, 'sticky-col', false); _setClass(c, 'sticky-col-last', false);
+        _setStyleProp(c, 'left', '');
+      });
+      _setClass(wrap, 'is-scrolled-x', false);
+    };
+    // A hidden tab's wrap measures 0 wide; leave whatever it already has rather than tearing the
+    // pinning off and having to rebuild it the moment the tab is shown.
+    if(!wrap.clientWidth) return;
+    // Only tables that genuinely don't fit. +1 absorbs sub-pixel rounding.
+    if(table.scrollWidth <= wrap.clientWidth + 1 || ths.some(th=>th.colSpan > 1)){ clear(); return; }
+
+    // Leading run of identity/connector/control columns...
+    let end = 0;
+    while(end < ths.length){
+      const l = _stickyLabel(ths[end]);
+      if(STICKY_IDENTITY_LABELS.has(l) || STICKY_CONNECTOR_LABELS.has(l) || (end === 0 && STICKY_CONTROL_LABELS.has(l))) end++;
+      else break;
+    }
+    // ...trimmed back so it never ends on a connector, and never pins a column past the width cap.
+    const trimTrailing = ()=>{
+      while(end > 0 && !STICKY_IDENTITY_LABELS.has(_stickyLabel(ths[end-1]))) end--;
+    };
+    trimTrailing();
+    const runEnd = end; // the full identity run, before any width-driven trimming
+    const widthOf = n => ths.slice(0, n).reduce((a, th)=>a + th.offsetWidth, 0);
+    const fits = n => widthOf(n) <= wrap.clientWidth * STICKY_MAX_WIDTH_FRACTION
+                   && wrap.clientWidth - widthOf(n) >= STICKY_MIN_SCROLLABLE_PX;
+    while(end > 1 && !fits(end)){ end--; trimTrailing(); }
+    // A single column that still doesn't fit is left unpinned -- pinning it would leave no usable
+    // scrolling area at all.
+    if(end === 1 && !fits(1)) end = 0;
+    // If the screen forced us to drop identity columns and what survived only names the GROUP
+    // (Team/Season) rather than the row, pin nothing: a frozen "Indiana Fever" next to a Player
+    // column that scrolled out of sight is worse than leaving the table alone.
+    if(end > 0 && end < runEnd && STICKY_GROUP_LABELS.has(_stickyLabel(ths[end-1]))) end = 0;
+    if(end === 0){ clear(); return; }
+
+    const frozen = new Set();
+    for(let i = 0; i < end; i++) frozen.add(i);
+    let offset = 0;
+    const offsets = ths.slice(0, end).map(th=>{ const o = offset; offset += th.offsetWidth; return o; });
+
+    [headRow, ...[...table.tBodies].flatMap(tb=>[...tb.rows])].forEach(tr=>{
+      const cells = [...tr.cells];
+      // Colspan'd footer rows don't map onto columns; their label cell is already at the left
+      // edge, so skip them rather than mispositioning anything.
+      if(cells.length !== ths.length || cells.some(c=>c.colSpan > 1)){
+        cells.forEach(c=>{ if(c.classList.contains('sticky-col')){ _setClass(c,'sticky-col',false); _setClass(c,'sticky-col-last',false); _setStyleProp(c,'left',''); } });
+        return;
+      }
+      cells.forEach((c, i)=>{
+        if(frozen.has(i)){
+          _setClass(c, 'sticky-col', true);
+          _setClass(c, 'sticky-col-last', i === end - 1);
+          _setStyleProp(c, 'left', offsets[i] + 'px');
+        } else if(c.classList.contains('sticky-col')){
+          _setClass(c, 'sticky-col', false); _setClass(c, 'sticky-col-last', false);
+          _setStyleProp(c, 'left', '');
+        }
+      });
+    });
+
+    // One scroll listener per wrap, ever -- toggles the seam shadow so an unscrolled table looks
+    // untouched.
+    if(!wrap._stickyScrollBound){
+      wrap._stickyScrollBound = true;
+      wrap.addEventListener('scroll', ()=>{ _setClass(wrap, 'is-scrolled-x', wrap.scrollLeft > 0); }, {passive:true});
+    }
+    _setClass(wrap, 'is-scrolled-x', wrap.scrollLeft > 0);
+  });
+}
+
 // Debounced to one pass per frame: a single page render appends many tables, and there's no
 // value in re-walking the DOM for each one.
 function scheduleHeaderAlignmentSync(){
@@ -375,7 +542,10 @@ function scheduleHeaderAlignmentSync(){
   requestAnimationFrame(()=>{
     _alignSyncScheduled = false;
     _alignSyncRunning = true;   // our own style writes must not re-trigger the observer
-    try { syncTableHeaderAlignment(document); } finally { _alignSyncRunning = false; }
+    try {
+      syncTableHeaderAlignment(document);
+      applyStickyIdentityColumns(document);
+    } finally { _alignSyncRunning = false; }
   });
 }
 
@@ -383,8 +553,11 @@ function startHeaderAlignmentSync(){
   if(window._alignObserver) return;
   window._alignObserver = new MutationObserver(()=>scheduleHeaderAlignmentSync());
   // document.body rather than #main so modals and anything else appended outside the main
-  // column are covered too.
-  window._alignObserver.observe(document.body, {childList:true, subtree:true});
+  // column are covered too. Attributes are watched as well as children because showing a tab
+  // (a style change, not a DOM insertion) is what finally gives its tables a measurable width.
+  window._alignObserver.observe(document.body, {childList:true, subtree:true, attributes:true, attributeFilter:['style','class']});
+  // Column widths -- and whether a table overflows at all -- change with the viewport.
+  window.addEventListener('resize', ()=>scheduleHeaderAlignmentSync(), {passive:true});
   scheduleHeaderAlignmentSync();
 }
 
@@ -451,6 +624,7 @@ function makeTable(container, columns, rows, opts){
   const thead = document.createElement('thead'); const trh = document.createElement('tr');
   columns.forEach(col=>{
     const th = document.createElement('th'); th.textContent = col.label;
+    th.dataset.colKey = col.key || ''; // read by the frozen-column logic, which prefers a real key over the visible label
     if(col.left) th.classList.add('left');
     if(col.compactHide) th.classList.add('compact-hide');
     appendDefIcon(th, col.def || STAT_DEFINITIONS[col.key]);
