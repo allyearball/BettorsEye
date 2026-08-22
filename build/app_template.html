@@ -2319,6 +2319,16 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   prodTabContent.appendChild(heightTierWrap);
   const heightTierData = buildHeightTierSection(heightTierWrap, playerName, team, windowMode, heightTierTitle);
 
+  // "Estimated Share of Allowed/Gm vs Opponent" -- her share (by minutes, and separately by
+  // actual production) of her position group's Allowed/Gm against her next opponent specifically.
+  const shareTitle = document.createElement('div'); shareTitle.className='section-title';
+  shareTitle.textContent = 'Estimated Share of Allowed/Gm vs Opponent';
+  prodTabContent.appendChild(shareTitle);
+  const shareWrap = document.createElement('div');
+  shareWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
+  shareWrap.textContent = 'Looking up next opponent\u2026';
+  prodTabContent.appendChild(shareWrap);
+
   // Next opponent's players at her position -- async, since it needs the live schedule/odds
   // feed to know who's actually next.
   const nextOppTitle = document.createElement('div'); nextOppTitle.className='section-title';
@@ -2326,8 +2336,22 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   prodTabContent.appendChild(nextOppTitle);
   const nextOppWrap = document.createElement('div');
   nextOppWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
+  nextOppWrap.textContent = 'Looking up next opponent\u2026';
   prodTabContent.appendChild(nextOppWrap);
-  renderNextOpponentPositionSection(nextOppWrap, playerName, team, heightTierData, windowMode);
+
+  // Single shared lookup feeds all three of the above -- the tier outline, the new share
+  // section, and the existing next-opponent table -- rather than three separate async calls
+  // each independently hitting the live odds feed for the same answer.
+  computeNextOpponentGroupTier(playerName, team, heightTierData).then(result=>{
+    if(!result){
+      shareWrap.textContent = 'Position unavailable, or no upcoming game found.';
+      nextOppWrap.textContent = 'Position unavailable, or no upcoming game found.';
+      return;
+    }
+    if(heightTierData && heightTierData.setHighlightTier) heightTierData.setHighlightTier(result.groupTier);
+    renderShareOfAllowedSection(shareWrap, playerName, team, result.opp, windowMode);
+    renderNextOpponentPositionSectionFromResult(nextOppWrap, playerName, team, heightTierData, result);
+  });
 
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const monthLabelText = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
@@ -3592,6 +3616,13 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
   container.textContent = 'Looking up next opponent\u2026';
   const result = await computeNextOpponentGroupTier(playerName, team, heightTierData);
   if(!result){ container.textContent = 'Position unavailable, or no upcoming game found.'; return null; }
+  renderNextOpponentPositionSectionFromResult(container, playerName, team, heightTierData, result);
+  return result;
+}
+// Pure render half, split out so a single computeNextOpponentGroupTier() lookup (done once, up
+// on the player page itself) can feed this AND the "Estimated Share of Allowed/Gm" section AND
+// the height-tier table's outline, instead of three separate async lookups for the same thing.
+function renderNextOpponentPositionSectionFromResult(container, playerName, team, heightTierData, result){
   const {bucket, opp, rows, groupTier, weightedHeight} = result;
   const oppFull = FULL_TEAM_NAME[opp] || opp;
 
@@ -3641,17 +3672,24 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
 
   table.appendChild(tbody);
   container.appendChild(table);
+}
 
+// New standalone section: "Estimated Share of Allowed/Gm vs [Opponent]" -- extracted out of
+// what used to live inside the Next Opponent section above, now its own table so it can sit
+// between Production vs Opposing Position Height and Next Opponent \u2014 Same Position, per request.
+function renderShareOfAllowedSection(container, playerName, team, opp, windowMode){
+  container.innerHTML = '';
+  const oppFull = FULL_TEAM_NAME[opp] || opp;
   // "Her Share" of the position group's Allowed/Gm -- matches whichever window (L5/L10/L15/
   // Season) is currently selected at the top of the page, same as everything else here. Two
   // versions shown together on purpose: minutes-based (a proxy, assumes production scales with
   // playing time) and production-based (the real thing, her actual share of the group's stats)
   // -- comparing them tells you something too, e.g. a much higher production share than minutes
   // share means she's more efficient/ball-dominant than her position-mates, not just on the floor more.
-  const shareTitle = document.createElement('div'); shareTitle.style.cssText = 'font-weight:700;color:var(--navy2);font-size:12.5px;margin-top:12px;';
+  const shareTitle = document.createElement('div'); shareTitle.style.cssText = 'font-weight:700;color:var(--navy2);font-size:12.5px;';
   shareTitle.textContent = `Her Estimated Share of ${oppFull}'s Allowed/Gm (by Minutes)`;
   container.appendChild(shareTitle);
-  appendDefIcon(shareTitle, `Allowed/Gm above is for her ENTIRE position group (every ${POSITION_LABEL[bucket]||bucket} on her team combined) \u2014 this estimates what fraction of that number might reasonably belong to her specifically, using her share of the group's total minutes played (over the same window selected at the top of the page) as a proxy for her share of the group's production. This is an OPPORTUNITY-share proxy, not a measured production share \u2014 a player more (or less) productive per minute than her position-mates would have a real share above (or below) this estimate. See the "by Production" version below for the more accurate alternative. Still more specific than the flat, undifferentiated team-wide number on its own.`);
+  appendDefIcon(shareTitle, `Allowed/Gm above is for her ENTIRE position group (every player at her position on her team combined) \u2014 this estimates what fraction of that number might reasonably belong to her specifically, using her share of the group's total minutes played (over the same window selected at the top of the page) as a proxy for her share of the group's production. This is an OPPORTUNITY-share proxy, not a measured production share \u2014 a player more (or less) productive per minute than her position-mates would have a real share above (or below) this estimate. See the "by Production" version below for the more accurate alternative. Still more specific than the flat, undifferentiated team-wide number on its own.`);
   const shareRow = document.createElement('div'); shareRow.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;';
   [['pts','PTS'],['reb','REB'],['ast','AST'],['tpm','3PM'],['pra','PRA']].forEach(([statKey,label])=>{
     const node = buildHerShareNode(playerName, team, opp, statKey, windowMode);
@@ -3677,8 +3715,6 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
     prodShareRow.appendChild(item);
   });
   container.appendChild(prodShareRow);
-
-  return result;
 }
 
 function buildHeightTierSection(container, playerName, team, pageWindowMode, titleEl){
@@ -3696,6 +3732,7 @@ function buildHeightTierSection(container, playerName, team, pageWindowMode, tit
   // season"), any number passes through unchanged.
   const activeSize = (pageWindowMode==='all' || pageWindowMode===undefined) ? null : pageWindowMode;
   let currentLines = null; // populated async below; re-renders once available
+  let highlightTier = null; // set later via the returned .setHighlightTier(), once the async next-opponent lookup elsewhere on the page resolves
   const tableHolder = document.createElement('div');
 
   function renderTierTables(){
@@ -3718,7 +3755,10 @@ function buildHeightTierSection(container, playerName, team, pageWindowMode, tit
       const tbody = document.createElement('tbody');
       tiersToShow.forEach(([tierKey,tierLabel])=>{
         const s = stats[tierKey][statKey];
-        const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);';
+        const tr = document.createElement('tr');
+        tr.style.cssText = tierKey===highlightTier
+          ? 'border-bottom:1px solid var(--line);box-shadow:inset 0 0 0 2px var(--navy2);'
+          : 'border-bottom:1px solid var(--line);';
         const tdTier = document.createElement('td'); tdTier.style.cssText = 'padding:4px;';
         const tierLink = document.createElement('a'); tierLink.href='javascript:void(0)'; tierLink.className='player-link'; tierLink.textContent = tierLabel;
         tierLink.addEventListener('click', ()=>renderHeightTierDetailPage(playerName, team, tierKey, activeSize, lastRender));
@@ -3735,9 +3775,17 @@ function buildHeightTierSection(container, playerName, team, pageWindowMode, tit
       grid.appendChild(box);
     });
     tableHolder.appendChild(grid);
+    if(highlightTier){
+      if(!footnoteEl.dataset.built){
+        footnoteEl.dataset.built = '1';
+        footnoteEl.textContent = `The boxed row in each table above is her next opponent's group classification (Shortest/Middle/Tallest), based on the "Group (minutes-weighted)" line in Next Opponent \u2014 Same Position below.`;
+      }
+    }
   }
 
+  const footnoteEl = document.createElement('div'); footnoteEl.className = 'footnote'; footnoteEl.style.marginTop = '8px';
   container.appendChild(tableHolder);
+  container.appendChild(footnoteEl);
   renderTierTables();
 
   // Async: fetch her next-game lines and re-render once available, rather than blocking the
@@ -3747,6 +3795,10 @@ function buildHeightTierSection(container, playerName, team, pageWindowMode, tit
     renderTierTables();
   });
 
+  // Exposed so the caller can apply the "next opponent's tier" outline once that separate async
+  // lookup (elsewhere on the page) resolves -- re-runs renderTierTables so it takes effect even
+  // if this fires after the initial render (which it always does, being async itself).
+  heightData.setHighlightTier = (tier)=>{ highlightTier = tier; renderTierTables(); };
   return heightData;
 }
 
