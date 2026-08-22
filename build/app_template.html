@@ -3339,6 +3339,48 @@ function buildHerShareNode(playerName, team, opponentTeam, statKey, windowSize){
   return span;
 }
 
+// ================= "Her share" of a position-group's actual STAT PRODUCTION =================
+// Same position-group framing as the minutes-share version above, but measuring her share of
+// the group's actual points/rebounds/assists/etc instead of her share of the group's minutes.
+// This is the more accurate of the two -- it doesn't assume production scales evenly with
+// playing time, which is exactly the gap the minutes-share version's info icon flags -- but
+// it's read from her own team's recent production, same window either way, not a measurement of
+// the upcoming opponent (no app has play-by-play tracking of who guarded whom).
+function computePositionProductionShare(playerName, team, statKey, windowSize){
+  const bucket = positionBucket(getPlayerPosition(playerName, team));
+  if(!bucket) return null;
+  const key = playerName+'|'+team;
+  const rec = DATA.fullPlayerLogs[key];
+  if(!rec) return null;
+  const herGames = windowSlice(rec.log.filter(g=>!g.dnp), windowSize);
+  if(!herGames.length) return null;
+  function statVal(g){ return statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[statKey]||0); }
+  let herStat = 0, groupStat = 0;
+  herGames.forEach(g=>{
+    herStat += statVal(g);
+    const gameId = findGameIdForTeamDate(team, g.date);
+    const gameRec = gameId ? DATA.games[gameId] : null;
+    if(!gameRec) return;
+    gameRec.rows.filter(r=>r.team===team && !r.dnp && positionBucket(r.pos)===bucket).forEach(r=>{
+      groupStat += statVal(r);
+    });
+  });
+  if(groupStat<=0) return null;
+  return { share: herStat/groupStat, herStat, groupStat, gp: herGames.length, bucket };
+}
+function buildHerProductionShareNode(playerName, team, opponentTeam, statKey, windowSize){
+  const shareData = computePositionProductionShare(playerName, team, statKey, windowSize);
+  if(!shareData) return null;
+  const rank = (!windowSize || windowSize==='all')
+    ? getDefenseRank(opponentTeam, statKey, shareData.bucket)
+    : getDefenseRankWindow(opponentTeam, statKey, shareData.bucket, windowSize);
+  if(!rank || rank.perGame===null || rank.perGame===undefined) return null;
+  const herShare = shareData.share * rank.perGame;
+  const span = document.createElement('span');
+  span.textContent = herShare.toFixed(1);
+  return span;
+}
+
 // ================= Injuries =================
 // Populated by the pipeline's ESPN injury-report fetch (see fetch_injuries.py), merged into
 // DATA.injuries[shortTeam] = [{player, position, status, detail, date}, ...]. Missing/empty
@@ -3601,11 +3643,15 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
   container.appendChild(table);
 
   // "Her Share" of the position group's Allowed/Gm -- matches whichever window (L5/L10/L15/
-  // Season) is currently selected at the top of the page, same as everything else here.
+  // Season) is currently selected at the top of the page, same as everything else here. Two
+  // versions shown together on purpose: minutes-based (a proxy, assumes production scales with
+  // playing time) and production-based (the real thing, her actual share of the group's stats)
+  // -- comparing them tells you something too, e.g. a much higher production share than minutes
+  // share means she's more efficient/ball-dominant than her position-mates, not just on the floor more.
   const shareTitle = document.createElement('div'); shareTitle.style.cssText = 'font-weight:700;color:var(--navy2);font-size:12.5px;margin-top:12px;';
-  shareTitle.textContent = `Her Estimated Share of ${oppFull}'s Allowed/Gm`;
+  shareTitle.textContent = `Her Estimated Share of ${oppFull}'s Allowed/Gm (by Minutes)`;
   container.appendChild(shareTitle);
-  appendDefIcon(shareTitle, `Allowed/Gm above is for her ENTIRE position group (every ${POSITION_LABEL[bucket]||bucket} on her team combined) \u2014 this estimates what fraction of that number might reasonably belong to her specifically, using her share of the group's total minutes played (over the same window selected at the top of the page) as a proxy for her share of the group's production. This is an OPPORTUNITY-share proxy, not a measured production share \u2014 a player more (or less) productive per minute than her position-mates would have a real share above (or below) this estimate. Still more specific than the flat, undifferentiated team-wide number on its own.`);
+  appendDefIcon(shareTitle, `Allowed/Gm above is for her ENTIRE position group (every ${POSITION_LABEL[bucket]||bucket} on her team combined) \u2014 this estimates what fraction of that number might reasonably belong to her specifically, using her share of the group's total minutes played (over the same window selected at the top of the page) as a proxy for her share of the group's production. This is an OPPORTUNITY-share proxy, not a measured production share \u2014 a player more (or less) productive per minute than her position-mates would have a real share above (or below) this estimate. See the "by Production" version below for the more accurate alternative. Still more specific than the flat, undifferentiated team-wide number on its own.`);
   const shareRow = document.createElement('div'); shareRow.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;';
   [['pts','PTS'],['reb','REB'],['ast','AST'],['tpm','3PM'],['pra','PRA']].forEach(([statKey,label])=>{
     const node = buildHerShareNode(playerName, team, opp, statKey, windowMode);
@@ -3616,6 +3662,21 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
     shareRow.appendChild(item);
   });
   container.appendChild(shareRow);
+
+  const prodShareTitle = document.createElement('div'); prodShareTitle.style.cssText = 'font-weight:700;color:var(--navy2);font-size:12.5px;margin-top:12px;';
+  prodShareTitle.textContent = `Her Estimated Share of ${oppFull}'s Allowed/Gm (by Production)`;
+  container.appendChild(prodShareTitle);
+  appendDefIcon(prodShareTitle, `The more accurate version of the "by Minutes" estimate above \u2014 instead of assuming her share of the group's production matches her share of the group's minutes, this measures her ACTUAL share of the group's own points/rebounds/assists/3PM/PRA (over the same window selected at the top of the page) and applies that real share to ${oppFull}'s Allowed/Gm for her position. A player who scores or rebounds at a higher rate than her position-mates will show a higher share here than in the minutes-based version above \u2014 and a lower-usage, high-minutes role player will show the opposite. This is still her OWN team's recent production, not a measurement of how ${oppFull} specifically will defend her \u2014 no app has play-by-play tracking of who actually guarded whom.`);
+  const prodShareRow = document.createElement('div'); prodShareRow.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;';
+  [['pts','PTS'],['reb','REB'],['ast','AST'],['tpm','3PM'],['pra','PRA']].forEach(([statKey,label])=>{
+    const node = buildHerProductionShareNode(playerName, team, opp, statKey, windowMode);
+    const item = document.createElement('div'); item.style.cssText = 'font-size:12.5px;';
+    const lbl = document.createElement('b'); lbl.textContent = label+': ';
+    item.appendChild(lbl);
+    item.appendChild(node || document.createTextNode('\u2014'));
+    prodShareRow.appendChild(item);
+  });
+  container.appendChild(prodShareRow);
 
   return result;
 }
