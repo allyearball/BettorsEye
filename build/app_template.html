@@ -2327,7 +2327,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   const nextOppWrap = document.createElement('div');
   nextOppWrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
   prodTabContent.appendChild(nextOppWrap);
-  renderNextOpponentPositionSection(nextOppWrap, playerName, team, heightTierData);
+  renderNextOpponentPositionSection(nextOppWrap, playerName, team, heightTierData, windowMode);
 
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const monthLabelText = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
@@ -3293,6 +3293,52 @@ function defAllowedCell(opponentTeam, statKey, pname, team){
   return span;
 }
 
+// ================= "Her share" of a position-group Allowed/Gm number =================
+// Allowed/Gm is computed against her whole position group (every player on her team who shares
+// her position bucket, combined) -- this estimates what fraction of that number might
+// reasonably belong to HER specifically, using her share of the group's total minutes played
+// as a proxy for her share of the group's production. This is an opportunity-share proxy, not a
+// production-share measurement -- a player who's more (or less) productive per minute than her
+// position-mates would have a real share above (or below) her minutes share. Still a much more
+// specific number than the flat, undifferentiated team-wide Allowed/Gm on its own.
+function computePositionMinutesShare(playerName, team, windowSize){
+  const bucket = positionBucket(getPlayerPosition(playerName, team));
+  if(!bucket) return null;
+  const key = playerName+'|'+team;
+  const rec = DATA.fullPlayerLogs[key];
+  if(!rec) return null;
+  const herGames = windowSlice(rec.log.filter(g=>!g.dnp), windowSize); // her own last N games actually played, oldest-first same as windowSlice's convention elsewhere
+  if(!herGames.length) return null;
+  let herMin = 0, groupMin = 0;
+  herGames.forEach(g=>{
+    herMin += g.min || 0;
+    const gameId = findGameIdForTeamDate(team, g.date);
+    const gameRec = gameId ? DATA.games[gameId] : null;
+    if(!gameRec) return;
+    gameRec.rows.filter(r=>r.team===team && !r.dnp && positionBucket(r.pos)===bucket).forEach(r=>{
+      groupMin += r.min || 0;
+    });
+  });
+  if(groupMin<=0) return null;
+  return { share: herMin/groupMin, herMin, groupMin, gp: herGames.length, bucket };
+}
+// Combines the share above with the opponent's existing Allowed/Gm number for one stat, and
+// returns a ready-to-display node (or null if either input is unavailable). Uses the
+// season-long defense rank for 'all'/undefined, and the matching windowed version (L5/L10/L15)
+// otherwise, same distinction the rest of the app already makes for Allowed/Gm and DvP.
+function buildHerShareNode(playerName, team, opponentTeam, statKey, windowSize){
+  const shareData = computePositionMinutesShare(playerName, team, windowSize);
+  if(!shareData) return null;
+  const rank = (!windowSize || windowSize==='all')
+    ? getDefenseRank(opponentTeam, statKey, shareData.bucket)
+    : getDefenseRankWindow(opponentTeam, statKey, shareData.bucket, windowSize);
+  if(!rank || rank.perGame===null || rank.perGame===undefined) return null;
+  const herShare = shareData.share * rank.perGame;
+  const span = document.createElement('span');
+  span.textContent = herShare.toFixed(1);
+  return span;
+}
+
 // ================= Injuries =================
 // Populated by the pipeline's ESPN injury-report fetch (see fetch_injuries.py), merged into
 // DATA.injuries[shortTeam] = [{player, position, status, detail, date}, ...]. Missing/empty
@@ -3500,7 +3546,7 @@ async function computeNextOpponentGroupTier(playerName, team, heightTierData){
   return { bucket, opp, rows, groupTier, weightedHeight };
 }
 
-async function renderNextOpponentPositionSection(container, playerName, team, heightTierData){
+async function renderNextOpponentPositionSection(container, playerName, team, heightTierData, windowMode){
   container.textContent = 'Looking up next opponent\u2026';
   const result = await computeNextOpponentGroupTier(playerName, team, heightTierData);
   if(!result){ container.textContent = 'Position unavailable, or no upcoming game found.'; return null; }
@@ -3553,6 +3599,24 @@ async function renderNextOpponentPositionSection(container, playerName, team, he
 
   table.appendChild(tbody);
   container.appendChild(table);
+
+  // "Her Share" of the position group's Allowed/Gm -- matches whichever window (L5/L10/L15/
+  // Season) is currently selected at the top of the page, same as everything else here.
+  const shareTitle = document.createElement('div'); shareTitle.style.cssText = 'font-weight:700;color:var(--navy2);font-size:12.5px;margin-top:12px;';
+  shareTitle.textContent = `Her Estimated Share of ${oppFull}'s Allowed/Gm`;
+  container.appendChild(shareTitle);
+  appendDefIcon(shareTitle, `Allowed/Gm above is for her ENTIRE position group (every ${POSITION_LABEL[bucket]||bucket} on her team combined) \u2014 this estimates what fraction of that number might reasonably belong to her specifically, using her share of the group's total minutes played (over the same window selected at the top of the page) as a proxy for her share of the group's production. This is an OPPORTUNITY-share proxy, not a measured production share \u2014 a player more (or less) productive per minute than her position-mates would have a real share above (or below) this estimate. Still more specific than the flat, undifferentiated team-wide number on its own.`);
+  const shareRow = document.createElement('div'); shareRow.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;';
+  [['pts','PTS'],['reb','REB'],['ast','AST'],['tpm','3PM'],['pra','PRA']].forEach(([statKey,label])=>{
+    const node = buildHerShareNode(playerName, team, opp, statKey, windowMode);
+    const item = document.createElement('div'); item.style.cssText = 'font-size:12.5px;';
+    const lbl = document.createElement('b'); lbl.textContent = label+': ';
+    item.appendChild(lbl);
+    item.appendChild(node || document.createTextNode('\u2014'));
+    shareRow.appendChild(item);
+  });
+  container.appendChild(shareRow);
+
   return result;
 }
 
@@ -6057,6 +6121,13 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
       tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
       tdDefL5.appendChild(defRankL5Cell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
       tdAllowed.appendChild(defAllowedCell(bet.opponent, bet.statKey, bet.player, bet.team));
+      const herShareNode = buildHerShareNode(bet.player, bet.team, bet.opponent, bet.statKey, 10); // fixed at L10, per request -- not tied to whatever window the rest of this table's L5/L10/L15/Season columns are showing
+      if(herShareNode){
+        const shareLine = document.createElement('div'); shareLine.style.cssText = 'font-size:10.5px;color:var(--sub);margin-top:1px;';
+        shareLine.appendChild(document.createTextNode('Her: '));
+        shareLine.appendChild(herShareNode);
+        tdAllowed.appendChild(shareLine);
+      }
       const bucket = positionBucket(getPlayerPosition(bet.player, bet.team));
       tdDvpSeason.textContent = fmtDvp(bucket ? dvpIndexWindow(bet.opponent, bet.statKey, bucket, null) : null);
       tdDvpL15.textContent = fmtDvp(bucket ? dvpIndexWindow(bet.opponent, bet.statKey, bucket, 15) : null);
