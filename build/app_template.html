@@ -1184,6 +1184,102 @@ function statsPageSwitcher(activeKey){
   });
   return row;
 }
+// ============ Team height, broken out by position group ============
+// Same minutes-weighted idea as computeTeamWeightedHeight (and the same last-5-games basis), but
+// computed per position group and for every team at once, so a single team's group can be ranked
+// against the other 14. The window is deliberately FIXED at last-5 rather than following the
+// team page's own period selector: the whole point is a league ranking, and that's only
+// meaningful if every team is measured over the same span.
+const TEAM_HEIGHT_BUCKETS = ['G', 'F', 'C'];
+let _teamHeightByPosCache = null;
+function computeTeamHeightByPosition(){
+  if(_teamHeightByPosCache) return _teamHeightByPosCache;
+  const acc = {};
+  TEAM_NAMES.forEach(t=>{ acc[t] = {}; TEAM_HEIGHT_BUCKETS.forEach(b=>{ acc[t][b] = {sumWeighted:0, sumMinutes:0, players:[]}; }); });
+
+  Object.keys(DATA.fullPlayerLogs).forEach(key=>{
+    const sep = key.lastIndexOf('|');
+    const playerName = key.slice(0, sep), team = key.slice(sep+1);
+    if(!acc[team]) return;
+    const bucket = positionBucket(getPlayerPosition(playerName, team));
+    if(!bucket || !acc[team][bucket]) return;
+    const recentGames = DATA.fullPlayerLogs[key].log.filter(g=>!g.dnp).slice(-5);
+    if(!recentGames.length) return;
+    const avgMin = recentGames.reduce((a,g)=>a+(g.min||0),0) / recentGames.length;
+    if(avgMin <= 0) return;                                   // garbage-time-only, would dilute the average
+    const bio = bioLookup(playerName, team);
+    if(bio.heightIn===undefined || bio.heightIn===null) return; // no height on file -- skip rather than guess
+    const d = acc[team][bucket];
+    d.sumWeighted += avgMin * bio.heightIn;
+    d.sumMinutes += avgMin;
+    d.players.push({player: playerName, avgMin: Math.round(avgMin*10)/10, heightIn: bio.heightIn, height: bio.height});
+  });
+
+  // Rank + tier within each bucket separately -- a team can be the tallest guard group in the
+  // league and the shortest front line.
+  const byBucket = {};
+  TEAM_HEIGHT_BUCKETS.forEach(b=>{
+    const rows = TEAM_NAMES.map(t=>{
+      const d = acc[t][b];
+      if(d.sumMinutes <= 0) return null;
+      return { team: t, bucket: b,
+        heightIn: Math.round((d.sumWeighted/d.sumMinutes)*100)/100,
+        minutes: Math.round(d.sumMinutes*10)/10,
+        players: d.players.sort((x,y)=>y.avgMin-x.avgMin) };
+    }).filter(Boolean);
+    rows.sort((x,y)=>y.heightIn-x.heightIn); // rank 1 = tallest, matching the league Team Height page
+    const of = rows.length;
+    rows.forEach((r,i)=>{
+      r.rank = i+1; r.of = of;
+      // Terciles by rank, so the three labels always split the league into roughly equal thirds
+      // no matter how many teams have data for this bucket.
+      r.tier = r.rank <= of/3 ? 'Tallest' : (r.rank <= (2*of)/3 ? 'Middle' : 'Shortest');
+    });
+    byBucket[b] = rows;
+  });
+  _teamHeightByPosCache = byBucket;
+  return byBucket;
+}
+
+const TEAM_HEIGHT_COLS = [
+  {key:'position', label:'Position Group', left:true, numeric:false},
+  {key:'avgHeight', label:'Avg Height', left:true, numeric:false},
+  {key:'heightIn', label:'Inches', round2:true},
+  {key:'minutes', label:'Minutes/Gm', round1:true},
+  {key:'rankText', label:'League Rank', left:true, numeric:false},
+  {key:'tier', label:'Tier', left:true, numeric:false},
+  {key:'rotation', label:'Rotation (L5 avg min)', left:true, numeric:false, compactHide:true},
+];
+
+function buildTeamHeightSection(container, team){
+  const title = document.createElement('div'); title.className='section-title'; title.textContent = '📏 Height';
+  container.appendChild(title);
+  appendDefIcon(title, `Each position group's minutes-weighted average height: every player's last-5-games average minutes multiplied by her height, summed within the group and divided by the group's total minutes — "how tall is the average guard/forward/center this team actually has on the floor." <b>League Rank</b> is this team's place among all ${TEAM_NAMES.length} teams for that position group specifically (1 = tallest), and <b>Tier</b> splits the league into thirds — so a team can genuinely be a Tallest front line and a Shortest backcourt at the same time. Always last-5-games, regardless of the Season/Game Window selected above: a league ranking only means something if every team is measured over the same span. Players with no height on file, or with no minutes in their last 5 games, are left out rather than guessed at.`);
+
+  const byBucket = computeTeamHeightByPosition();
+  const rows = [];
+  TEAM_HEIGHT_BUCKETS.forEach(b=>{
+    const r = (byBucket[b] || []).find(x=>x.team===team);
+    if(!r) return;
+    rows.push({
+      position: POSITION_LABEL[b] || b,
+      avgHeight: inchesToHeightStr(r.heightIn) || '—',
+      heightIn: r.heightIn,
+      minutes: r.minutes,
+      rankText: `${r.rank} / ${r.of}`,
+      tier: r.tier,
+      rotation: r.players.map(p=>`${p.player} (${inchesToHeightStr(p.heightIn)}, ${p.avgMin}m)`).join(', '),
+    });
+  });
+  if(!rows.length){
+    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;';
+    na.textContent = 'No height data on file for this team’s rotation yet.';
+    container.appendChild(na);
+    return;
+  }
+  makeTable(container, TEAM_HEIGHT_COLS, rows, {defaultSort:'heightIn', defaultDir:'desc', noHideDNP:true, showAllColumns:true});
+}
+
 function renderTeamHeightPage(){
   lastRender = () => renderTeamHeightPage();
   main.innerHTML = '';
@@ -1601,6 +1697,8 @@ function renderTeamPage(team, year, month, windowMode){
   if(advResult.teamFooter) advFooterRows.push({label:'TEAM TOTAL', values: advResult.teamFooter});
   if(defenseTrend) advFooterRows.push({label:'TEAM DEFENSE', values: defenseTrend});
   makeTable(playersTabContent, TEAM_ADV_COLS, advResult.rows, {defaultSort:'usgPct', teamFor:()=>team, footerRows: advFooterRows, defaultHideDNP:true, showAllColumns:true});
+
+  buildTeamHeightSection(teamTabContent, team);
 
   const t2c = document.createElement('div'); t2c.className='section-title'; t2c.textContent='Team Defense by Position (Season, Full-Season DvP)'; teamTabContent.appendChild(t2c);
   appendDefIcon(t2c, 'Always season-long regardless of the Season/Game Window selected above \u2014 position splits need the bigger sample to mean anything. Same DvP Index used on the Odds page and player pages: above 1.05 means this team allows notably more than league average to that position (plus matchup for the Over); below 0.95 means notably less (tougher matchup). Directly comparable to any player\u2019s own PTS/REB/AST EMA above \u2014 e.g. a high-EMA guard facing a team with a high PTS DvP Index against guards is a stacked signal, not just one data point.');
@@ -7464,6 +7562,9 @@ function computeSpecialsBets(cachedFetch, selectedBook){
       out.push(Object.assign({}, leg, {
         game: gameLabel, opponent: opp, hr10, hr15, hrTier,
         groupTier: groupInfo.groupTier, groupHeightIn: groupInfo.weightedHeight,
+        // Carried so the rendered Game cell can link BOTH teams, rather than re-deriving
+        // shorts from the display string.
+        awayShort, homeShort, awayFull: ev.away_team, homeFull: ev.home_team,
       }));
     });
   });
@@ -7518,15 +7619,32 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
     tdBet.appendChild(buildLegLabelNode(bet));
     tr.appendChild(tdBet);
     const tdGame = document.createElement('td'); tdGame.className='left';
-    tdGame.style.color='var(--sub)'; tdGame.textContent = bet.game;
+    // Both teams clickable rather than one flat string.
+    if(bet.awayShort && bet.homeShort){
+      tdGame.appendChild(teamLinkEl(bet.awayShort, bet.awayFull || FULL_TEAM_NAME[bet.awayShort]));
+      tdGame.appendChild(document.createTextNode(' @ '));
+      tdGame.appendChild(teamLinkEl(bet.homeShort, bet.homeFull || FULL_TEAM_NAME[bet.homeShort]));
+    } else {
+      tdGame.style.color='var(--sub)'; tdGame.textContent = bet.game;
+    }
     tr.appendChild(tdGame);
     const tdPrice = document.createElement('td'); tdPrice.style.fontWeight='700';
     tdPrice.textContent = fmtAmerican(bet.price); tr.appendChild(tdPrice);
     const tdL10 = document.createElement('td'); tdL10.appendChild(singleWindowChip('', bet.hr10)); tr.appendChild(tdL10);
     const tdL15 = document.createElement('td'); tdL15.appendChild(singleWindowChip('', bet.hr15)); tr.appendChild(tdL15);
     const tdGroup = document.createElement('td'); tdGroup.className='left';
-    tdGroup.textContent = `${TIER_TITLE[bet.groupTier] || bet.groupTier}`
+    // Clicking the tier opens her full game-by-game record against opposing groups in that
+    // height band -- across every team she's faced, not just tonight's opponent.
+    const groupText = `${TIER_TITLE[bet.groupTier] || bet.groupTier}`
       + (bet.groupHeightIn ? ` (${inchesToHeightStr(bet.groupHeightIn) || ''})` : '');
+    const groupLink = document.createElement('a');
+    groupLink.href = 'javascript:void(0)'; groupLink.className = 'player-link';
+    groupLink.textContent = groupText;
+    groupLink.title = `${bet.player}'s season game log vs ${TIER_TITLE[bet.groupTier] || bet.groupTier} opposing ${POSITION_LABEL[positionBucket(getPlayerPosition(bet.player, bet.team))] || 'players'} — every team, not just tonight's`;
+    groupLink.addEventListener('click', ()=>{
+      renderHeightTierDetailPage(bet.player, bet.team, bet.groupTier, null, ()=>renderHomePage(), CURRENT_SEASON);
+    });
+    tdGroup.appendChild(groupLink);
     tr.appendChild(tdGroup);
     const tdTier = document.createElement('td'); tdTier.appendChild(singleWindowChip('', bet.hrTier)); tr.appendChild(tdTier);
     const tdBook = document.createElement('td'); tdBook.className='left';
