@@ -176,11 +176,11 @@
      the same size used for e.g. Season Record boxes genuinely doesn't fit a phone screen. The
      moment "Show All Details" is checked, all of this reverts to the normal wider Compact-mode
      sizing with horizontal scroll, so every column is still fully readable, just not all at once. */
-  body.compact-mode .table-wrap:not(.compact-show-all) table{table-layout:fixed;width:100%;}
-  body.compact-mode .table-wrap:not(.compact-show-all) th,
-  body.compact-mode .table-wrap:not(.compact-show-all) td{padding:9px 4px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-  body.compact-mode .table-wrap:not(.compact-show-all) th.left,
-  body.compact-mode .table-wrap:not(.compact-show-all) td.left{width:32%;}
+  body.compact-mode .table-wrap.has-compact-hide:not(.compact-show-all) table{table-layout:fixed;width:100%;}
+  body.compact-mode .table-wrap.has-compact-hide:not(.compact-show-all) th,
+  body.compact-mode .table-wrap.has-compact-hide:not(.compact-show-all) td{padding:9px 4px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  body.compact-mode .table-wrap.has-compact-hide:not(.compact-show-all) th.left,
+  body.compact-mode .table-wrap.has-compact-hide:not(.compact-show-all) td.left{width:32%;}
 </style>
 </head>
 <body class="compact-mode">
@@ -328,6 +328,7 @@ function makeTable(container, columns, rows, opts){
   // compactHide columns to reveal -- same escape hatch pattern as the Standard Top 30 table,
   // now available to every table built through makeTable without needing per-table wiring.
   if(columns.some(c=>c.compactHide)){
+    wrap.classList.add('has-compact-hide'); // marks this table as one that legitimately has a collapsed/expanded state -- the table-layout:fixed squeeze in the CSS only applies when this class is present, so tables with no compactHide columns at all (e.g. the Admin Users table) are never forced into it and just use their natural width/scroll
     const compactLabel = document.createElement('label'); compactLabel.className='compact-only';
     const compactCb = document.createElement('input'); compactCb.type='checkbox';
     compactCb.addEventListener('change', ()=>{ wrap.classList.toggle('compact-show-all', compactCb.checked); });
