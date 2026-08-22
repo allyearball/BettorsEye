@@ -183,18 +183,7 @@
   body.compact-mode .table-wrap:not(.compact-show-all) td.left{width:32%;}
 </style>
 </head>
-<body>
-<script>
-// Applied synchronously, immediately after <body> opens and before any visible content exists
-// yet, so there's no flash of the wrong layout mode on load. Default is 'compact' for anyone
-// who hasn't chosen yet -- a deliberate choice, not a screen-width detection, since layout mode
-// is a persistent user preference independent of device.
-(function(){
-  var mode = localStorage.getItem('wnba_layout_mode');
-  if(mode !== 'full' && mode !== 'compact') mode = 'compact';
-  document.body.className = mode === 'compact' ? 'compact-mode' : 'full-mode';
-})();
-</script>
+<body class="compact-mode">
 <header>
   <h1 id="logoHome" style="cursor:pointer;"><span class="brand-bettors">bettors</span><span class="brand-eye">eye</span></h1>
   <div class="tag">Data through <span id="asOf"></span></div>
@@ -1275,8 +1264,8 @@ function renderTeamPage(team, year, month, windowMode){
   const advResult = computeAdvancedStatsForTeam(team, gameIds, summary.teamGames);
   const defenseTrend = computeTeamDefenseTrend(summary.opponents);
   const advFooterRows = [];
-  if(advResult.teamFooter) advFooterRows.push({label:'TEAM TOTAL (own scoring per game)', values: advResult.teamFooter});
-  if(defenseTrend) advFooterRows.push({label:'TEAM DEFENSE (opponent scoring per game)', values: defenseTrend});
+  if(advResult.teamFooter) advFooterRows.push({label:'TEAM TOTAL', values: advResult.teamFooter});
+  if(defenseTrend) advFooterRows.push({label:'TEAM DEFENSE', values: defenseTrend});
   makeTable(playersTabContent, TEAM_ADV_COLS, advResult.rows, {defaultSort:'usgPct', teamFor:()=>team, footerRows: advFooterRows, defaultHideDNP:true});
 
   const t2c = document.createElement('div'); t2c.className='section-title'; t2c.textContent='Team Defense by Position (Season, Full-Season DvP)'; teamTabContent.appendChild(t2c);
@@ -2439,58 +2428,6 @@ function renderAccountControls(){
   }
   container.innerHTML = '';
 
-  const modeBtnWrap = document.createElement('div');
-  modeBtnWrap.id = 'modeBtnWrap';
-  modeBtnWrap.style.cssText = 'position:relative;display:inline-block;';
-  const layoutBtn = document.createElement('button');
-  layoutBtn.id = 'layoutModeBtn';
-  layoutBtn.textContent = '\u2699\ufe0f Mode';
-  layoutBtn.title = 'Choose Full (everything visible) or Compact (simplified, mobile-friendly) layout';
-
-  const modePopover = document.createElement('div');
-  modePopover.id = 'layoutModePopover';
-  modePopover.style.cssText = 'display:none;position:absolute;top:100%;right:0;margin-top:6px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 14px;box-shadow:0 4px 16px rgba(0,0,0,0.2);z-index:1000;min-width:190px;';
-  [
-    {value:'full', label:'Full (everything visible)'},
-    {value:'compact', label:'Compact (mobile-friendly)'},
-  ].forEach(opt=>{
-    const label = document.createElement('label');
-    label.style.cssText = 'display:flex;align-items:center;gap:8px;padding:7px 2px;font-size:13.5px;color:var(--ink);cursor:pointer;font-weight:400;';
-    const radio = document.createElement('input');
-    radio.type = 'radio'; radio.name = 'layoutModeRadio'; radio.value = opt.value;
-    radio.checked = getLayoutMode() === opt.value;
-    radio.addEventListener('change', ()=>{
-      setLayoutMode(opt.value);
-      modePopover.style.display = 'none';
-      if(lastRender) lastRender(); // re-render current page so any JS-driven (not just CSS) compact behavior picks up the change too
-    });
-    label.appendChild(radio);
-    label.appendChild(document.createTextNode(opt.label));
-    modePopover.appendChild(label);
-  });
-  layoutBtn.addEventListener('click', (e)=>{
-    e.stopPropagation();
-    modePopover.style.display = modePopover.style.display==='none' ? '' : 'none';
-  });
-  modeBtnWrap.appendChild(layoutBtn);
-  modeBtnWrap.appendChild(modePopover);
-
-  // Guarded so this is only ever attached once, no matter how many times renderAccountControls
-  // re-runs (every page navigation rebuilds the header controls) -- a plain document listener
-  // added inside this function would otherwise pile up a fresh duplicate on every single
-  // navigation. Looks up the popover/button by id each time rather than capturing a closure
-  // reference, so it stays correct even after this function has rebuilt them.
-  if(!window._layoutModePopoverListenerAdded){
-    window._layoutModePopoverListenerAdded = true;
-    document.addEventListener('click', (e)=>{
-      const popover = document.getElementById('layoutModePopover');
-      const btn = document.getElementById('layoutModeBtn');
-      if(popover && popover.style.display!=='none' && !popover.contains(e.target) && e.target!==btn){
-        popover.style.display = 'none';
-      }
-    });
-  }
-
   const settingsBtn = document.createElement('button');
   settingsBtn.textContent = '\u2699\ufe0f Settings';
   settingsBtn.addEventListener('click', ()=>{
@@ -2524,7 +2461,6 @@ function renderAccountControls(){
     });
   }
 
-  container.appendChild(modeBtnWrap);
   container.appendChild(settingsBtn);
   if(adminBtn) container.appendChild(adminBtn);
   container.appendChild(authBtn);
@@ -2532,7 +2468,7 @@ function renderAccountControls(){
   // Compact-mode-only hamburger menu -- CSS hides every direct child of #accountControls in
   // Compact mode (the desktop-style button row above), so this needs to live as a SIBLING of
   // #accountControls rather than inside it, or the same hide-everything rule would catch it too.
-  buildCompactMenu(container, {layoutBtn: () => { setLayoutMode(getLayoutMode()==='compact'?'full':'compact'); if(lastRender) lastRender(); }, settingsBtn, adminBtn, authBtn});
+  buildCompactMenu(container, {settingsBtn, adminBtn, authBtn});
 }
 // Builds (once) the hamburger button + slide-out panel + overlay, appended as a sibling of
 // #accountControls rather than a child of it (see the comment at the call site for why).
@@ -2573,7 +2509,6 @@ function buildCompactMenu(afterEl, actions){
     panel.appendChild(b);
     return b;
   }
-  panelItem(getLayoutMode()==='compact' ? '\ud83d\udcf1 Mode: Compact (tap for Full)' : '\ud83d\udda5\ufe0f Mode: Full (tap for Compact)', actions.layoutBtn);
   panelItem('\u2699\ufe0f Settings', ()=>actions.settingsBtn.click());
   if(actions.adminBtn) panelItem('\ud83d\udee1\ufe0f Admin', ()=>actions.adminBtn.click());
   panelItem(actions.authBtn.textContent, ()=>actions.authBtn.click());
@@ -4530,32 +4465,12 @@ function getAuthEmail(){ return localStorage.getItem(AUTH_EMAIL_LS_KEY); }
 function isEmailVerified(){ return localStorage.getItem(AUTH_VERIFIED_LS_KEY) === '1'; }
 function isAdminUser(){ return localStorage.getItem(AUTH_ADMIN_LS_KEY) === '1'; }
 
-// Layout mode: persistent user preference (Full = today's dense layout, Compact = simplified/
-// mobile-friendly default). Applied synchronously in a tiny inline script right after <body>
-// opens (see there for why) -- these functions are for changing it after the fact, from the
-// toggle button.
-const LAYOUT_MODE_KEY = 'wnba_layout_mode';
+// Full mode has been removed entirely -- this app only has one layout now. Kept as a function
+// (rather than replacing every call site with the literal string 'compact') so every existing
+// isCompact/getLayoutMode()==='compact' check throughout the app keeps working unchanged, just
+// permanently true.
 function getLayoutMode(){
-  const stored = localStorage.getItem(LAYOUT_MODE_KEY);
-  return (stored === 'full' || stored === 'compact') ? stored : 'compact';
-}
-function setLayoutMode(mode){
-  localStorage.setItem(LAYOUT_MODE_KEY, mode);
-  document.body.className = mode === 'compact' ? 'compact-mode' : 'full-mode';
-  // Belt-and-suspenders on top of the CSS class-based hiding above -- directly enforces
-  // visibility of the Compact-only chrome (bottom tab bar, hamburger button/panel) so mode
-  // switching is correct even if some CSS specificity edge case is ever introduced later.
-  const isCompact = mode === 'compact';
-  const bar = document.getElementById('bottomTabBar');
-  if(bar) bar.style.display = isCompact ? '' : 'none';
-  const menuBtn = document.getElementById('compactMenuBtn');
-  if(menuBtn) menuBtn.style.display = isCompact ? '' : 'none';
-  if(!isCompact){
-    const panel = document.getElementById('compactMenuPanel');
-    const overlay = document.getElementById('compactMenuOverlay');
-    if(panel) panel.classList.remove('open');
-    if(overlay) overlay.classList.remove('open');
-  }
+  return 'compact';
 }
 function getAuthUsername(){ return localStorage.getItem(AUTH_USERNAME_LS_KEY); }
 function getAuthFirstName(){ return localStorage.getItem(AUTH_FIRSTNAME_LS_KEY); }
@@ -9277,18 +9192,18 @@ async function renderAppTrackerPage(){
     tierBox.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:14px;';
     const tierTitle = document.createElement('div'); tierTitle.className='section-title'; tierTitle.style.margin='0 0 10px'; tierTitle.textContent = 'All-Time Records';
     tierBox.appendChild(tierTitle);
-    const tierTable = document.createElement('table'); tierTable.style.cssText = 'font-size:12.5px;';
+    const tierTable = document.createElement('table'); tierTable.style.cssText = 'font-size:11px;table-layout:fixed;width:100%;';
     const tierRows = [
       ['Standard', stdBets],
       ['Advanced', advBets],
       ['Both', bothBets],
     ];
-    let tierHtml = '<tr><th class="left" style="padding:4px 10px 4px 0;"></th><th style="padding:4px 10px;">Top 5</th><th style="padding:4px 10px;">Top 10</th><th style="padding:4px 10px;">Top 15</th></tr>';
+    let tierHtml = '<tr><th class="left" style="padding:4px 2px;width:22%;"></th><th style="padding:4px 2px;width:26%;">Top 5</th><th style="padding:4px 2px;width:26%;">Top 10</th><th style="padding:4px 2px;width:26%;">Top 15</th></tr>';
     tierRows.forEach(([label, list])=>{
-      tierHtml += `<tr><td class="left" style="padding:4px 10px 4px 0;font-weight:700;color:var(--navy2);">${label}</td>`
-        + `<td style="padding:4px 10px;text-align:center;">${fmtRecord(record(list,5))}</td>`
-        + `<td style="padding:4px 10px;text-align:center;">${fmtRecord(record(list,10))}</td>`
-        + `<td style="padding:4px 10px;text-align:center;">${fmtRecord(record(list,15))}</td></tr>`;
+      tierHtml += `<tr><td class="left" style="padding:4px 2px;font-weight:700;color:var(--navy2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${label}</td>`
+        + `<td style="padding:4px 2px;text-align:center;">${fmtRecord(record(list,5))}</td>`
+        + `<td style="padding:4px 2px;text-align:center;">${fmtRecord(record(list,10))}</td>`
+        + `<td style="padding:4px 2px;text-align:center;">${fmtRecord(record(list,15))}</td></tr>`;
     });
     tierTable.innerHTML = tierHtml;
     tierBox.appendChild(tierTable);
@@ -9324,13 +9239,13 @@ async function renderAppTrackerPage(){
       const group = document.createElement('div');
       const groupLabel = document.createElement('div'); groupLabel.style.cssText = 'font-weight:800;color:var(--navy2);font-size:13px;margin-bottom:6px;'; groupLabel.textContent = label;
       group.appendChild(groupLabel);
-      const numCols = 5; // 5 per source x 2 sources = 10 columns total, 6 ranks per column, 30 ranks exactly every time
-      const perCol = Math.ceil(entries.length / numCols); // = 6, always, since entries.length is always exactly 30
-      const colsRow = document.createElement('div'); colsRow.style.cssText = 'display:flex;gap:14px;';
+      const numCols = 3; // 3 columns x 10 ranks each = 30 ranks exactly every time (was 5x6 -- narrowed to fit a phone screen width, see the vertical stacking below too)
+      const perCol = Math.ceil(entries.length / numCols); // = 10, always, since entries.length is always exactly 30
+      const colsRow = document.createElement('div'); colsRow.style.cssText = 'display:flex;gap:10px;';
       for(let c=0; c<numCols; c++){
         const slice = entries.slice(c*perCol, (c+1)*perCol);
         if(!slice.length) continue;
-        const colDiv = document.createElement('div'); colDiv.style.cssText = 'font-size:11.5px;line-height:1.7;min-width:64px;';
+        const colDiv = document.createElement('div'); colDiv.style.cssText = 'font-size:11px;line-height:1.7;flex:1;min-width:0;';
         slice.forEach(({r, rec})=>{
           const line = document.createElement('div');
           const hasData = rec.w+rec.l > 0;
@@ -9350,7 +9265,7 @@ async function renderAppTrackerPage(){
       return group;
     }
     const rankGrid = document.createElement('div');
-    rankGrid.style.cssText = 'display:flex;gap:36px;flex-wrap:wrap;';
+    rankGrid.style.cssText = 'display:flex;flex-direction:column;gap:16px;';
     rankGrid.appendChild(buildSourceGroup('Standard', stdBets));
     rankGrid.appendChild(buildSourceGroup('Advanced', advBets));
     rankContent.appendChild(rankGrid);
