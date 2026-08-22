@@ -418,14 +418,8 @@ function syncTableHeaderAlignment(root){
 // Matched against the column's KEY where one is available (makeTable stamps data-col-key on
 // every header, so wording changes like "Position Allowed To" can't break the match), falling
 // back to the header text for the hand-rolled tables that have no column config.
-// 'bet' is the identity of a row on the Top Bets tables, the way 'player' is on a stat table.
-// 'game' is deliberately NOT here: on the Advanced Top Bets table it sits immediately after Bet,
-// so treating it as identity would drag it into the frozen block and pin considerably more width
-// than the row actually needs to stay readable.
-const STICKY_IDENTITY_LABELS = new Set(['date','opponent','opp','player','season','team','bet','position']);
-// 'rank' and 'pos' are the narrow columns sitting between the star column and Bet on the Top
-// Bets tables -- connectors, so they come along only because they're sandwiched, never on their own.
-const STICKY_CONNECTOR_LABELS = new Set(['w/l','h/a','wl','homeaway','start','starter','dnp','#','jersey','pos','rank']);
+const STICKY_IDENTITY_LABELS = new Set(['date','opponent','opp','player','season','team','game','position']);
+const STICKY_CONNECTOR_LABELS = new Set(['w/l','h/a','wl','homeaway','start','starter','dnp','#','jersey','pos']);
 // A leading control column (the tier detail table's checkbox) has a blank header and rides along
 // with whatever identity columns follow it.
 const STICKY_CONTROL_LABELS = new Set(['']);
@@ -7578,6 +7572,9 @@ function computeSpecialsBets(cachedFetch, selectedBook){
       if(!leg.player || !leg.team || leg.line===undefined || leg.line===null) return;
       if(!(leg.price >= SPECIALS_MIN_PRICE)) return;                       // qualifier 4
 
+      // L5 is shown for context only -- it is NOT one of the four qualifying bars, so it's
+      // computed after the cheap price check but never gates anything.
+      const hr5 = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 5);
       const hr10 = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 10);
       if(!hr10 || !hr10.gp || hr10.rate < SPECIALS_RECENT_BAR) return;     // qualifier 1
       const hr15 = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 15);
@@ -7592,7 +7589,7 @@ function computeSpecialsBets(cachedFetch, selectedBook){
       if(!hrTier || !hrTier.gp || hrTier.rate < SPECIALS_TIER_BAR) return; // qualifier 3
 
       out.push(Object.assign({}, leg, {
-        game: gameLabel, opponent: opp, hr10, hr15, hrTier,
+        game: gameLabel, opponent: opp, hr5, hr10, hr15, hrTier,
         groupTier: groupInfo.groupTier, groupHeightIn: groupInfo.weightedHeight,
         // Carried so the rendered Game cell can link BOTH teams, rather than re-deriving
         // shorts from the display string.
@@ -7617,7 +7614,7 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   appendDefIcon(sec, `A deliberately short list — a player prop only shows up here if it clears <b>all four</b> bars at once: hit in at least ${Math.round(SPECIALS_RECENT_BAR*100)}% of her last 10 games, at least ${Math.round(SPECIALS_RECENT_BAR*100)}% of her last 15, at least ${Math.round(SPECIALS_TIER_BAR*100)}% of her games this season against opposing position groups in the same height tier she faces tonight, and priced ${SPECIALS_MIN_PRICE} or better. The height tier is the same minutes-weighted "Group" classification the player page's Next Opponent section shows — shortest / middle / tallest, measured against her own season terciles. Team bets can't appear here: the height-tier qualifier has no meaning for a moneyline, spread or total. Small samples still apply — an 80% tier record over 5 games is 4-of-5, not a probability.`);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = `Only today’s games still inside the pregame-through-Q1 window. Sorted by tier hit rate, then by the weaker of the L10/L15 windows.`;
+  note.textContent = `Only today’s games still inside the pregame-through-Q1 window. Sorted by tier hit rate, then by the weaker of the L10/L15 windows. L5 and Vs That Team are shown for context — neither is one of the four qualifying bars.`;
   container.appendChild(note);
 
   const {todaysGames, bets} = computeSpecialsBets(cachedFetch, selectedBook);
@@ -7640,8 +7637,8 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   const table = document.createElement('table');
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
-    + '<th>L10</th><th>L15</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
-    + '<th class="left">Sportsbook</th><th></th></tr>';
+    + '<th>L5</th><th>L10</th><th>L15</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
+    + '<th class="left">Vs That Team</th><th class="left">Sportsbook</th><th></th></tr>';
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   const TIER_TITLE = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
@@ -7662,6 +7659,7 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
     tr.appendChild(tdGame);
     const tdPrice = document.createElement('td'); tdPrice.style.fontWeight='700';
     tdPrice.textContent = fmtAmerican(bet.price); tr.appendChild(tdPrice);
+    const tdL5 = document.createElement('td'); tdL5.appendChild(singleWindowChip('', bet.hr5)); tr.appendChild(tdL5);
     const tdL10 = document.createElement('td'); tdL10.appendChild(singleWindowChip('', bet.hr10)); tr.appendChild(tdL10);
     const tdL15 = document.createElement('td'); tdL15.appendChild(singleWindowChip('', bet.hr15)); tr.appendChild(tdL15);
     const tdGroup = document.createElement('td'); tdGroup.className='left';
@@ -7679,6 +7677,10 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
     tdGroup.appendChild(groupLink);
     tr.appendChild(tdGroup);
     const tdTier = document.createElement('td'); tdTier.appendChild(singleWindowChip('', bet.hrTier)); tr.appendChild(tdTier);
+    const tdVsTeam = document.createElement('td'); tdVsTeam.className='left';
+    tdVsTeam.style.cssText = 'font-size:11px;';
+    tdVsTeam.appendChild(buildVsOpponentCell(bet)); // same green-dot / red-X treatment as the Standard and Advanced tables
+    tr.appendChild(tdVsTeam);
     const tdBook = document.createElement('td'); tdBook.className='left';
     tdBook.style.cssText='color:var(--sub);font-size:11px;';
     tdBook.textContent = bookSourceLabel({price:bet.price, book:bet.book}, selectedBook) || '';
