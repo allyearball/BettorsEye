@@ -7490,6 +7490,11 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
 //   4. priced -135 or better (i.e. -135, -120, +140 all qualify; -140 does not)
 // Player props only: qualifier 3 is defined in terms of the defender's height tier, which has no
 // meaning for a moneyline, spread or total.
+// defRankCell/defRankL5Cell take a human market label for their tooltip and for the league
+// modal's title. The Standard/Advanced pools get it as bet.market from gatherCandidateLegs;
+// gatherAllCapturedLegs doesn't set it, so it's mapped from statKey here using the same wording
+// PROP_MARKET_LABEL uses.
+const SPECIALS_MARKET_LABEL = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'Threes', pra:'Pts+Reb+Ast'};
 const SPECIALS_MIN_PRICE = -135;
 const SPECIALS_RECENT_BAR = 0.50;   // qualifiers 1 and 2
 const SPECIALS_TIER_BAR = 0.80;     // qualifier 3
@@ -7597,6 +7602,7 @@ function computeSpecialsBets(cachedFetch, selectedBook){
         rate5: hr5.rate, rate10: hr10.rate, rate15: hr15.rate, rateAll: hrAll ? hrAll.rate : null,
         gp5: hr5.gp, gp10: hr10.gp, gp15: hr15.gp, gpAll: hrAll ? hrAll.gp : 0,
         sportsbook: bookSourceLabel({price: leg.price, book: leg.book}, selectedBook),
+        market: SPECIALS_MARKET_LABEL[leg.statKey] || leg.statKey,
         game: gameLabel, opponent: opp, hr5, hr10, hr15, hrTier,
         groupTier: groupInfo.groupTier, groupHeightIn: groupInfo.weightedHeight,
         // Carried so the rendered Game cell can link BOTH teams, rather than re-deriving
@@ -7646,7 +7652,11 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
     + '<th>L5</th><th>L10</th><th>L15</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
-    + '<th class="left">Vs That Team</th><th class="left">Sportsbook</th><th></th></tr>';
+    + '<th class="left">Vs That Team</th>'
+    + '<th class="left defcol th-sp-defrank">Opp Def Rank</th><th class="left defcol th-sp-defrankl5">Opp Def Rank L5</th>'
+    + '<th class="left">Sportsbook</th><th></th></tr>';
+  appendDefIcon(thead.querySelector('.th-sp-defrank'), STAT_DEFINITIONS.defRank);
+  appendDefIcon(thead.querySelector('.th-sp-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   const TIER_TITLE = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
@@ -7689,6 +7699,17 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
     tdVsTeam.style.cssText = 'font-size:11px;';
     tdVsTeam.appendChild(buildVsOpponentCell(bet)); // same green-dot / red-X treatment as the Standard and Advanced tables
     tr.appendChild(tdVsTeam);
+    // Season and last-5 opponent defensive rank vs her position -- the same two cell builders
+    // (and the same click-through to the league-wide modal) the Standard and Advanced tables use.
+    const tdDef = document.createElement('td'); tdDef.className='left defcol'; tdDef.style.cssText='font-size:12px;';
+    const tdDefL5 = document.createElement('td'); tdDefL5.className='left defcol'; tdDefL5.style.cssText='font-size:12px;';
+    if(bet.opponent){
+      tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
+      tdDefL5.appendChild(defRankL5Cell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
+    } else {
+      tdDef.textContent = '\u2014'; tdDefL5.textContent = '\u2014';
+    }
+    tr.appendChild(tdDef); tr.appendChild(tdDefL5);
     const tdBook = document.createElement('td'); tdBook.className='left';
     tdBook.style.cssText='color:var(--sub);font-size:11px;';
     tdBook.textContent = bookSourceLabel({price:bet.price, book:bet.book}, selectedBook) || '';
