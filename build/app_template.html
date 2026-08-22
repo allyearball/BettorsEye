@@ -7588,7 +7588,15 @@ function computeSpecialsBets(cachedFetch, selectedBook){
       const hrTier = tierHitRateForLeg(leg, groupInfo.groupTier, tierData);
       if(!hrTier || !hrTier.gp || hrTier.rate < SPECIALS_TIER_BAR) return; // qualifier 3
 
+      // The App Tracker's L5%/L10%/L15%/Season% columns read rate5/rate10/rate15/rateAll (with
+      // matching gp counts) frozen onto the bet at capture time. gatherCandidateLegs attaches
+      // those for the Standard/Advanced pools; gatherAllCapturedLegs doesn't, so they're built
+      // here from the same side-aware helper the Specials bars already use.
+      const hrAll = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 'all');
       out.push(Object.assign({}, leg, {
+        rate5: hr5.rate, rate10: hr10.rate, rate15: hr15.rate, rateAll: hrAll ? hrAll.rate : null,
+        gp5: hr5.gp, gp10: hr10.gp, gp15: hr15.gp, gpAll: hrAll ? hrAll.gp : 0,
+        sportsbook: bookSourceLabel({price: leg.price, book: leg.book}, selectedBook),
         game: gameLabel, opponent: opp, hr5, hr10, hr15, hrTier,
         groupTier: groupInfo.groupTier, groupHeightIn: groupInfo.weightedHeight,
         // Carried so the rendered Game cell can link BOTH teams, rather than re-deriving
@@ -9886,6 +9894,12 @@ async function enhanceBetSubLineIfLive(bet, liveGames, subLineEl){
 // explanation of why this isn't a literal 12:00:00 capture), snapshots the current Top 30
 // Standard and Top 30 Advanced Analytics lists into the App Tracker as pending picks.
 let _snapshotAttemptedThisSession = false;
+// The App Tracker's snapshot sources, in the order they appear in its filter and stat cards.
+// Kept as one list so adding a source means adding it here, not hunting down every place that
+// spelled out 'standard' and 'advanced' by hand.
+const APP_TRACKER_SOURCES = ['standard', 'advanced', 'specials'];
+const APP_TRACKER_SOURCE_LABEL = {standard: 'Standard', advanced: 'Advanced', specials: 'Specials'};
+
 async function maybeSnapshotTodaysTopBets(cachedForToday){
   if(_snapshotAttemptedThisSession) return; // at most once per page session; avoids duplicate racing on fast repeated calls
   const et = nowInEastern();
@@ -9900,7 +9914,8 @@ async function maybeSnapshotTodaysTopBets(cachedForToday){
     // category never got saved empty for that whole day with no way to backfill it.
     const haveStandardToday = existing.some(b => b.snapshotDate === et.dateStr && b.snapshotSource === 'standard');
     const haveAdvancedToday = existing.some(b => b.snapshotDate === et.dateStr && b.snapshotSource === 'advanced');
-    if(haveStandardToday && haveAdvancedToday) return; // both already captured today -- nothing to do
+    const haveSpecialsToday = existing.some(b => b.snapshotDate === et.dateStr && b.snapshotSource === 'specials');
+    if(haveStandardToday && haveAdvancedToday && haveSpecialsToday) return; // all three already captured today
 
     const snapshotTime = new Date().toISOString();
     const toSnapshot = [];
@@ -9921,6 +9936,20 @@ async function maybeSnapshotTodaysTopBets(cachedForToday){
       advPool.forEach((bet, i)=>{
         toSnapshot.push(Object.assign({}, bet, {
           snapshotDate: et.dateStr, snapshotSource: 'advanced', snapshotRank: i+1, snapshotAt: snapshotTime,
+          result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
+        }));
+      });
+    }
+
+    if(!haveSpecialsToday){
+      // Specials is a bar-clearing shortlist, not a top-N ranking -- some days it's empty, and
+      // that's a legitimate result, not a failure. It still gets snapshotRank so the tracker's
+      // rank-based views work; the rank is just its position in the same tier-then-window order
+      // the Specials tab itself displays.
+      const specials = computeSpecialsBets(cachedForToday).bets;
+      specials.forEach((bet, i)=>{
+        toSnapshot.push(Object.assign({}, bet, {
+          snapshotDate: et.dateStr, snapshotSource: 'specials', snapshotRank: i+1, snapshotAt: snapshotTime,
           result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
         }));
       });
@@ -10359,7 +10388,7 @@ async function renderAppTrackerPage(){
   const tableDiv = document.createElement('div'); main.appendChild(tableDiv);
 
   let bets = [];
-  let sourceFilter = 'all'; // 'all' | 'standard' | 'advanced'
+  let sourceFilter = 'all'; // 'all' | one of APP_TRACKER_SOURCES
   let hidePending = false;
   let sortKey = null; // null = default (most recent snapshot date, then best rank); otherwise a column key to sort by, click-to-sort same as League Stats/Team pages
   let sortDir = 'desc';
@@ -10375,8 +10404,11 @@ async function renderAppTrackerPage(){
   function computeDisplayRows(allBets, filterVal){
     const byDate = {};
     allBets.forEach(b=>{
-      if(b.snapshotSource!=='standard' && b.snapshotSource!=='advanced') return;
-      if(!byDate[b.snapshotDate]) byDate[b.snapshotDate] = {standard:[], advanced:[]};
+      if(!APP_TRACKER_SOURCES.includes(b.snapshotSource)) return;
+      if(!byDate[b.snapshotDate]){
+        byDate[b.snapshotDate] = {};
+        APP_TRACKER_SOURCES.forEach(src=>{ byDate[b.snapshotDate][src] = []; });
+      }
       byDate[b.snapshotDate][b.snapshotSource].push(b);
     });
     function findMatch(bet, otherSource){
@@ -10393,10 +10425,12 @@ async function renderAppTrackerPage(){
     if(filterVal==='all'){
       // Don't double-list a shared bet -- keep its 'standard' row (with Both checked), drop the matching 'advanced' row.
       rows = rows.filter(b => !(b.snapshotSource==='advanced' && findMatch(b,'standard')));
-    } else if(filterVal==='standard'){
-      rows = rows.filter(b=>b.snapshotSource==='standard');
-    } else if(filterVal==='advanced'){
-      rows = rows.filter(b=>b.snapshotSource==='advanced');
+      // Specials is an independent shortlist that can overlap either of the other two. A
+      // specials row is dropped from the combined view only when that exact bet is already
+      // listed under standard or advanced -- a specials-ONLY pick is never hidden.
+      rows = rows.filter(b => !(b.snapshotSource==='specials' && (findMatch(b,'standard') || findMatch(b,'advanced'))));
+    } else if(APP_TRACKER_SOURCES.includes(filterVal)){
+      rows = rows.filter(b=>b.snapshotSource===filterVal);
     }
     return rows;
   }
@@ -10444,7 +10478,7 @@ async function renderAppTrackerPage(){
   async function applyVoidRankShifts(){
     const groups = {};
     bets.forEach(b=>{
-      if(b.snapshotSource!=='standard' && b.snapshotSource!=='advanced') return;
+      if(!APP_TRACKER_SOURCES.includes(b.snapshotSource)) return;
       const key = b.snapshotDate+'|'+b.snapshotSource;
       (groups[key] = groups[key]||[]).push(b);
     });
@@ -10555,10 +10589,12 @@ async function renderAppTrackerPage(){
     const wrap = document.createElement('div');
     wrap.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;';
     wrap.appendChild(buildStatCard('Total', bets));
-    ['standard','advanced'].forEach(src=>{
+    APP_TRACKER_SOURCES.forEach(src=>{
       const subset = bets.filter(b=>b.snapshotSource===src);
       if(!subset.length) return;
-      wrap.appendChild(buildStatCard(src==='standard' ? 'Standard' : 'Advanced Analytics', subset));
+      // 'Advanced Analytics' rather than plain 'Advanced' here only -- that's the wording this
+      // card has always used, and it isn't worth changing just because the label map is shared.
+      wrap.appendChild(buildStatCard(src==='advanced' ? 'Advanced Analytics' : APP_TRACKER_SOURCE_LABEL[src], subset));
     });
     summaryDiv.appendChild(wrap);
   }
@@ -10573,6 +10609,7 @@ async function renderAppTrackerPage(){
     const dedupedForBoth = computeDisplayRows(bets, 'all'); // standard rows (with _both flag) + unmatched advanced rows
     const stdBets = bets.filter(b=>b.snapshotSource==='standard');
     const advBets = bets.filter(b=>b.snapshotSource==='advanced');
+    const specialsBets = bets.filter(b=>b.snapshotSource==='specials');
     const bothBets = dedupedForBoth.filter(b=>b.snapshotSource==='standard' && b._both);
 
     function record(list, rankMax){
@@ -10591,7 +10628,8 @@ async function renderAppTrackerPage(){
     const tierRows = [
       ['Standard', stdBets],
       ['Advanced', advBets],
-      ['Both', bothBets],
+      ['Specials', specialsBets],
+      ['Both', bothBets],   // 'Both' stays standard-and-advanced specifically, as before
     ];
     let tierHtml = '<tr><th class="left" style="padding:4px 2px;width:22%;"></th><th style="padding:4px 2px;width:26%;">Top 5</th><th style="padding:4px 2px;width:26%;">Top 10</th><th style="padding:4px 2px;width:26%;">Top 15</th></tr>';
     tierRows.forEach(([label, list])=>{
@@ -10663,6 +10701,7 @@ async function renderAppTrackerPage(){
     rankGrid.style.cssText = 'display:flex;flex-direction:column;gap:16px;';
     rankGrid.appendChild(buildSourceGroup('Standard', stdBets));
     rankGrid.appendChild(buildSourceGroup('Advanced', advBets));
+    if(specialsBets.length) rankGrid.appendChild(buildSourceGroup('Specials', specialsBets));
     rankContent.appendChild(rankGrid);
     rankWrap.appendChild(rankContent);
     statsBoxDiv.appendChild(rankWrap);
@@ -10683,7 +10722,7 @@ async function renderAppTrackerPage(){
     srcLabel.appendChild(document.createTextNode('Source:'));
     const srcSelect = document.createElement('select');
     srcSelect.style.cssText = 'padding:4px 8px;border-radius:5px;border:1px solid var(--line);font-family:var(--sans);font-size:12.5px;';
-    [['all','All Sources'],['standard','Standard'],['advanced','Advanced']].forEach(([val,label])=>{
+    [['all','All Sources']].concat(APP_TRACKER_SOURCES.map(src=>[src, APP_TRACKER_SOURCE_LABEL[src]])).forEach(([val,label])=>{
       const opt = document.createElement('option'); opt.value=val; opt.textContent=label;
       if(val===sourceFilter) opt.selected = true;
       srcSelect.appendChild(opt);
@@ -10815,7 +10854,7 @@ async function renderAppTrackerPage(){
       const cellStyle = 'padding:6px 8px;border-bottom:1px solid var(--line);font-size:12.5px;';
       const tdDate = document.createElement('td'); tdDate.className='left'; tdDate.style.cssText=cellStyle; tdDate.textContent = bet.snapshotDate || '\u2014';
       const tdSource = document.createElement('td'); tdSource.className='left'; tdSource.style.cssText=cellStyle;
-      tdSource.textContent = bet.snapshotSource==='advanced' ? 'Advanced' : 'Standard';
+      tdSource.textContent = APP_TRACKER_SOURCE_LABEL[bet.snapshotSource] || bet.snapshotSource || 'Standard';
       const tdBoth = document.createElement('td'); tdBoth.style.cssText=cellStyle+'text-align:center;';
       if(bet._both){ tdBoth.textContent = '\u2713'; tdBoth.style.color = 'var(--green)'; tdBoth.style.fontWeight = '800'; tdBoth.title = 'Also appears in the other source on this same date'; }
       const tdRank = document.createElement('td'); tdRank.style.cssText=cellStyle+'text-align:center;font-weight:700;color:var(--navy2);'; tdRank.textContent = bet.snapshotRank||'\u2014';
