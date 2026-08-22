@@ -418,8 +418,14 @@ function syncTableHeaderAlignment(root){
 // Matched against the column's KEY where one is available (makeTable stamps data-col-key on
 // every header, so wording changes like "Position Allowed To" can't break the match), falling
 // back to the header text for the hand-rolled tables that have no column config.
-const STICKY_IDENTITY_LABELS = new Set(['date','opponent','opp','player','season','team','game','position']);
-const STICKY_CONNECTOR_LABELS = new Set(['w/l','h/a','wl','homeaway','start','starter','dnp','#','jersey','pos']);
+// 'bet' is the identity of a row on the Top Bets tables, the way 'player' is on a stat table.
+// 'game' is deliberately NOT here: on the Advanced Top Bets table it sits immediately after Bet,
+// so treating it as identity would drag it into the frozen block and pin considerably more width
+// than the row actually needs to stay readable.
+const STICKY_IDENTITY_LABELS = new Set(['date','opponent','opp','player','season','team','bet','position']);
+// 'rank' and 'pos' are the narrow columns sitting between the star column and Bet on the Top
+// Bets tables -- connectors, so they come along only because they're sandwiched, never on their own.
+const STICKY_CONNECTOR_LABELS = new Set(['w/l','h/a','wl','homeaway','start','starter','dnp','#','jersey','pos','rank']);
 // A leading control column (the tier detail table's checkbox) has a blank header and rides along
 // with whatever identity columns follow it.
 const STICKY_CONTROL_LABELS = new Set(['']);
