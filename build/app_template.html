@@ -3862,7 +3862,11 @@ function computeHeightTierData(playerName, team, season){
     let anyFound = false;
     availableSeasonsForDropdown().forEach(yr=>{
       const sd = getSeasonData(yr);
-      if(sd && sd.fullPlayerLogs[key]){
+      // sd.fullPlayerLogs must be checked, not just sd -- make_season_data.py's season_YEAR.json
+      // currently emits {season, teams, teamVenues, playerBios, games} with NO fullPlayerLogs at
+      // all, so the moment a historical season is wired into DATA.historicalSeasons in that
+      // shape, `sd.fullPlayerLogs[key]` would throw a TypeError and take the whole page down.
+      if(sd && sd.fullPlayerLogs && sd.fullPlayerLogs[key]){
         anyFound = true;
         combinedLog = combinedLog.concat(sd.fullPlayerLogs[key].log.map(g=>Object.assign({}, g, {_season:yr})));
         // CAVEAT for whenever historical data actually gets built: if gameIds are ever reused
@@ -3877,7 +3881,9 @@ function computeHeightTierData(playerName, team, season){
     if(!anyFound) return null;
   } else {
     const sd = getSeasonData(season);
-    if(!sd) return { noData: true, season }; // season selected but not loaded into the app yet
+    // Same guard as the 'all' branch above: a season file present but shaped without
+    // fullPlayerLogs is "not usable yet", not a crash.
+    if(!sd || !sd.fullPlayerLogs) return { noData: true, season }; // season selected but not loaded into the app yet
     const rec = sd.fullPlayerLogs[key];
     if(!rec) return null;
     combinedLog = rec.log;
