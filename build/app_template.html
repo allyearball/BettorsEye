@@ -388,6 +388,22 @@ function startHeaderAlignmentSync(){
   scheduleHeaderAlignmentSync();
 }
 
+// Formats a value in a TOTAL / MIN / MAX / AVERAGE / MEDIAN / MODE summary row. Those rows opt
+// in with `oneDecimal:true` and render every number to the nearest tenth ("21.0"), so a column
+// of summary figures lines up as one decimal place regardless of whether the underlying stat is
+// a whole count (points), a two-decimal advanced metric (USG%), or a per-game average.
+// Percentages keep their % form -- they're already shown to one decimal. Footer rows WITHOUT the
+// flag (a box score's TEAM TOTAL, the Season tab's Career line) are untouched and keep using
+// their column's own formatting, since "1,234.0 minutes" reads worse there, not better.
+function fmtFooterVal(v, col, fr){
+  if(!fr || !fr.oneDecimal) return fmtVal(v, col);
+  if(v===null || v===undefined || v==='') return '—';
+  if(col.pct) return (v*100).toFixed(1)+'%';
+  if(col.bool) return v ? 'Y' : 'N';
+  if(typeof v === 'number' && !Number.isNaN(v)) return v.toFixed(1);
+  return fmtVal(v, col);
+}
+
 function makeTable(container, columns, rows, opts){
   opts = opts||{};
   const state = {sortKey: opts.defaultSort||(columns[0]&&columns[0].key), sortDir: opts.defaultDir||'desc', highlightKey: null};
@@ -562,7 +578,7 @@ function makeTable(container, columns, rows, opts){
           if(col.compactHide) td.classList.add('compact-hide');
           if(i===0){ td.textContent = fr.label; }
           else if(fr.values && Object.prototype.hasOwnProperty.call(fr.values, col.key)){
-            td.textContent = fmtVal(fr.values[col.key], col);
+            td.textContent = fmtFooterVal(fr.values[col.key], col, fr);
           } else { td.textContent=''; }
           tr.appendChild(td);
         });
@@ -1430,7 +1446,7 @@ function renderTeamPage(team, year, month, windowMode){
   teamGameLabels.forEach(({label, fn})=>{
     const values = {};
     TEAM_GAME_NUMERIC_KEYS.forEach(k=>{ values[k] = fn(summary.teamGames.map(r=>r[k]).filter(v=>v!==null && v!==undefined)); });
-    teamGameFooterRows.push({label, values});
+    teamGameFooterRows.push({label, values, oneDecimal:true});
   });
   makeTable(teamTabContent, TEAM_GAME_COLS, summary.teamGames, {defaultSort:'date', defaultDir:'asc', footerRows: teamGameFooterRows, showAllColumns:true});
 
@@ -1448,7 +1464,7 @@ function renderTeamPage(team, year, month, windowMode){
   oppLabels.forEach(({label, fn})=>{
     const values = {};
     OPP_NUMERIC_KEYS.forEach(k=>{ values[k] = fn(summary.opponents.map(r=>r[k]).filter(v=>v!==null && v!==undefined)); });
-    oppFooterRows.push({label, values});
+    oppFooterRows.push({label, values, oneDecimal:true});
   });
   makeTable(teamTabContent, OPP_COLS, summary.opponents, {defaultSort:'date', defaultDir:'asc', footerRows: oppFooterRows, showAllColumns:true});
 
@@ -2206,7 +2222,7 @@ function buildStandardFooterRows(rows, statKeys){
   labels.forEach(({label, fn})=>{
     const values = {};
     statKeys.forEach(k=>{ values[k] = fn(statValues(rows, k)); });
-    footerRows.push({label, values});
+    footerRows.push({label, values, oneDecimal:true});
   });
   return footerRows;
 }
@@ -2814,7 +2830,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   labels.forEach(({label, fn})=>{
     const values = {};
     STAT_KEYS_FOR_SUMMARY.forEach(k=>{ values[k] = fn(statValues(pl.log, k)); });
-    footerRows.push({label, values});
+    footerRows.push({label, values, oneDecimal:true});
   });
 
   const gameIdForLogRow = r => findGameIdForTeamDate(team, r.date);
@@ -3983,7 +3999,22 @@ function computeHeightTierData(playerName, team, season){
       totalMin += r.min; weightedSum += bio.heightIn*r.min;
     });
     if(totalMin<=0) return null;
-    return { date: g.date, gameId, opp: g.opp, oppHeight: weightedSum/totalMin, min: g.min||0, pts: g.pts||0, reb: g.reb||0, ast: g.ast||0, tpm: g.tpm||0, pra: (g.pts||0)+(g.reb||0)+(g.ast||0) };
+    // Carries the player's FULL box score line for this game, not just the five headline stats
+    // -- the tier detail page shows all of them. Shooting percentages come straight off the log
+    // (already computed per game by the pipeline) rather than being recomputed here, so they
+    // match what every other table in the app shows for the same game.
+    return {
+      date: g.date, gameId, opp: g.opp, oppHeight: weightedSum/totalMin,
+      homeAway: g.homeAway, starter: !!g.starter,
+      min: g.min||0, pts: g.pts||0,
+      fgm: g.fgm||0, fga: g.fga||0, fgPct: g.fgPct,
+      tpm: g.tpm||0, tpa: g.tpa||0, tpPct: g.tpPct,
+      ftm: g.ftm||0, fta: g.fta||0, ftPct: g.ftPct,
+      oreb: g.oreb||0, dreb: g.dreb||0, reb: g.reb||0,
+      ast: g.ast||0, stl: g.stl||0, blk: g.blk||0,
+      to: g.to||0, pf: g.pf||0, plusMinus: g.plusMinus,
+      pra: (g.pts||0)+(g.reb||0)+(g.ast||0),
+    };
   }).filter(Boolean);
 
   if(gamesWithOppHeight.length < 6) return null; // too few games all season to tier into three groups meaningfully at all
@@ -4339,15 +4370,29 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   // tier or window changes, since that's a different set of games entirely.
   let uncheckedDates = new Set();
 
-  const SORT_COLS = [
+  // Leading context columns (not player stats -- excluded from the summary footer, which spans
+  // them with a single label cell) followed by her full box score line. Everything below is
+  // generated from these two lists, so adding a stat is a one-line change here rather than an
+  // edit in four places (header, body cell, footer cell, footer maths) that can drift apart.
+  const LEAD_COLS = [
     {key:null, label:''},
     {key:'date', label:'Date', left:true, type:'string'},
     {key:'opp', label:'Opponent', left:true, type:'string'},
-    {key:'oppHeight', label:'Opp Height', type:'number'},
-    {key:'min', label:'MIN', type:'number'}, {key:'pts', label:'PTS', type:'number'},
-    {key:'reb', label:'REB', type:'number'}, {key:'ast', label:'AST', type:'number'},
-    {key:'tpm', label:'3PM', type:'number'}, {key:'pra', label:'PRA', type:'number'},
+    {key:'oppHeight', label:'Opp Height', type:'number', fmt: v=>inchesToHeightStr(v) || '—'},
+    {key:'homeAway', label:'H/A', left:true, type:'string'},
+    {key:'starter', label:'Start', type:'number', fmt: v=>v?'Y':'N'},
   ];
+  const STAT_COLS = [
+    {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
+    {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true, madeAtt:['fgm','fga']},
+    {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true, madeAtt:['tpm','tpa']},
+    {key:'ftm', label:'FTM'}, {key:'fta', label:'FTA'}, {key:'ftPct', label:'FT%', pct:true, madeAtt:['ftm','fta']},
+    {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB'},
+    {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
+    {key:'to', label:'TO'}, {key:'pf', label:'PF'}, {key:'plusMinus', label:'+/-'},
+    {key:'pra', label:'PRA'},
+  ].map(c=>Object.assign({type:'number'}, c));
+  const SORT_COLS = LEAD_COLS.concat(STAT_COLS);
 
   function renderTable(){
     head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} <span id="tierDetailInfoIcon"></span></h2>`;
@@ -4405,28 +4450,31 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
       });
       checkboxes.push({cb, game:g});
       tdCb.appendChild(cb);
-      const tdDate = document.createElement('td'); tdDate.className='left';
-      if(g.gameId){
-        const dateLink = document.createElement('a');
-        dateLink.href = 'javascript:void(0)'; dateLink.className = 'player-link'; dateLink.textContent = g.date;
-        // The whole row already navigates to the box score; the link exists so the date LOOKS
-        // clickable (matching every other table in the app) -- stopPropagation keeps the two
-        // from firing a double navigation.
-        dateLink.addEventListener('click', e=>{ e.stopPropagation(); goToGameBox(g.gameId, lastRender); });
-        tdDate.appendChild(dateLink);
-      } else { tdDate.textContent = g.date; }
-      const tdOpp = document.createElement('td'); tdOpp.className='left';
-      if(g.opp){ tdOpp.appendChild(teamLinkEl(g.opp, FULL_TEAM_NAME[g.opp] || g.opp, g.date ? g.date.slice(0,4) : undefined)); }
-      else { tdOpp.textContent = '\u2014'; }
-      const tdOppHeight = document.createElement('td'); tdOppHeight.style.textAlign='center'; tdOppHeight.textContent = inchesToHeightStr(g.oppHeight) || '\u2014';
-      const tdMin = document.createElement('td'); tdMin.style.textAlign='center'; tdMin.textContent = g.min;
-      const tdPts = document.createElement('td'); tdPts.style.textAlign='center'; tdPts.textContent = g.pts;
-      const tdReb = document.createElement('td'); tdReb.style.textAlign='center'; tdReb.textContent = g.reb;
-      const tdAst = document.createElement('td'); tdAst.style.textAlign='center'; tdAst.textContent = g.ast;
-      const tdTpm = document.createElement('td'); tdTpm.style.textAlign='center'; tdTpm.textContent = g.tpm;
-      const tdPra = document.createElement('td'); tdPra.style.textAlign='center'; tdPra.textContent = g.pra;
-      [tdCb, tdDate, tdOpp, tdOppHeight, tdMin, tdPts, tdReb, tdAst, tdTpm, tdPra].forEach(td=>tr.appendChild(td));
-      if(g.gameId){ tr.addEventListener('click', ()=>goToGameBox(g.gameId)); }
+      tr.appendChild(tdCb);
+      SORT_COLS.slice(1).forEach(col=>{   // slice(1): the checkbox cell is built above
+        const td = document.createElement('td');
+        if(col.left) td.classList.add('left'); else td.style.textAlign = 'center';
+        const v = g[col.key];
+        if(col.key === 'date' && g.gameId){
+          const dateLink = document.createElement('a');
+          dateLink.href = 'javascript:void(0)'; dateLink.className = 'player-link'; dateLink.textContent = g.date;
+          // The whole row already navigates to the box score; the link exists so the date LOOKS
+          // clickable (matching every other table in the app) -- stopPropagation keeps the two
+          // from firing a double navigation.
+          dateLink.addEventListener('click', e=>{ e.stopPropagation(); goToGameBox(g.gameId, lastRender); });
+          td.appendChild(dateLink);
+        } else if(col.key === 'opp' && g.opp){
+          td.appendChild(teamLinkEl(g.opp, FULL_TEAM_NAME[g.opp] || g.opp, g.date ? g.date.slice(0,4) : undefined));
+        } else if(col.fmt){
+          td.textContent = col.fmt(v);
+        } else if(col.pct){
+          td.textContent = (v===null || v===undefined) ? '\u2014' : (v*100).toFixed(1)+'%';
+        } else {
+          td.textContent = (v===null || v===undefined) ? '\u2014' : v;
+        }
+        tr.appendChild(td);
+      });
+      if(g.gameId){ tr.addEventListener('click', ()=>goToGameBox(g.gameId, lastRender)); }
       tbody.appendChild(tr);
     });
     table.appendChild(thead); table.appendChild(tbody);
@@ -4441,13 +4489,14 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
       {label:'MEDIAN', fn: median},
       {label:'MODE', fn: mode},
     ];
-    const STAT_KEYS = ['min','pts','reb','ast','tpm','pra'];
     const footerRowEls = {};
     footerLabels.forEach(fl=>{
       const tr = document.createElement('tr'); tr.style.cssText='background:#eef2fb;font-weight:700;';
-      const tdLabel = document.createElement('td'); tdLabel.colSpan=4; tdLabel.className='left'; tdLabel.style.padding='6px 8px'; tdLabel.textContent = fl.label;
+      const tdLabel = document.createElement('td');
+      tdLabel.colSpan = LEAD_COLS.length; // spans checkbox + date + opponent + opp height + H/A + Start
+      tdLabel.className='left'; tdLabel.style.padding='6px 8px'; tdLabel.textContent = fl.label;
       tr.appendChild(tdLabel);
-      STAT_KEYS.forEach(()=>{ const td=document.createElement('td'); td.style.textAlign='center'; td.style.padding='6px 8px'; tr.appendChild(td); });
+      STAT_COLS.forEach(()=>{ const td=document.createElement('td'); td.style.textAlign='center'; td.style.padding='6px 8px'; tr.appendChild(td); });
       tbody.appendChild(tr);
       footerRowEls[fl.label] = { cells: [...tr.querySelectorAll('td')].slice(1) };
     });
@@ -4456,10 +4505,31 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
       const checkedGames = checkboxes.filter(c=>c.cb.checked).map(c=>c.game);
       footerLabels.forEach(fl=>{
         const {cells} = footerRowEls[fl.label];
-        STAT_KEYS.forEach((statKey, i)=>{
-          const vals = checkedGames.map(g=>g[statKey]);
+        STAT_COLS.forEach((col, i)=>{
+          // Shooting percentages can't be summed, and averaging per-game percentages weights a
+          // 1-for-2 night the same as a 9-for-18 one. TOTAL is left blank for them, and AVERAGE
+          // is recomputed from the combined makes/attempts of exactly the games still checked --
+          // which is the whole point of the checkboxes.
+          if(col.pct){
+            if(fl.label === 'TOTAL'){ cells[i].textContent = '\u2014'; return; }
+            if(fl.label === 'AVERAGE'){
+              const [madeKey, attKey] = col.madeAtt;
+              const made = checkedGames.reduce((a,g)=>a+(g[madeKey]||0), 0);
+              const att  = checkedGames.reduce((a,g)=>a+(g[attKey]||0), 0);
+              cells[i].textContent = att ? (made/att*100).toFixed(1)+'%' : '\u2014';
+              return;
+            }
+            // MIN/MAX/MEDIAN/MODE over the per-game percentages, which are meaningful as-is.
+            const pvals = checkedGames.map(g=>g[col.key]).filter(v=>typeof v === 'number' && !Number.isNaN(v));
+            const pr = fl.fn(pvals);
+            cells[i].textContent = (pr===null || pr===undefined) ? '\u2014' : (pr*100).toFixed(1)+'%';
+            return;
+          }
+          // Nulls filtered out rather than passed through -- a single missing value (an older
+          // game with no plus/minus, say) would otherwise turn TOTAL and MIN/MAX into NaN.
+          const vals = checkedGames.map(g=>g[col.key]).filter(v=>typeof v === 'number' && !Number.isNaN(v));
           const result = fl.fn(vals);
-          cells[i].textContent = result!==null && result!==undefined ? result : '\u2014';
+          cells[i].textContent = (result===null || result===undefined) ? '\u2014' : Number(result).toFixed(1);
         });
       });
     }
