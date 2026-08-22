@@ -2871,6 +2871,27 @@ function buildPlayerSeasonTab(container, playerName, team){
   });
 }
 
+// Every page that is ABOUT a single player says which team she plays for, spelled out in full
+// (city + nickname) and clickable. The bare short code ("Fever") isn't enough on a page you can
+// land on directly from a bet, a Specials row, or a shared link -- and the height-tier detail
+// pages didn't name the team at all.
+// `block:true` renders it on its own line under the <h2> (the pagehead layout); the default
+// inline form is for .player-header, which is already a baseline-aligned flex row.
+function appendPlayerTeamByline(container, team, opts){
+  opts = opts || {};
+  const el = document.createElement(opts.block ? 'div' : 'span');
+  el.className = 'meta';
+  el.style.cssText = `color:var(--sub);font-size:13px;${opts.block ? 'margin-top:2px;' : ''}`;
+  el.appendChild(teamLinkEl(team, FULL_TEAM_NAME[team] || team, opts.season));
+  // Sits immediately under the player's name rather than after whatever else the header holds,
+  // so on the empty/error states the team line reads before the explanation instead of trailing
+  // it as an apparent afterthought.
+  const h2 = container.querySelector('h2');
+  if(h2 && h2.nextSibling) container.insertBefore(el, h2.nextSibling);
+  else container.appendChild(el);
+  return el;
+}
+
 function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   windowMode = windowMode===undefined ? 'all' : windowMode; // default matches prior behavior
   month = month || 'full';
@@ -2888,7 +2909,8 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
 
   if(!fullLogObj){
     const head = document.createElement('div'); head.className='pagehead';
-    head.innerHTML = `<h2>${playerName}</h2><div class="meta">No recent game log found for ${playerName} on ${team}.</div>`;
+    head.innerHTML = `<h2>${playerName}</h2><div class="meta">No recent game log found for ${playerName} on ${FULL_TEAM_NAME[team] || team}.</div>`;
+    appendPlayerTeamByline(head, team, {block:true});
     main.appendChild(head);
     return;
   }
@@ -2907,7 +2929,8 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   const gsInWindow = pl.log.filter(g=>!g.dnp && g.starter).length;
 
   const head = document.createElement('div'); head.className='player-header';
-  head.innerHTML = `<h2>${playerName}</h2><span class="meta" style="color:var(--sub);font-size:13px;">${team}</span>`;
+  head.innerHTML = `<h2>${playerName}</h2>`;
+  appendPlayerTeamByline(head, team, {season: year});
   main.appendChild(head);
 
   const myInjury = teamInjuries(team).find(inj=>inj.player===playerName);
@@ -4691,12 +4714,14 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   if(heightData && heightData.noData){
     const head = document.createElement('div'); head.className='pagehead';
     head.innerHTML = `<h2>${playerName}</h2><div class="meta">${activeSeason} isn\u2019t loaded into this app yet \u2014 only ${CURRENT_SEASON} is available right now. Historical seasons will show up here automatically once they\u2019re added.</div>`;
+    appendPlayerTeamByline(head, team, {block:true});
     main.appendChild(head);
     return;
   }
   if(!heightData){
     const head = document.createElement('div'); head.className='pagehead';
     head.innerHTML = `<h2>${playerName}</h2><div class="meta">Not enough games with identifiable opposing-position height data to break this out${activeSeason==='all'?' across her career so far':(activeSeason!==CURRENT_SEASON?' for '+activeSeason:'')}.</div>`;
+    appendPlayerTeamByline(head, team, {block:true});
     main.appendChild(head);
     return;
   }
@@ -4754,6 +4779,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
 
   function renderTable(){
     head.innerHTML = `<h2>${playerName} \u2014 vs. ${TIER_LABEL[activeTier]} Opposing ${POSITION_LABEL[heightData.bucket]||heightData.bucket} <span id="tierDetailInfoIcon"></span></h2>`;
+    appendPlayerTeamByline(head, team, {block:true, season: activeSeason==='all' ? undefined : activeSeason});
     appendDefIcon(head.querySelector('#tierDetailInfoIcon'), `Cutoffs (full season, fixed): Shortest &lt; ${heightData.p33.toFixed(1)}in, Middle ${heightData.p33.toFixed(1)}\u2013${heightData.p67.toFixed(1)}in (inclusive), Tallest &gt; ${heightData.p67.toFixed(1)}in. Uncheck a game to exclude it from the totals below. Click a column header to sort.`);
     tableHolder.innerHTML = '';
 
