@@ -47,6 +47,13 @@
   .controls select, .controls input{font-family:var(--sans);font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:5px;background:#fff;color:var(--ink);}
   .section-title{font-size:13px;font-weight:800;margin:22px 0 8px;color:var(--navy2);text-transform:uppercase;letter-spacing:.04em;border-bottom:2px solid var(--line);padding-bottom:6px;}
   .table-wrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:6px;}
+  /* Control rows living inside a table-wrap: hairline-separated from the table itself rather
+     than floating on a bare margin, and pinned to the left edge with position:sticky so the
+     hide-DNP checkbox and row count stay reachable on a wide table that's scrolled sideways
+     (these tables routinely run 25+ columns). */
+  .table-wrap > .controls{margin:0;padding:10px 12px;position:sticky;left:0;}
+  .table-wrap > .controls-top{border-bottom:1px solid var(--line);}
+  .table-wrap > .controls-bottom{border-top:1px solid var(--line);}
   table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums;}
   th,td{padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap;text-align:right;font-size:12.5px;color:var(--ink);}
   th:first-child, td:first-child, th.left, td.left{text-align:left;}
@@ -312,7 +319,13 @@ function makeTable(container, columns, rows, opts){
   opts = opts||{};
   const state = {sortKey: opts.defaultSort||(columns[0]&&columns[0].key), sortDir: opts.defaultDir||'desc', highlightKey: null};
   const wrap = document.createElement('div'); wrap.className='table-wrap';
-  const controls = document.createElement('div'); controls.className='controls';
+  // Two separate control rows rather than one. "Show All Details" stays ABOVE the table --
+  // it changes the table's shape (how many columns are visible), so it has to be reachable
+  // before you start reading. The hide-DNP filter and the row count sit BELOW the table:
+  // the count is a summary of what you just scrolled through, and putting the filter next to
+  // it keeps the table header itself as the first thing under each section title.
+  const topControls = document.createElement('div'); topControls.className='controls controls-top';
+  const bottomControls = document.createElement('div'); bottomControls.className='controls controls-bottom';
   const hasPlayedConcept = !opts.noHideDNP && rows.length>0 && ('min' in rows[0] || 'gp' in rows[0]);
   let cb = null;
   if(hasPlayedConcept){
@@ -320,10 +333,10 @@ function makeTable(container, columns, rows, opts){
     cb = document.createElement('input'); cb.type='checkbox';
     if(opts.defaultHideDNP) cb.checked = true;
     label.appendChild(cb); label.appendChild(document.createTextNode(opts.hideLabel || 'Hide players who didn\u2019t play (0 minutes)'));
-    controls.appendChild(label);
+    bottomControls.appendChild(label);
   }
   const countSpan = document.createElement('span'); countSpan.style.cssText='font-size:12px;color:#5b6472';
-  controls.appendChild(countSpan);
+  bottomControls.appendChild(countSpan);
   // Generic Compact-mode "Show All Details" reveal, only added when this table actually has
   // compactHide columns to reveal -- same escape hatch pattern as the Standard Top 30 table,
   // now available to every table built through makeTable without needing per-table wiring.
@@ -333,7 +346,7 @@ function makeTable(container, columns, rows, opts){
     const compactCb = document.createElement('input'); compactCb.type='checkbox';
     compactCb.addEventListener('change', ()=>{ wrap.classList.toggle('compact-show-all', compactCb.checked); });
     compactLabel.appendChild(compactCb); compactLabel.appendChild(document.createTextNode('Show All Details'));
-    controls.appendChild(compactLabel);
+    topControls.appendChild(compactLabel);
   }
   const table = document.createElement('table');
   const thead = document.createElement('thead'); const trh = document.createElement('tr');
@@ -353,8 +366,31 @@ function makeTable(container, columns, rows, opts){
   thead.appendChild(trh);
   const tbody = document.createElement('tbody');
   table.appendChild(thead); table.appendChild(tbody);
-  wrap.appendChild(controls); wrap.appendChild(table);
+  if(topControls.children.length) wrap.appendChild(topControls);
+  wrap.appendChild(table);
+  wrap.appendChild(bottomControls);
   container.appendChild(wrap);
+  // Which season a given row's stat was recorded in, used to send team links to the right
+  // season rather than always the latest. Rows that carry a date (game logs) answer this
+  // themselves; season-level tables pass opts.seasonFor; everything else is undefined, which
+  // teamLinkEl treats as "latest season", i.e. exactly the old behavior.
+  function rowSeason(r){
+    if(opts.seasonFor) return opts.seasonFor(r);
+    if(typeof r.season === 'string' || typeof r.season === 'number') return String(r.season);
+    if(typeof r.date === 'string' && /^\d{4}-/.test(r.date)) return r.date.slice(0,4);
+    return undefined;
+  }
+  // Resolves a row to a DATA.games key, for date-cell links. Prefers an explicit
+  // opts.gameIdFor, then a gameId already sitting on the row, then a (team, date) lookup.
+  function resolveGameId(r){
+    if(opts.gameIdFor){ const gid = opts.gameIdFor(r); if(gid) return String(gid); }
+    if(r.gameId) return String(r.gameId);
+    if(typeof r.date === 'string' && opts.teamFor){
+      const t = opts.teamFor(r);
+      if(t) return findGameIdForTeamDate(t, r.date);
+    }
+    return null;
+  }
   function didNotPlay(r){
     if('gp' in r) return !r.gp || r.gp===0;
     if('min' in r) return r.dnp===true || r.min===null || r.min===undefined || r.min===0;
@@ -375,7 +411,14 @@ function makeTable(container, columns, rows, opts){
   function render(){
     let data = rows.slice();
     if(cb && cb.checked) data = data.filter(r=>!didNotPlay(r));
-    data.sort((a,b)=>{ const d=cmp(a[state.sortKey],b[state.sortKey]); return state.sortDir==='asc'?d:-d; });
+    // Team columns sort by the name actually shown (the full city + nickname), not by the
+    // short code stored on the row -- otherwise "Las Vegas Aces" would sort under A and
+    // "Atlanta Dream" under D, and an alphabetical sort would read as no sort at all.
+    const sortedCol = columns.find(c=>c.key===state.sortKey);
+    const sortVal = r => (sortedCol && sortedCol.teamLink && r[state.sortKey])
+      ? (FULL_TEAM_NAME[r[state.sortKey]] || r[state.sortKey])
+      : r[state.sortKey];
+    data.sort((a,b)=>{ const d=cmp(sortVal(a),sortVal(b)); return state.sortDir==='asc'?d:-d; });
     tbody.innerHTML='';
     data.forEach(r=>{
       const tr = document.createElement('tr');
@@ -397,15 +440,28 @@ function makeTable(container, columns, rows, opts){
           link.textContent = fmtVal(r[col.key], col, r);
           link.addEventListener('click', (e)=>{ e.stopPropagation(); goToPlayer(r.player, team); });
           td.appendChild(link);
+        } else if(col.gameLink && r[col.key] && resolveGameId(r)){
+          // Date cell that navigates to that game's own full box score page. The game id is
+          // resolved through opts.gameIdFor (or, failing that, opts.teamFor + the row's date),
+          // so a table whose rows can't be tied back to a specific game just renders the date
+          // as plain text instead of a dead link -- hence the resolveGameId(r) guard above
+          // being part of the branch condition rather than checked inside it.
+          const gid = resolveGameId(r);
+          const link = document.createElement('a');
+          link.href = 'javascript:void(0)';
+          link.className = 'player-link';
+          link.textContent = fmtVal(r[col.key], col, r);
+          link.addEventListener('click', (e)=>{ e.stopPropagation(); goToGameBox(gid, lastRender); });
+          td.appendChild(link);
         } else if(col.teamLink && r[col.key]){
           // Renders as a clickable team link without touching the underlying string value, so
-          // sorting this column alphabetically still works normally (cmp() only special-cases
-          // plain strings, not DOM nodes), and so teamFor callbacks elsewhere (e.g. the Player
-          // column's goToPlayer lookup, keyed by short code) keep working unchanged. Only the
-          // DISPLAY text is upgraded to the full city+nickname name. teamLinkEl already stops
-          // click propagation internally, so this correctly doesn't also trigger the
-          // column-highlight click handler on td.
-          td.appendChild(teamLinkEl(r[col.key], FULL_TEAM_NAME[r[col.key]] || fmtVal(r[col.key], col, r)));
+          // teamFor callbacks elsewhere (e.g. the Player column's goToPlayer lookup, keyed by
+          // short code) keep working unchanged. Only the DISPLAY text is upgraded to the full
+          // city+nickname name -- and the sort comparator above maps through FULL_TEAM_NAME to
+          // match, so the order agrees with what's on screen. teamLinkEl already stops click
+          // propagation internally, so this correctly doesn't also trigger the column-highlight
+          // click handler on td.
+          td.appendChild(teamLinkEl(r[col.key], FULL_TEAM_NAME[r[col.key]] || fmtVal(r[col.key], col, r), rowSeason(r)));
         } else {
           td.textContent = fmtVal(r[col.key], col, r);
         }
@@ -441,7 +497,7 @@ function makeTable(container, columns, rows, opts){
 }
 
 const GAME_COLS = [
-  {key:'team', label:'Team', left:true}, {key:'player', label:'Player', left:true},
+  {key:'team', label:'Team', left:true, teamLink:true}, {key:'player', label:'Player', left:true},
   {key:'jersey', label:'#'}, {key:'pos', label:'Pos', left:true}, {key:'starter', label:'Start', bool:true},
   {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
@@ -468,7 +524,7 @@ const AVG_COLS = TOTALS_COLS.map(c=>{
   return c;
 });
 const OPP_COLS = [
-  {key:'date', label:'Date', left:true}, {key:'wl', label:'W/L', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
+  {key:'date', label:'Date', left:true, gameLink:true}, {key:'wl', label:'W/L', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true, teamLink:true},
   {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'},
   {key:'oppFgm', label:'Opp FGM', compactHide:true}, {key:'oppFga', label:'Opp FGA', compactHide:true}, {key:'oppFgPct', label:'Opp FG%', pct:true, compactHide:true},
   {key:'oppTpm', label:'Opp 3PM', compactHide:true}, {key:'oppTpa', label:'Opp 3PA', compactHide:true},
@@ -478,7 +534,7 @@ const OPP_COLS = [
   {key:'oppTo', label:'Opp TO', compactHide:true}, {key:'oppPf', label:'Opp PF', compactHide:true},
 ];
 const TEAM_GAME_COLS = [
-  {key:'date', label:'Date', left:true}, {key:'wl', label:'W/L', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true},
+  {key:'date', label:'Date', left:true, gameLink:true}, {key:'wl', label:'W/L', left:true}, {key:'homeAway', label:'H/A', left:true}, {key:'opponent', label:'Opponent', left:true, teamLink:true},
   {key:'teamPts', label:'Team PTS'}, {key:'oppPts', label:'Opp PTS'}, {key:'min', label:'MIN', compactHide:true},
   {key:'fgm', label:'FGM', compactHide:true}, {key:'fga', label:'FGA', compactHide:true}, {key:'fgPct', label:'FG%', pct:true, compactHide:true},
   {key:'tpm', label:'3PM', compactHide:true}, {key:'tpa', label:'3PA', compactHide:true}, {key:'tpPct', label:'3P%', pct:true, compactHide:true},
@@ -597,6 +653,9 @@ function computeTeamSummaryClientSide(team, gameIds){
     const oppFgm = sum('fgm'), oppFga = sum('fga'), oppTpm = sum('tpm'), oppTpa = sum('tpa'),
           oppFtm = sum('ftm'), oppFta = sum('fta');
     return {
+      // gameId is carried on the row purely so the Date cell can link straight to this game's
+      // own box score page without a second (team, date) scan over DATA.games per row.
+      gameId: String(gid),
       date: g.date, homeAway: isHome ? 'vs' : '@', opponent: oppName, wl: teamPts>oppPts?'W':(teamPts<oppPts?'L':'\u2014'), teamPts, oppPts,
       oppFgm, oppFga, oppFgPct: oppFga ? Math.round((oppFgm/oppFga)*10000)/10000 : null,
       oppTpm, oppTpa, oppFtm, oppFta,
@@ -618,6 +677,7 @@ function computeTeamSummaryClientSide(team, gameIds){
     const sum = key => ownRows.reduce((a,r)=> a + (r[key]||0), 0);
     const fgm = sum('fgm'), fga = sum('fga'), tpm = sum('tpm'), tpa = sum('tpa'), ftm = sum('ftm'), fta = sum('fta');
     return {
+      gameId: String(gid), // see the note on `opponents` above
       date: g.date, homeAway: isHome ? 'vs' : '@', opponent: oppName, wl: teamPts>oppPts?'W':(teamPts<oppPts?'L':'\u2014'), teamPts, oppPts, min: sum('min'),
       fgm, fga, fgPct: fga ? Math.round((fgm/fga)*10000)/10000 : null,
       tpm, tpa, tpPct: tpa ? Math.round((tpm/tpa)*10000)/10000 : null,
@@ -1368,13 +1428,23 @@ function computeGameTeamTotals(rows, team){
 // container \u2014 shared by the full-page renderGamePage and the inline expand-in-place version
 // used on the Team Explorer page's Individual Games list.
 // Quarter-by-quarter scoring table at the top of a game's box score, same shape as a
-// standard broadcast line score. Gracefully shows nothing for games fetched before period
-// scoring was captured (game.periods absent) rather than showing a broken/empty table.
+// standard broadcast line score, plus a bolded total column. Degrades to a total-only score
+// box for games whose feed carried no period breakdown (see inside).
 function buildLineScoreTable(container, game){
-  if(!game.periods || !game.periods.home || !game.periods.away) return;
-  const numPeriods = Math.max(game.periods.home.length, game.periods.away.length);
-  const title = document.createElement('div'); title.className='section-title'; title.textContent = 'Line Score';
+  const hasPeriods = !!(game.periods && game.periods.home && game.periods.away
+    && game.periods.home.length && game.periods.away.length);
+  // Falls back to a total-only score box rather than rendering nothing when a game has no
+  // period breakdown -- either an older game captured before period scoring was collected, or
+  // a feed that didn't supply it. The final score is always known (it's what W/L is computed
+  // from everywhere else in the app), so there's no reason for the box score to open with no
+  // score on it at all.
+  const numPeriods = hasPeriods ? Math.max(game.periods.home.length, game.periods.away.length) : 0;
+  const title = document.createElement('div'); title.className='section-title';
+  title.textContent = hasPeriods ? 'Line Score' : 'Final Score';
   container.appendChild(title);
+  if(!hasPeriods){
+    appendDefIcon(title, 'Quarter-by-quarter scoring isn’t available for this game — the data feed didn’t include a period breakdown for it, so only the final score is shown.');
+  }
   const wrap = document.createElement('div'); wrap.className='table-wrap'; wrap.style.cssText='margin-bottom:16px;display:inline-block;';
   const table = document.createElement('table'); table.style.width='auto';
   const thead = document.createElement('thead');
@@ -1382,14 +1452,23 @@ function buildLineScoreTable(container, game){
   for(let i=1; i<=numPeriods; i++){
     headerHtml += `<th>${i<=4 ? i : (i===5?'OT':'OT'+(i-4))}</th>`;
   }
-  headerHtml += '<th>T</th></tr>';
+  headerHtml += `<th>${hasPeriods ? 'T' : 'Final'}</th></tr>`;
   thead.innerHTML = headerHtml;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
-  [{team:game.away, score:game.awayScore, periods:game.periods.away}, {team:game.home, score:game.homeScore, periods:game.periods.home}].forEach(side=>{
+  const season = game.date ? game.date.slice(0,4) : undefined;
+  const won = (a,b) => (typeof a==='number' && typeof b==='number' && a>b);
+  [
+    {team:game.away, score:game.awayScore, periods:(hasPeriods ? game.periods.away : []), isWinner: won(game.awayScore, game.homeScore), venue:'Away'},
+    {team:game.home, score:game.homeScore, periods:(hasPeriods ? game.periods.home : []), isWinner: won(game.homeScore, game.awayScore), venue:'Home'},
+  ].forEach(side=>{
     const tr = document.createElement('tr');
     const tdTeam = document.createElement('td'); tdTeam.className='left'; tdTeam.style.fontWeight='700';
-    tdTeam.appendChild(teamLinkEl(side.team, FULL_TEAM_NAME[side.team]||side.team));
+    tdTeam.appendChild(teamLinkEl(side.team, FULL_TEAM_NAME[side.team]||side.team, season));
+    const venueTag = document.createElement('span');
+    venueTag.style.cssText = 'color:var(--sub);font-weight:400;font-size:11px;margin-left:6px;';
+    venueTag.textContent = side.venue;
+    tdTeam.appendChild(venueTag);
     tr.appendChild(tdTeam);
     for(let i=0; i<numPeriods; i++){
       const td = document.createElement('td');
@@ -1397,7 +1476,8 @@ function buildLineScoreTable(container, game){
       tr.appendChild(td);
     }
     const tdTotal = document.createElement('td'); tdTotal.style.fontWeight='800';
-    tdTotal.textContent = side.score;
+    if(side.isWinner) tdTotal.style.color = 'var(--green)';
+    tdTotal.textContent = (side.score===null||side.score===undefined) ? '\u2014' : side.score;
     tr.appendChild(tdTotal);
     tbody.appendChild(tr);
   });
@@ -1409,7 +1489,7 @@ function buildLineScoreTable(container, game){
 function buildBoxScoreContent(container, game){
   buildLineScoreTable(container, game);
   const rowsWithBio = game.rows.map(r => Object.assign({}, r, bioLookup(r.player, r.team)));
-  [{team:game.away, label:`${game.away} (Away)`}, {team:game.home, label:`${game.home} (Home)`}].forEach(side=>{
+  [{team:game.away, label:`${FULL_TEAM_NAME[game.away]||game.away} (Away)`}, {team:game.home, label:`${FULL_TEAM_NAME[game.home]||game.home} (Home)`}].forEach(side=>{
     const sec = document.createElement('div'); sec.className='section-title'; sec.textContent = side.label;
     container.appendChild(sec);
     const teamRows = rowsWithBio.filter(r=>r.team===side.team);
@@ -1421,8 +1501,8 @@ function buildBoxScoreContent(container, game){
   });
 }
 
-function renderGamePage(game){
-  lastRender = () => renderGamePage(game);
+function renderGamePage(game, returnTo){
+  lastRender = () => renderGamePage(game, returnTo);
   main.innerHTML = '';
   removeGameWindowStickyBar();
   const head = document.createElement('div'); head.className='pagehead';
@@ -1433,7 +1513,7 @@ function renderGamePage(game){
   appendDefIcon(head.querySelector('#gamePageInfoIcon'), `Full box score, each team in its own table with team totals at the bottom. Click any column header to sort, or a player's name to see her full recent game log.`);
   const back = document.createElement('button'); back.className='addbtn'; back.textContent='← Back';
   back.style.marginBottom='14px';
-  back.addEventListener('click', ()=>{ renderTeamPage(game.home); });
+  back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderTeamPage(game.home, game.date ? game.date.slice(0,4) : undefined); });
   main.appendChild(back);
 
   buildBoxScoreContent(main, game);
@@ -1795,7 +1875,7 @@ function computeTeamDefenseTotalRow(team){
 }
 
 const PLAYER_ADV_COLS = [
-  {key:'date', label:'Date', left:true}, {key:'opp', label:'Opponent', left:true},
+  {key:'date', label:'Date', left:true, gameLink:true}, {key:'opp', label:'Opponent', left:true, teamLink:true},
   {key:'homeAway', label:'H/A', left:true}, {key:'dnp', label:'DNP', bool:true}, {key:'min', label:'MIN'},
   {key:'usgPct', label:'USG%', round2:true},
   {key:'ptsEma', label:'PTS EMA', round2:true}, {key:'ptsStd', label:'PTS StdDev(L10)', round2:true}, {key:'ptsIqr', label:'PTS IQR(L10)', round2:true},
@@ -1990,7 +2070,7 @@ function computePlayerAdvancedLog(pl, team){
 }
 
 const PLAYER_LOG_COLS = [
-  {key:'date', label:'Date', left:true, noBoldStarter:true}, {key:'opp', label:'Opponent', left:true, noBoldStarter:true},
+  {key:'date', label:'Date', left:true, noBoldStarter:true, gameLink:true}, {key:'opp', label:'Opponent', left:true, noBoldStarter:true, teamLink:true},
   {key:'homeAway', label:'H/A', left:true, noBoldStarter:true}, {key:'starter', label:'Start', bool:true}, {key:'dnp', label:'DNP', bool:true},
   {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
@@ -2145,6 +2225,274 @@ async function fetchHerNextGameLines(playerName, team){
   }
 }
 
+// ==================== Season / Career splits (player page "Season" tab) ====================
+// One row per season she actually played (and, if she was ever traded mid-season, one row per
+// team within that season -- the Basketball-Reference convention), with a Career row appended
+// as a footer row on every table. Seasons come from the same getSeasonData/
+// availableSeasonsForDropdown abstraction the height-tier page uses, so the moment historical
+// years land in DATA.historicalSeasons these tables pick them up with no further changes; today
+// that resolves to CURRENT_SEASON alone.
+
+// Per-season index of games keyed by "team|date", so the USG% roll-up below doesn't rescan
+// every game in a season once per game she played.
+const _seasonGameIndexCache = {};
+function seasonGameIndex(season, seasonData){
+  if(_seasonGameIndexCache[season]) return _seasonGameIndexCache[season];
+  const idx = new Map();
+  Object.values(seasonData.games || {}).forEach(g=>{
+    if(!g || !g.date) return;
+    if(!idx.has(g.home+'|'+g.date)) idx.set(g.home+'|'+g.date, g);
+    if(!idx.has(g.away+'|'+g.date)) idx.set(g.away+'|'+g.date, g);
+  });
+  _seasonGameIndexCache[season] = idx;
+  return idx;
+}
+
+// Raw accumulations for one (player, team, season). Everything derived (percentages, USG%,
+// per-36, volatility) is computed later in seasonDerivedRow, so the Career row can be built by
+// summing these and running the SAME derivation -- never by averaging season-level percentages,
+// which would be wrong whenever games played differ between seasons.
+function seasonRawSums(log, playerName, team, season, seasonData){
+  const SUM_KEYS = ['min','pts','fgm','fga','tpm','tpa','ftm','fta','oreb','dreb','reb','ast','stl','blk','to','pf','plusMinus'];
+  const s = {gp:0, gs:0, dd:0, td:0, teamMin:0, teamFga:0, teamFta:0, teamTo:0, ptsArr:[], rebArr:[], astArr:[], dvpPtsArr:[], dvpRebArr:[], dvpAstArr:[]};
+  SUM_KEYS.forEach(k=>{ s[k]=0; });
+  const idx = seasonGameIndex(season, seasonData);
+  // Point-in-time DvP is only computable for the season whose games are actually loaded into
+  // the top-level DATA (that's what dvpIndexAsOf reads); historical seasons report it as blank
+  // rather than silently scoring old games against this season's defenses.
+  const canComputeDvp = (season === CURRENT_SEASON);
+  const bucket = canComputeDvp ? positionBucket(getPlayerPosition(playerName, team)) : null;
+  log.forEach(g=>{
+    if(g.dnp) return;
+    s.gp++; if(g.starter) s.gs++;
+    SUM_KEYS.forEach(k=>{ const v = g[k]; if(typeof v === 'number') s[k] += v; });
+    s.ptsArr.push(g.pts||0); s.rebArr.push(g.reb||0); s.astArr.push(g.ast||0);
+    const bigCats = [g.pts||0, g.reb||0, g.ast||0, g.stl||0, g.blk||0].filter(v=>v>=10).length;
+    if(bigCats>=2) s.dd++;
+    if(bigCats>=3) s.td++;
+    const gameRec = idx.get(team+'|'+g.date);
+    if(gameRec && gameRec.rows){
+      const teamRows = gameRec.rows.filter(r=>r.team===team && !r.dnp);
+      s.teamMin += teamRows.reduce((a,r)=>a+(r.min||0),0);
+      s.teamFga += teamRows.reduce((a,r)=>a+(r.fga||0),0);
+      s.teamFta += teamRows.reduce((a,r)=>a+(r.fta||0),0);
+      s.teamTo  += teamRows.reduce((a,r)=>a+(r.to||0),0);
+    }
+    if(canComputeDvp && bucket){
+      const oppShort = SHORT_TEAM_NAME[g.opp] || g.opp;
+      const dp = dvpIndexAsOf(oppShort, 'pts', bucket, g.date);
+      const dr = dvpIndexAsOf(oppShort, 'reb', bucket, g.date);
+      const da = dvpIndexAsOf(oppShort, 'ast', bucket, g.date);
+      if(dp!==null && dp!==undefined) s.dvpPtsArr.push(dp);
+      if(dr!==null && dr!==undefined) s.dvpRebArr.push(dr);
+      if(da!==null && da!==undefined) s.dvpAstArr.push(da);
+    }
+  });
+  return s;
+}
+
+function addSeasonSums(a, b){
+  const out = {};
+  Object.keys(a).forEach(k=>{
+    if(Array.isArray(a[k])) out[k] = a[k].concat(b[k]||[]);
+    else out[k] = (a[k]||0) + (b[k]||0);
+  });
+  return out;
+}
+
+// Turns raw sums into the four flavors of row the Season tab renders. `label` is what shows in
+// the Season column ("2026", or "Career" for the footer row).
+function seasonDerivedRow(sums, label, team){
+  const gp = sums.gp, min = sums.min;
+  const per = v => gp ? Math.round((v/gp)*100)/100 : null;
+  const per36 = v => min ? Math.round((v*36/min)*100)/100 : null;
+  const avgOf = arr => arr.length ? Math.round((arr.reduce((x,y)=>x+y,0)/arr.length)*1000)/1000 : null;
+  const tsa = sums.fga + 0.44*sums.fta;
+  const usgNum = sums.fga + 0.44*sums.fta + sums.to;
+  const usgDen = sums.teamFga + 0.44*sums.teamFta + sums.teamTo;
+  const usgPct = (min && usgDen && sums.teamMin)
+    ? Math.round((100 * (usgNum * (sums.teamMin/5)) / (min * usgDen)) * 10)/10
+    : null;
+
+  const base = {season: label, team, gp, gs: sums.gs};
+  const STD = ['min','pts','fgm','fga','tpm','tpa','ftm','fta','oreb','dreb','reb','ast','stl','blk','to','pf','plusMinus'];
+
+  const stdTotals = Object.assign({}, base);
+  STD.forEach(k=>{ stdTotals[k] = Math.round(sums[k]*100)/100; });
+  stdTotals.fgPct = sums.fga ? Math.round((sums.fgm/sums.fga)*10000)/10000 : null;
+  stdTotals.tpPct = sums.tpa ? Math.round((sums.tpm/sums.tpa)*10000)/10000 : null;
+  stdTotals.ftPct = sums.fta ? Math.round((sums.ftm/sums.fta)*10000)/10000 : null;
+
+  const stdAverages = Object.assign({}, base);
+  STD.forEach(k=>{ stdAverages[k] = per(sums[k]); });
+  // Shooting percentages are recomputed from combined makes/attempts, NOT divided by games --
+  // a per-game FG% is meaningless.
+  stdAverages.fgPct = stdTotals.fgPct; stdAverages.tpPct = stdTotals.tpPct; stdAverages.ftPct = stdTotals.ftPct;
+
+  const rates = {
+    tsPct: tsa ? Math.round((sums.pts/(2*tsa))*10000)/10000 : null,
+    efgPct: sums.fga ? Math.round(((sums.fgm + 0.5*sums.tpm)/sums.fga)*10000)/10000 : null,
+    threeAr: sums.fga ? Math.round((sums.tpa/sums.fga)*10000)/10000 : null,
+    ftr: sums.fga ? Math.round((sums.fta/sums.fga)*10000)/10000 : null,
+    astToRatio: sums.to ? Math.round((sums.ast/sums.to)*100)/100 : null,
+    usgPct,
+  };
+
+  const advTotals = Object.assign({}, base, rates, {
+    min: Math.round(sums.min*100)/100,
+    pra: Math.round((sums.pts + sums.reb + sums.ast)*100)/100,
+    tsa: Math.round(tsa*100)/100,
+    fgMiss: sums.fga - sums.fgm,
+    ftMiss: sums.fta - sums.ftm,
+    dd: sums.dd, td: sums.td,
+  });
+
+  const advAverages = Object.assign({}, base, rates, {
+    min: per(sums.min),
+    pra: per(sums.pts + sums.reb + sums.ast),
+    pts36: per36(sums.pts), reb36: per36(sums.reb), ast36: per36(sums.ast),
+    ptsStd: stdDevOf(sums.ptsArr), ptsIqr: iqrOf(sums.ptsArr),
+    rebStd: stdDevOf(sums.rebArr), rebIqr: iqrOf(sums.rebArr),
+    astStd: stdDevOf(sums.astArr), astIqr: iqrOf(sums.astArr),
+    avgDvpPts: avgOf(sums.dvpPtsArr), avgDvpReb: avgOf(sums.dvpRebArr), avgDvpAst: avgOf(sums.dvpAstArr),
+  });
+
+  return {stdTotals, stdAverages, advTotals, advAverages};
+}
+
+// Returns {seasons: [derivedRow, ...] (oldest first), career: derivedRow|null}
+function computePlayerSeasonSplits(playerName){
+  const seasons = availableSeasonsForDropdown().slice().sort(); // oldest first, career reads chronologically
+  const derived = [];
+  let careerSums = null;
+  seasons.forEach(yr=>{
+    const sd = getSeasonData(yr);
+    if(!sd || !sd.fullPlayerLogs) return;
+    Object.keys(sd.fullPlayerLogs)
+      .filter(k => k.slice(0, k.lastIndexOf('|')) === playerName)
+      .forEach(k=>{
+        const teamShort = k.slice(k.lastIndexOf('|')+1);
+        const rec = sd.fullPlayerLogs[k];
+        const log = (rec && rec.log) || [];
+        const sums = seasonRawSums(log, playerName, teamShort, yr, sd);
+        if(!sums.gp) return;
+        derived.push(seasonDerivedRow(sums, yr, teamShort));
+        careerSums = careerSums ? addSeasonSums(careerSums, sums) : sums;
+      });
+  });
+  // Career team label: her team when there's only ever been one, otherwise a count, since a
+  // single team link would be actively misleading across a multi-team career.
+  const teams = [...new Set(derived.map(d=>d.stdTotals.team))];
+  // Spelled out here rather than left as a short code, because footer rows render as plain
+  // text (no team link), so FULL_TEAM_NAME never gets applied to them the way it does to a
+  // normal row's linked team cell.
+  const careerTeam = teams.length===1 ? (FULL_TEAM_NAME[teams[0]] || teams[0]) : `${teams.length} teams`;
+  return {
+    seasons: derived,
+    career: careerSums ? seasonDerivedRow(careerSums, 'Career', careerTeam) : null,
+  };
+}
+
+const SEASON_STD_TOTALS_COLS = [
+  {key:'season', label:'Season', left:true, numeric:false},
+  {key:'team', label:'Team', left:true, teamLink:true},
+  {key:'gp', label:'GP'}, {key:'gs', label:'GS'},
+  {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
+  {key:'fgm', label:'FGM', compactHide:true}, {key:'fga', label:'FGA', compactHide:true}, {key:'fgPct', label:'FG%', pct:true, compactHide:true},
+  {key:'tpm', label:'3PM', compactHide:true}, {key:'tpa', label:'3PA', compactHide:true}, {key:'tpPct', label:'3P%', pct:true, compactHide:true},
+  {key:'ftm', label:'FTM', compactHide:true}, {key:'fta', label:'FTA', compactHide:true}, {key:'ftPct', label:'FT%', pct:true, compactHide:true},
+  {key:'oreb', label:'OREB', compactHide:true}, {key:'dreb', label:'DREB', compactHide:true}, {key:'reb', label:'REB'},
+  {key:'ast', label:'AST'}, {key:'stl', label:'STL', compactHide:true}, {key:'blk', label:'BLK', compactHide:true},
+  {key:'to', label:'TO', compactHide:true}, {key:'pf', label:'PF', compactHide:true}, {key:'plusMinus', label:'+/-', compactHide:true},
+];
+// Same columns, but every counting stat rendered to one decimal as a per-game figure. GP/GS
+// stay whole numbers -- they're the denominator, not something that gets divided.
+const SEASON_STD_AVG_COLS = SEASON_STD_TOTALS_COLS.map(c=>(
+  ['min','pts','fgm','fga','tpm','tpa','ftm','fta','oreb','dreb','reb','ast','stl','blk','to','pf','plusMinus'].includes(c.key)
+    ? Object.assign({}, c, {round1:true}) : c
+));
+
+const SEASON_ADV_TOTALS_COLS = [
+  {key:'season', label:'Season', left:true, numeric:false},
+  {key:'team', label:'Team', left:true, teamLink:true},
+  {key:'gp', label:'GP'}, {key:'gs', label:'GS'}, {key:'min', label:'MIN'},
+  {key:'pra', label:'PRA'},
+  {key:'dd', label:'Dbl-Dbl'}, {key:'td', label:'Trp-Dbl'},
+  {key:'tsa', label:'TSA', round1:true, compactHide:true},
+  {key:'fgMiss', label:'FG Missed', compactHide:true}, {key:'ftMiss', label:'FT Missed', compactHide:true},
+  {key:'tsPct', label:'TS%', pct:true}, {key:'efgPct', label:'eFG%', pct:true, compactHide:true},
+  {key:'usgPct', label:'USG%', round1:true},
+  {key:'astToRatio', label:'AST/TO', round2:true, compactHide:true},
+  {key:'threeAr', label:'3PAr', pct:true, compactHide:true}, {key:'ftr', label:'FTr', pct:true, compactHide:true},
+];
+const SEASON_ADV_AVG_COLS = [
+  {key:'season', label:'Season', left:true, numeric:false},
+  {key:'team', label:'Team', left:true, teamLink:true},
+  {key:'gp', label:'GP'}, {key:'min', label:'MIN', round1:true},
+  {key:'pra', label:'PRA', round1:true},
+  {key:'pts36', label:'PTS/36', round1:true}, {key:'reb36', label:'REB/36', round1:true, compactHide:true}, {key:'ast36', label:'AST/36', round1:true, compactHide:true},
+  {key:'tsPct', label:'TS%', pct:true}, {key:'efgPct', label:'eFG%', pct:true, compactHide:true},
+  {key:'usgPct', label:'USG%', round1:true},
+  {key:'astToRatio', label:'AST/TO', round2:true, compactHide:true},
+  {key:'ptsStd', label:'PTS StdDev', round2:true, compactHide:true}, {key:'ptsIqr', label:'PTS IQR', round2:true, compactHide:true},
+  {key:'rebStd', label:'REB StdDev', round2:true, compactHide:true}, {key:'rebIqr', label:'REB IQR', round2:true, compactHide:true},
+  {key:'astStd', label:'AST StdDev', round2:true, compactHide:true}, {key:'astIqr', label:'AST IQR', round2:true, compactHide:true},
+  {key:'avgDvpPts', label:'Avg DvP (PTS)', round2:true, compactHide:true},
+  {key:'avgDvpReb', label:'Avg DvP (REB)', round2:true, compactHide:true},
+  {key:'avgDvpAst', label:'Avg DvP (AST)', round2:true, compactHide:true},
+];
+
+Object.assign(STAT_DEFINITIONS, {
+  pra: 'Points + Rebounds + Assists.',
+  dd: 'Double-doubles — games with 10 or more in at least two of points, rebounds, assists, steals, blocks.',
+  td: 'Triple-doubles — games with 10 or more in at least three of points, rebounds, assists, steals, blocks.',
+  tsa: 'True Shooting Attempts — FGA + 0.44 × FTA. The standard estimate of how many scoring possessions she used, counting trips to the line.',
+  fgMiss: 'Missed field goals — FGA minus FGM.',
+  ftMiss: 'Missed free throws — FTA minus FTM.',
+  tsPct: 'True Shooting % — PTS ÷ (2 × TSA). Scoring efficiency counting twos, threes and free throws in a single number.',
+  efgPct: 'Effective FG% — (FGM + 0.5 × 3PM) ÷ FGA. Field goal percentage adjusted for threes being worth more.',
+  threeAr: '3-Point Attempt Rate — share of her field goal attempts that were threes.',
+  ftr: 'Free Throw Rate — FTA per field goal attempt. How often she gets to the line relative to how much she shoots.',
+  astToRatio: 'Assist-to-Turnover ratio — total assists divided by total turnovers.',
+  pts36: 'Points per 36 minutes — rate production, independent of how much she actually played.',
+  reb36: 'Rebounds per 36 minutes.',
+  ast36: 'Assists per 36 minutes.',
+  avgDvpPts: 'Average DvP Index (Points) faced — the average matchup difficulty of the defenses she played, measured as of each game (above 1.05 = easier slate than league average, below 0.95 = harder).',
+  avgDvpReb: 'Average DvP Index (Rebounds) faced across the season.',
+  avgDvpAst: 'Average DvP Index (Assists) faced across the season.',
+});
+
+// Builds all four Season-tab tables into `container`.
+function buildPlayerSeasonTab(container, playerName, team){
+  const splits = computePlayerSeasonSplits(playerName);
+  if(!splits.seasons.length){
+    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;';
+    na.textContent = `No season totals found for ${playerName}.`;
+    container.appendChild(na);
+    return;
+  }
+  const TABLES = [
+    {title:'Season Totals — Standard', cols:SEASON_STD_TOTALS_COLS, pick:'stdTotals',
+     def:'One row per season she played (one row per team within a season if she was ever traded mid-year), with her career line as the last row. Shooting percentages are computed from combined makes and attempts across the whole span, never by averaging season percentages together.'},
+    {title:'Season Averages (Per Game Played) — Standard', cols:SEASON_STD_AVG_COLS, pick:'stdAverages',
+     def:'Per-game averages over games she actually played — DNPs are excluded from the denominator. GP/GS stay as counts. FG%/3P%/FT% are the same combined-makes-over-combined-attempts figures as the totals table above, since a "per game" shooting percentage isn’t a meaningful number.'},
+    {title:'Season Totals — Advanced', cols:SEASON_ADV_TOTALS_COLS, pick:'advTotals',
+     def:'Season-level cumulative and efficiency figures. The rate stats (TS%, eFG%, USG%, AST/TO, 3PAr, FTr) are computed from season totals, so the Career row is a true career rate rather than an average of season rates. USG% uses the standard Basketball-Reference formula against her team’s combined totals in the games she played.'},
+    {title:'Season Averages (Per Game Played) — Advanced', cols:SEASON_ADV_AVG_COLS, pick:'advAverages',
+     def:'Per-game and per-36-minute rates, plus season-long volatility (StdDev/IQR over every game she played that season, not a trailing 10-game window) and the average matchup difficulty she faced. Per-36 figures show rate production independent of playing time — useful for comparing a starter’s season to a bench season.'},
+  ];
+  TABLES.forEach(t=>{
+    const title = document.createElement('div'); title.className='section-title'; title.textContent = t.title;
+    container.appendChild(title);
+    appendDefIcon(title, t.def);
+    makeTable(container, t.cols, splits.seasons.map(s=>s[t.pick]), {
+      defaultSort:'season', defaultDir:'desc', noHideDNP:true,
+      seasonFor: r => (r.season && /^\d{4}$/.test(String(r.season))) ? String(r.season) : undefined,
+      footerRows: splits.career ? [{label:'Career', values: splits.career[t.pick]}] : [],
+    });
+  });
+}
+
 function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   windowMode = windowMode===undefined ? 'all' : windowMode; // default matches prior behavior
   month = month || 'full';
@@ -2233,10 +2581,12 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   const prodTabContent = document.createElement('div');
   const gamelogTabContent = document.createElement('div');
   const vsOppTabContent = document.createElement('div');
+  const seasonTabContent = document.createElement('div');
   const TAB_DEFS = [
     {label:'Production', content: prodTabContent},
     {label:'Gamelogs', content: gamelogTabContent},
     {label:'Vs. Opponent', content: vsOppTabContent},
+    {label:'Season', content: seasonTabContent},
   ];
   const tabButtons = TAB_DEFS.map(def=>{
     const btn = document.createElement('button');
@@ -2258,11 +2608,13 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   // original long-scroll layout), the tab bar itself is hidden via the compact-only class above,
   // and clicking tabs (which can't happen since the bar is hidden) would be moot anyway.
   if(getLayoutMode()==='compact'){
-    gamelogTabContent.style.display = 'none';
-    vsOppTabContent.style.display = 'none';
-    tabButtons[0].style.background = 'var(--navy2)'; tabButtons[0].style.color = '#fff';
-    tabButtons[1].style.background = 'var(--panel)'; tabButtons[1].style.color = 'var(--ink)';
-    tabButtons[2].style.background = 'var(--panel)'; tabButtons[2].style.color = 'var(--ink)';
+    // Everything except the first tab starts hidden -- written as a loop rather than one line
+    // per tab so adding a tab (as the Season tab just did) can't leave one silently visible.
+    TAB_DEFS.forEach((d,i)=>{
+      d.content.style.display = i===0 ? '' : 'none';
+      tabButtons[i].style.background = i===0 ? 'var(--navy2)' : 'var(--panel)';
+      tabButtons[i].style.color = i===0 ? '#fff' : 'var(--ink)';
+    });
   }
 
   // Teammate-out impact -- for every teammate currently listed as officially out, how this
@@ -2382,13 +2734,14 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     footerRows.push({label, values});
   });
 
-  makeTable(gamelogTabContent, PLAYER_LOG_COLS, logRows, {defaultSort:'date', defaultDir:'desc', footerRows, hideLabel:'Hide games she didn\u2019t play (DNP)'});
+  const gameIdForLogRow = r => findGameIdForTeamDate(team, r.date);
+  makeTable(gamelogTabContent, PLAYER_LOG_COLS, logRows, {defaultSort:'date', defaultDir:'desc', footerRows, hideLabel:'Hide games she didn\u2019t play (DNP)', gameIdFor: gameIdForLogRow});
   appendDefIcon(t1, `Rows with <b>DNP</b> checked reflect games on the schedule she didn\u2019t play in \u2014 those games are excluded from the MIN/MAX/AVERAGE/MEDIAN/MODE rows at the bottom, which are based only on games actually played within the ${windowLabelText.toLowerCase()} window selected above. Shooting-percentage summary rows (FG%/3P%/FT%) are computed from each game\u2019s own percentage, not recalculated from total makes/attempts.`);
 
   const t5 = document.createElement('div'); t5.className='section-title'; t5.textContent=`Gamelog - Advanced, ${windowLabelText} (DNPs included)`; gamelogTabContent.appendChild(t5);
   appendDefIcon(t5, 'Same games as the box score table above, but built for forecasting against a sportsbook line instead of describing what already happened. USG% is the standard Basketball-Reference formula. EMA (exponential moving average) weights recent games more heavily and is computed using every game up to and including that row, oldest to newest. StdDev/IQR use a trailing window of up to the last 10 games played (not the calendar window above) \u2014 a high value means the average is a less reliable predictor of any single game than it looks. DvP Index compares that game\u2019s opponent to the league-average defense against her position for that stat, using ONLY games that had already been played before that game\u2019s tip-off (not the final, full-season DvP, which would leak in results from games that hadn\u2019t happened yet) \u2014 above 1.05 is a plus matchup (favors the Over), below 0.95 is a tougher one. "Potential Assists" isn\u2019t included \u2014 it genuinely can\u2019t be computed from this app\u2019s data source (see the Team page\u2019s Advanced Metrics section for the longer explanation).');
   const advLogRows = computePlayerAdvancedLog(pl, team);
-  makeTable(gamelogTabContent, PLAYER_ADV_COLS, advLogRows, {defaultSort:'date', defaultDir:'desc', hideLabel:'Hide games she didn\u2019t play (DNP)'});
+  makeTable(gamelogTabContent, PLAYER_ADV_COLS, advLogRows, {defaultSort:'date', defaultDir:'desc', hideLabel:'Hide games she didn\u2019t play (DNP)', gameIdFor: gameIdForLogRow});
 
   // ---- Vs Opponent: full-season gamelog + advanced metrics against one selected team ----
   const t6 = document.createElement('div'); t6.className='section-title'; t6.textContent='Vs. Opponent \u2014 Full Season Gamelog'; vsOppTabContent.appendChild(t6);
@@ -2420,14 +2773,20 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
       return;
     }
     const footerRows = buildStandardFooterRows(rows, STAT_KEYS_FOR_SUMMARY);
-    makeTable(vsOppStdContainer, PLAYER_VS_OPP_COLS, rows, {defaultSort:'date', defaultDir:'desc', footerRows});
+    makeTable(vsOppStdContainer, PLAYER_VS_OPP_COLS, rows, {defaultSort:'date', defaultDir:'desc', footerRows, gameIdFor: gameIdForLogRow});
     const advRows = computePlayerAdvancedLogVsOpponent(playerName, team, opponentShort);
     const ADV_STAT_KEYS = ['min','usgPct','ptsEma','ptsStd','ptsIqr','rebEma','rebStd','rebIqr','astEma','astStd','astIqr','dvpPts','dvpReb','dvpAst'];
     const advFooterRows = buildStandardFooterRows(advRows, ADV_STAT_KEYS);
-    makeTable(vsOppAdvContainer, PLAYER_ADV_COLS, advRows, {defaultSort:'date', defaultDir:'desc', footerRows: advFooterRows});
+    makeTable(vsOppAdvContainer, PLAYER_ADV_COLS, advRows, {defaultSort:'date', defaultDir:'desc', footerRows: advFooterRows, gameIdFor: gameIdForLogRow});
   }
   vsOppSelect.addEventListener('change', ()=>renderVsOpponentTables(vsOppSelect.value));
   renderVsOpponentTables(vsOppSelect.value);
+
+  // ---- Season tab: per-season and career totals/averages, standard and advanced ----
+  // Deliberately NOT filtered by the Year/Month or Game Window controls above -- the whole
+  // point of this tab is the full season-by-season picture, so narrowing it to "June, last 10"
+  // would defeat it. Everything else on this page still respects those controls.
+  buildPlayerSeasonTab(seasonTabContent, playerName, team);
 
   // Best-effort upgrade: if her actual next opponent can be found live, switch the dropdown
   // to it automatically. Silently does nothing if the lookup fails or finds no upcoming game.
@@ -2754,7 +3113,14 @@ function playerNameWithTeam(playerName, teamShortName){
 // Reusable clickable team-name link, used throughout the Odds page and Top Bets page so every
 // team mention navigates to that team's Team Explorer page. Accepts either a short code
 // ("Aces") or full name ("Las Vegas Aces") and resolves it either way.
-function teamLinkEl(teamNameOrShort, displayText){
+// `season` (a 4-digit year string) opens that team's page for the season the clicked stat was
+// actually recorded in, rather than always dumping you on the current season -- clicking the
+// opponent next to a 2026 game log row should show you the 2026 team, not whatever season the
+// app happens to be defaulting to. Omitted/undefined keeps the old "latest season" behavior,
+// and a season the team has no games in falls back to the latest one rather than rendering an
+// empty page (renderTeamPage's own `year || years[years.length-1]` can't catch that, since a
+// bad-but-truthy year would pass straight through).
+function teamLinkEl(teamNameOrShort, displayText, season){
   const shortName = SHORT_TEAM_NAME[teamNameOrShort] || teamNameOrShort;
   const a = document.createElement('a');
   a.href = 'javascript:void(0)';
@@ -2768,7 +3134,12 @@ function teamLinkEl(teamNameOrShort, displayText){
     document.querySelectorAll('#toplinks button').forEach(b=>b.classList.remove('active'));
     if(explorerBtn) explorerBtn.classList.add('active');
     nav.innerHTML = ''; nav.style.display = 'none';
-    renderTeamPage(shortName);
+    let targetYear;
+    if(season && DATA && DATA.teams && DATA.teams[shortName]){
+      const yrs = availableYears(shortName);
+      if(yrs.includes(String(season))) targetYear = String(season);
+    }
+    renderTeamPage(shortName, targetYear);
   });
   return a;
 }
@@ -3942,8 +4313,19 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
       });
       checkboxes.push({cb, game:g});
       tdCb.appendChild(cb);
-      const tdDate = document.createElement('td'); tdDate.className='left'; tdDate.textContent = g.date;
-      const tdOpp = document.createElement('td'); tdOpp.className='left'; tdOpp.textContent = g.opp || '\u2014';
+      const tdDate = document.createElement('td'); tdDate.className='left';
+      if(g.gameId){
+        const dateLink = document.createElement('a');
+        dateLink.href = 'javascript:void(0)'; dateLink.className = 'player-link'; dateLink.textContent = g.date;
+        // The whole row already navigates to the box score; the link exists so the date LOOKS
+        // clickable (matching every other table in the app) -- stopPropagation keeps the two
+        // from firing a double navigation.
+        dateLink.addEventListener('click', e=>{ e.stopPropagation(); goToGameBox(g.gameId, lastRender); });
+        tdDate.appendChild(dateLink);
+      } else { tdDate.textContent = g.date; }
+      const tdOpp = document.createElement('td'); tdOpp.className='left';
+      if(g.opp){ tdOpp.appendChild(teamLinkEl(g.opp, FULL_TEAM_NAME[g.opp] || g.opp, g.date ? g.date.slice(0,4) : undefined)); }
+      else { tdOpp.textContent = '\u2014'; }
       const tdOppHeight = document.createElement('td'); tdOppHeight.style.textAlign='center'; tdOppHeight.textContent = inchesToHeightStr(g.oppHeight) || '\u2014';
       const tdMin = document.createElement('td'); tdMin.style.textAlign='center'; tdMin.textContent = g.min;
       const tdPts = document.createElement('td'); tdPts.style.textAlign='center'; tdPts.textContent = g.pts;
@@ -5663,17 +6045,30 @@ function vsOpponentHitIcon(hit){
 // Player logs (fullPlayerLogs) only carry date/opponent, not the game's own ID -- this finds
 // it by matching team+date against DATA.games, so "Vs Opponent This Season" entries can link
 // to the actual box score.
+// Indexed on first use rather than scanning every game every call -- this is now hit once per
+// row of every game-log table (each Date cell resolves its own game link), which turned an
+// incidental lookup into an O(rows x games) scan on the biggest tables in the app.
+let _gameIdByTeamDate = null;
 function findGameIdForTeamDate(team, dateStr){
-  for(const [gid, g] of Object.entries(DATA.games)){
-    if(g.date===dateStr && (g.home===team || g.away===team)) return gid;
+  if(!_gameIdByTeamDate){
+    _gameIdByTeamDate = new Map();
+    for(const [gid, g] of Object.entries(DATA.games)){
+      if(!g || !g.date) continue;
+      // first writer wins, matching the old loop's "return the first match" behavior
+      if(!_gameIdByTeamDate.has(g.home+'|'+g.date)) _gameIdByTeamDate.set(g.home+'|'+g.date, gid);
+      if(!_gameIdByTeamDate.has(g.away+'|'+g.date)) _gameIdByTeamDate.set(g.away+'|'+g.date, gid);
+    }
   }
-  return null;
+  return _gameIdByTeamDate.get(team+'|'+dateStr) || null;
 }
 // Navigates to a specific game's full box score page. gid is a string key from DATA.games.
-function goToGameBox(gid){
+// returnTo, when given, is what the box score's Back button will call -- so clicking a date in
+// a player's game log returns you to that player's page rather than dumping you on the home
+// team's Team Explorer page, which is all renderGamePage can guess at on its own.
+function goToGameBox(gid, returnTo){
   const game = DATA.games[gid];
   if(!game) return;
-  renderGamePage(game);
+  renderGamePage(game, returnTo);
 }
 
 // Given a team's defensive rank (1=stingiest, of=most generous) for some stat+position bucket,
