@@ -5875,14 +5875,14 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   expandCb.addEventListener('change', ()=>{ wrap.classList.toggle('show-simdef-extra', expandCb.checked); });
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="th-overall">Overall %</th>'
+  thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th>Price</th><th class="th-overall">Overall %</th>'
     +'<th class="th-l5 compact-hide">L5%</th><th class="th-l10 compact-hide">L10%</th><th class="th-l15 compact-hide">L15%</th><th class="th-season compact-hide">Season%</th><th class="th-l10ema compact-hide">L10 EMA</th>'
-    +'<th class="left compact-hide">Game</th><th class="left compact-hide">Vs Opponent This Season</th>'
+    +'<th class="defcol th-defallowed compact-hide">Allowed/Gm</th><th class="left compact-hide">Game</th><th class="left compact-hide">Vs Opponent This Season</th>'
     +'<th class="left defcol th-defrank compact-hide">Opp Def Rank</th><th class="left th-simdef compact-hide">Vs Similar Defenses</th>'
-    +'<th class="left th-simdefl5 compact-hide">Vs Similar Defenses (L5)</th><th class="left defcol th-defrankl5 compact-hide">Opp Def Rank (L5)</th>'
+    +'<th class="left defcol th-defrankl5 compact-hide">Opp Def Rank (L5)</th><th class="left th-simdefl5 compact-hide">Vs Similar Defenses (L5)</th>'
     +'<th class="defcol th-dvpseason compact-hide" style="cursor:pointer;">DvP (Season)</th><th class="defcol th-dvpl15 compact-hide" style="cursor:pointer;">DvP (L15)</th>'
     +'<th class="defcol th-dvpl10 compact-hide" style="cursor:pointer;">DvP (L10)</th><th class="defcol th-dvpl5 compact-hide" style="cursor:pointer;">DvP (L5)</th>'
-    +'<th>Price</th><th class="left compact-hide">Sportsbook</th><th class="defcol th-defallowed compact-hide">Allowed/Gm</th><th></th></tr>';
+    +'<th class="left compact-hide">Sportsbook</th><th></th></tr>';
   // Each DvP header sorts the table by that specific window's value on click -- click again to
   // flip direction, same as any other sortable column elsewhere in this app. Click a DIFFERENT
   // DvP column and it takes over as the active sort. Nulls (no data available) always sort last
@@ -6083,7 +6083,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar, tdRank, tdPos, tdLabel, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdL10Ema, tdGame, tdVsOpp, tdDef, tdSimDef, tdSimDefL5, tdDefL5, tdDvpSeason, tdDvpL15, tdDvpL10, tdDvpL5col, tdPrice, tdSportsbook, tdAllowed, tdTrack].forEach(td=>tr.appendChild(td));
+    [tdStar, tdRank, tdPos, tdLabel, tdPrice, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdL10Ema, tdAllowed, tdGame, tdVsOpp, tdDef, tdSimDef, tdDefL5, tdSimDefL5, tdDvpSeason, tdDvpL15, tdDvpL10, tdDvpL5col, tdSportsbook, tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
     });
   }
@@ -6255,7 +6255,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
       tdGame.appendChild(document.createTextNode(' @ '));
       tdGame.appendChild(teamLinkEl(gameTeams[1], gameTeams[1]));
     } else { tdGame.textContent = bet.game; }
-    const tdVsOpp = document.createElement('td'); tdVsOpp.className='left'; tdVsOpp.style.cssText = cellStyle.replace('text-align:center;','');
+    const tdVsOpp = document.createElement('td'); tdVsOpp.className='left'; tdVsOpp.style.cssText = cellStyle.replace('text-align:center;','') + 'min-width:220px;white-space:nowrap;';
     tdVsOpp.appendChild(buildVsOpponentCell(bet));
     const tdPrice = document.createElement('td'); tdPrice.style.cssText = cellStyle;
     tdPrice.textContent = fmtAmerican(bet.price);
