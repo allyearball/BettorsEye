@@ -169,6 +169,18 @@
   /* Compact-mode-only "Show All Details" toggle for wide tables that use compact-hide -- reveals
      the hidden columns back to table-cell display (not just block, since these are td/th). */
   body.compact-mode .compact-show-all .compact-hide{display:table-cell !important;}
+  /* While collapsed (the default -- only a handful of key columns visible), force the table to
+     fit within the screen width instead of overflowing into horizontal scroll: table-layout:fixed
+     makes every column's width fully determined by the header row rather than by its content, and
+     tighter padding/font-size than the rest of Compact mode uses, since a 5-6 column data table at
+     the same size used for e.g. Season Record boxes genuinely doesn't fit a phone screen. The
+     moment "Show All Details" is checked, all of this reverts to the normal wider Compact-mode
+     sizing with horizontal scroll, so every column is still fully readable, just not all at once. */
+  body.compact-mode .table-wrap:not(.compact-show-all) table{table-layout:fixed;width:100%;}
+  body.compact-mode .table-wrap:not(.compact-show-all) th,
+  body.compact-mode .table-wrap:not(.compact-show-all) td{padding:9px 4px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  body.compact-mode .table-wrap:not(.compact-show-all) th.left,
+  body.compact-mode .table-wrap:not(.compact-show-all) td.left{width:32%;}
 </style>
 </head>
 <body>
@@ -968,7 +980,72 @@ function renderLeagueStatsPage(year, mode, windowMode){
     const leader = teamRows.reduce((best,r)=> (r.wins-r.losses) > (best.wins-best.losses) ? r : best, teamRows[0]);
     teamRows.forEach(r=>{ r.gbNum = ((leader.wins-r.wins)+(r.losses-leader.losses))/2; });
   }
-  makeTable(main, LEAGUE_TEAM_COLS, teamRows, {defaultSort:'pts', defaultDir:'desc', noHideDNP:true});
+  // Default sort: Games Back (best standing first), with ties broken using the WNBA's own
+  // official tiebreaker order (per wnba.com/standings): 1) head-to-head record, 2) win% against
+  // teams at .500-or-better, 3) head-to-head point differential, 4) overall point differential.
+  // Computed from the SAME game window currently selected above (not always full season) so
+  // this stays consistent with whatever GB values are actually showing -- e.g. if "Last 10" is
+  // selected, both GB and this tiebreaker reflect that same 10-game slice, not the full season.
+  function teamPointDiff(team, opponentFilter){
+    let diff = 0;
+    perTeam[team].gameIds.forEach(gid=>{
+      const g = DATA.games[String(gid)];
+      if(!g || g.homeScore===null || g.awayScore===null) return;
+      const isHome = g.home===team;
+      const opp = isHome ? g.away : g.home;
+      if(opponentFilter && opp!==opponentFilter) return;
+      const own = isHome ? g.homeScore : g.awayScore;
+      const oppScore = isHome ? g.awayScore : g.homeScore;
+      diff += (own - oppScore);
+    });
+    return diff;
+  }
+  function h2hRecord(teamA, teamB){
+    let w=0, l=0;
+    perTeam[teamA].gameIds.forEach(gid=>{
+      const g = DATA.games[String(gid)];
+      if(!g || g.homeScore===null || g.awayScore===null) return;
+      const isHome = g.home===teamA;
+      const opp = isHome ? g.away : g.home;
+      if(opp!==teamB) return;
+      const own = isHome ? g.homeScore : g.awayScore;
+      const oppScore = isHome ? g.awayScore : g.homeScore;
+      if(own>oppScore) w++; else if(own<oppScore) l++;
+    });
+    return {w, l};
+  }
+  const rowByTeam = {}; teamRows.forEach(r=>{ rowByTeam[r.team] = r; });
+  function winPctVsQualifiers(team){
+    let w=0, l=0;
+    perTeam[team].gameIds.forEach(gid=>{
+      const g = DATA.games[String(gid)];
+      if(!g || g.homeScore===null || g.awayScore===null) return;
+      const isHome = g.home===team;
+      const opp = isHome ? g.away : g.home;
+      const oppRow = rowByTeam[opp];
+      if(!oppRow || (oppRow.wins+oppRow.losses)===0) return;
+      if(oppRow.wins/(oppRow.wins+oppRow.losses) < 0.5) return; // opponent currently under .500 -- excluded from this step
+      const own = isHome ? g.homeScore : g.awayScore;
+      const oppScore = isHome ? g.awayScore : g.homeScore;
+      if(own>oppScore) w++; else if(own<oppScore) l++;
+    });
+    return (w+l) ? w/(w+l) : null;
+  }
+  teamRows.sort((a,b)=>{
+    if(a.gbNum !== b.gbNum) return a.gbNum - b.gbNum; // fewer games back = better standing = sorts first
+    // Tied on GB -- apply the WNBA's own tiebreaker order.
+    const h2h = h2hRecord(a.team, b.team);
+    if(h2h.w+h2h.l>0 && h2h.w!==h2h.l) return h2h.w>h2h.l ? -1 : 1;
+    const aQual = winPctVsQualifiers(a.team), bQual = winPctVsQualifiers(b.team);
+    if(aQual!==null && bQual!==null && aQual!==bQual) return bQual - aQual;
+    const h2hDiff = teamPointDiff(a.team, b.team) - teamPointDiff(b.team, a.team);
+    if(h2hDiff!==0) return h2hDiff>0 ? -1 : 1;
+    const overallDiff = teamPointDiff(a.team, null) - teamPointDiff(b.team, null);
+    if(overallDiff!==0) return overallDiff>0 ? -1 : 1;
+    return a.team.localeCompare(b.team); // fully tied through every official step -- alphabetical as a final, stable fallback
+  });
+  teamRows.forEach((r,i)=>{ r.standingsRank = i; });
+  makeTable(main, LEAGUE_TEAM_COLS, teamRows, {defaultSort:'standingsRank', defaultDir:'asc', noHideDNP:true});
 
   const t1b = document.createElement('div'); t1b.className='section-title';
   t1b.textContent = `Defensive Team ${mode==='totals'?'Totals':'Averages'} (Opponent Output) \u2014 ${windowLabelText}`;
