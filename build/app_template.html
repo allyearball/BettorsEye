@@ -315,6 +315,79 @@ const STAT_DEFINITIONS = {
   defAllowed: 'The raw "[stat] allowed per game to her position, season-long" number behind the Opp Def Rank column.',
 };
 
+// ============ Header/body alignment sync ============
+// Every table built through makeTable() gets its alignment from the global
+// `th,td{text-align:right}` + `.left{text-align:left}` rules, so its headers and its data always
+// agree. The hand-rolled tables elsewhere in this file don't: several set an inline
+// `text-align:center` on their <td>s while their <th>s fall through to the global right-align,
+// which leaves the header visually offset from the numbers sitting underneath it.
+//
+// Fixing that per-table would mean editing a dozen separate innerHTML strings and would just
+// come back the next time someone hand-rolls a table. Instead this runs after each render and
+// copies each column's BODY alignment onto its HEADER -- and only where the two actually differ,
+// so columns that already agree are left completely untouched.
+//
+// Deliberately conservative: it skips any table whose header row and body rows don't have a
+// 1:1 cell mapping (grouped/colspan headers), and skips any individual column whose own body
+// cells disagree with each other, rather than guessing which one is "right".
+let _alignSyncScheduled = false, _alignSyncRunning = false;
+
+// Chromium reports the initial value as "start"/"end" rather than "left"/"right"; normalize so
+// a header at "left" and a body at "start" aren't treated as a mismatch (they render identically).
+function _normalizedAlign(el){
+  const a = getComputedStyle(el).textAlign;
+  if(a === 'start') return 'left';
+  if(a === 'end') return 'right';
+  return a;
+}
+
+function syncTableHeaderAlignment(root){
+  (root || document).querySelectorAll('table').forEach(table=>{
+    const headRows = table.tHead ? table.tHead.rows : null;
+    if(!headRows || !headRows.length) return;
+    const ths = [...headRows[headRows.length - 1].cells]; // the row directly above the body
+    if(!ths.length || ths.some(th=>th.colSpan > 1)) return;
+    // Body rows that map 1:1 onto the columns -- colspan'd footer/summary rows can't.
+    const bodyRows = [];
+    for(const tbody of table.tBodies){
+      for(const tr of tbody.rows){
+        const cells = [...tr.cells];
+        if(cells.length === ths.length && !cells.some(td=>td.colSpan > 1)) bodyRows.push(tr);
+      }
+    }
+    if(!bodyRows.length) return;
+    // First and last qualifying row: enough to catch a column whose cells disagree, without
+    // reading computed style for every cell of a 30-row table.
+    const sampleRows = bodyRows.length > 1 ? [bodyRows[0], bodyRows[bodyRows.length-1]] : [bodyRows[0]];
+    ths.forEach((th, i)=>{
+      const aligns = sampleRows.map(tr=>_normalizedAlign(tr.cells[i]));
+      if(aligns.some(a=>a !== aligns[0])) return; // body disagrees with itself -- don't guess
+      if(_normalizedAlign(th) !== aligns[0]) th.style.textAlign = aligns[0];
+    });
+  });
+}
+
+// Debounced to one pass per frame: a single page render appends many tables, and there's no
+// value in re-walking the DOM for each one.
+function scheduleHeaderAlignmentSync(){
+  if(_alignSyncScheduled || _alignSyncRunning) return;
+  _alignSyncScheduled = true;
+  requestAnimationFrame(()=>{
+    _alignSyncScheduled = false;
+    _alignSyncRunning = true;   // our own style writes must not re-trigger the observer
+    try { syncTableHeaderAlignment(document); } finally { _alignSyncRunning = false; }
+  });
+}
+
+function startHeaderAlignmentSync(){
+  if(window._alignObserver) return;
+  window._alignObserver = new MutationObserver(()=>scheduleHeaderAlignmentSync());
+  // document.body rather than #main so modals and anything else appended outside the main
+  // column are covered too.
+  window._alignObserver.observe(document.body, {childList:true, subtree:true});
+  scheduleHeaderAlignmentSync();
+}
+
 function makeTable(container, columns, rows, opts){
   opts = opts||{};
   const state = {sortKey: opts.defaultSort||(columns[0]&&columns[0].key), sortDir: opts.defaultDir||'desc', highlightKey: null};
@@ -3054,6 +3127,9 @@ function initClickTracking(){
 }
 
 async function initApp(){
+  // Started before anything renders, so every table the app ever builds -- including the ones
+  // behind the login gate and inside modals -- gets its headers aligned to its data.
+  startHeaderAlignmentSync();
   const urlParams = new URLSearchParams(window.location.search);
   const setupToken = urlParams.get('setupToken');
   if(setupToken){
