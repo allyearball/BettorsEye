@@ -2015,12 +2015,19 @@ function buildTeamSimilarDefenseCell(bet, useL5){
   }
   const metric = teamBetMetricType(bet.betType);
   const threshold = bet.line;
-  const hasLine = threshold!==undefined && threshold!==null && bet.betType!=='moneyline';
+  // A moneyline has no line to clear, which is why it used to render with no hit/miss icon at
+  // all -- but it does have a perfectly well-defined outcome: the margin for that game. A
+  // positive margin means this team won it, so the same green-dot / red-X treatment every other
+  // bet type gets applies cleanly here too.
+  const isMoneyline = bet.betType==='moneyline';
+  const hasLine = threshold!==undefined && threshold!==null && !isMoneyline;
   stats.games.forEach((g,i)=>{
     const row = document.createElement('div'); row.className = 'sim-def-game-row';
     row.style.cssText = 'align-items:center;gap:4px;';
     if(i>0) row.classList.add('sim-def-collapsible');
-    if(hasLine){
+    if(isMoneyline){
+      row.appendChild(vsOpponentHitIcon(g.value > 0)); // g.value is this team's margin in that game
+    } else if(hasLine){
       const hit = bet.side==='under' ? g.value < threshold : g.value >= threshold;
       row.appendChild(vsOpponentHitIcon(hit));
     }
@@ -2974,7 +2981,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
       return;
     }
     if(heightTierData && heightTierData.setHighlightTier) heightTierData.setHighlightTier(result.groupTier);
-    renderShareOfAllowedSection(shareWrap, playerName, team, result.opp, windowMode);
+    renderShareOfAllowedSection(shareWrap, playerName, team, result.opp, windowMode, heightTierData, result.groupTier);
     renderNextOpponentPositionSectionFromResult(nextOppWrap, playerName, team, heightTierData, result);
   });
 
@@ -3972,13 +3979,16 @@ function defAllowedCell(opponentTeam, statKey, pname, team){
 // production-share measurement -- a player who's more (or less) productive per minute than her
 // position-mates would have a real share above (or below) her minutes share. Still a much more
 // specific number than the flat, undifferentiated team-wide Allowed/Gm on its own.
-function computePositionMinutesShare(playerName, team, windowSize){
+// gamesOverride, when given, replaces the window entirely with an explicit list of her game-log
+// entries -- that's how the height-tier breakdown asks the same question over just her games
+// against short/middle/tall opposing groups, without duplicating any of this maths.
+function computePositionMinutesShare(playerName, team, windowSize, gamesOverride){
   const bucket = positionBucket(getPlayerPosition(playerName, team));
   if(!bucket) return null;
   const key = playerName+'|'+team;
   const rec = DATA.fullPlayerLogs[key];
   if(!rec) return null;
-  const herGames = windowSlice(rec.log.filter(g=>!g.dnp), windowSize); // her own last N games actually played, oldest-first same as windowSlice's convention elsewhere
+  const herGames = gamesOverride || windowSlice(rec.log.filter(g=>!g.dnp), windowSize); // her own last N games actually played, oldest-first same as windowSlice's convention elsewhere
   if(!herGames.length) return null;
   let herMin = 0, groupMin = 0;
   herGames.forEach(g=>{
@@ -3997,8 +4007,8 @@ function computePositionMinutesShare(playerName, team, windowSize){
 // returns a ready-to-display node (or null if either input is unavailable). Uses the
 // season-long defense rank for 'all'/undefined, and the matching windowed version (L5/L10/L15)
 // otherwise, same distinction the rest of the app already makes for Allowed/Gm and DvP.
-function buildHerShareNode(playerName, team, opponentTeam, statKey, windowSize){
-  const shareData = computePositionMinutesShare(playerName, team, windowSize);
+function buildHerShareNode(playerName, team, opponentTeam, statKey, windowSize, gamesOverride){
+  const shareData = computePositionMinutesShare(playerName, team, windowSize, gamesOverride);
   if(!shareData) return null;
   const rank = (!windowSize || windowSize==='all')
     ? getDefenseRank(opponentTeam, statKey, shareData.bucket)
@@ -4017,13 +4027,13 @@ function buildHerShareNode(playerName, team, opponentTeam, statKey, windowSize){
 // playing time, which is exactly the gap the minutes-share version's info icon flags -- but
 // it's read from her own team's recent production, same window either way, not a measurement of
 // the upcoming opponent (no app has play-by-play tracking of who guarded whom).
-function computePositionProductionShare(playerName, team, statKey, windowSize){
+function computePositionProductionShare(playerName, team, statKey, windowSize, gamesOverride){
   const bucket = positionBucket(getPlayerPosition(playerName, team));
   if(!bucket) return null;
   const key = playerName+'|'+team;
   const rec = DATA.fullPlayerLogs[key];
   if(!rec) return null;
-  const herGames = windowSlice(rec.log.filter(g=>!g.dnp), windowSize);
+  const herGames = gamesOverride || windowSlice(rec.log.filter(g=>!g.dnp), windowSize);
   if(!herGames.length) return null;
   function statVal(g){ return statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[statKey]||0); }
   let herStat = 0, groupStat = 0;
@@ -4039,8 +4049,8 @@ function computePositionProductionShare(playerName, team, statKey, windowSize){
   if(groupStat<=0) return null;
   return { share: herStat/groupStat, herStat, groupStat, gp: herGames.length, bucket };
 }
-function buildHerProductionShareNode(playerName, team, opponentTeam, statKey, windowSize){
-  const shareData = computePositionProductionShare(playerName, team, statKey, windowSize);
+function buildHerProductionShareNode(playerName, team, opponentTeam, statKey, windowSize, gamesOverride){
+  const shareData = computePositionProductionShare(playerName, team, statKey, windowSize, gamesOverride);
   if(!shareData) return null;
   const rank = (!windowSize || windowSize==='all')
     ? getDefenseRank(opponentTeam, statKey, shareData.bucket)
@@ -4240,19 +4250,18 @@ function heightTierStatsForWindow(heightData, windowSize){
 // buildHeightTierSection (which, in Compact mode, uses just the resulting tier to decide which
 // one of Shortest/Middle/Tallest is most relevant to show by default -- the one matching her
 // actual next opponent, rather than all three at once).
-async function computeNextOpponentGroupTier(playerName, team, heightTierData){
-  const bucket = positionBucket(getPlayerPosition(playerName, team));
-  if(!bucket) return null;
-  const opp = await fetchNextOpponent(team);
-  if(!opp) return null;
-
+// The synchronous core of computeNextOpponentGroupTier: given an opponent that's ALREADY known,
+// works out that team's rotation at her position, each player's tier against her own season
+// cutoffs, and the minutes-weighted tier of the group as a whole. Split out so the Specials tab
+// (which knows the opponent from the bet itself) can ask the same question without going through
+// the async next-opponent lookup.
+function computePositionGroupTierVsOpponent(bucket, opp, heightTierData){
   function tierFor(heightIn){
     if(!heightTierData || heightIn===undefined || heightIn===null) return null;
     if(heightIn < heightTierData.p33) return 'shortest';
     if(heightIn <= heightTierData.p67) return 'middle';
     return 'tallest';
   }
-
   const rows = Object.keys(DATA.fullPlayerLogs)
     .filter(k => k.slice(k.lastIndexOf('|')+1) === opp)
     .map(k=>{
@@ -4267,7 +4276,7 @@ async function computeNextOpponentGroupTier(playerName, team, heightTierData){
       const note = inj ? noteworthyInjuryStatus(inj.status) : null;
       const status = note==='out' ? 'Out' : (note==='dayToDay' ? 'Day-To-Day' : 'Healthy');
       const tier = tierFor(bio.heightIn);
-      return { player: pname, avgMin, heightIn: bio.heightIn, height: bio.height || '\u2014', tier: tier ? tier.charAt(0).toUpperCase()+tier.slice(1) : null, status };
+      return { player: pname, avgMin, heightIn: bio.heightIn, height: bio.height || '—', tier: tier ? tier.charAt(0).toUpperCase()+tier.slice(1) : null, status };
     }).filter(Boolean).sort((a,b)=>b.avgMin-a.avgMin);
 
   const withHeight = rows.filter(r=>r.heightIn!==undefined && r.heightIn!==null && r.avgMin>0);
@@ -4279,6 +4288,15 @@ async function computeNextOpponentGroupTier(playerName, team, heightTierData){
   }
   return { bucket, opp, rows, groupTier, weightedHeight };
 }
+
+async function computeNextOpponentGroupTier(playerName, team, heightTierData){
+  const bucket = positionBucket(getPlayerPosition(playerName, team));
+  if(!bucket) return null;
+  const opp = await fetchNextOpponent(team);
+  if(!opp) return null;
+  return computePositionGroupTierVsOpponent(bucket, opp, heightTierData);
+}
+
 
 async function renderNextOpponentPositionSection(container, playerName, team, heightTierData, windowMode){
   container.textContent = 'Looking up next opponent\u2026';
@@ -4345,7 +4363,69 @@ function renderNextOpponentPositionSectionFromResult(container, playerName, team
 // New standalone section: "Estimated Share of Allowed/Gm vs [Opponent]" -- extracted out of
 // what used to live inside the Next Opponent section above, now its own table so it can sit
 // between Production vs Opposing Position Height and Next Opponent \u2014 Same Position, per request.
-function renderShareOfAllowedSection(container, playerName, team, opp, windowMode){
+// Both share estimates, broken out by the height tier of the opposing position group she faced.
+// Same calculation as the two headline numbers -- her share of her position group, applied to
+// this opponent's Allowed/Gm -- just measured over only her games against short / middle / tall
+// opposing groups instead of over the window as a whole. The Allowed/Gm side is unchanged (it's
+// a property of the opponent, not of the tier); what varies by tier is HER share, which is the
+// point: a guard whose production share climbs against taller opposing groups reads differently
+// than one whose share collapses.
+function buildShareByTierTable(container, playerName, team, opp, windowMode, heightTierData, highlightTier, mode){
+  const TIERS = [{key:'shortest', label:'Shortest'}, {key:'middle', label:'Middle'}, {key:'tallest', label:'Tallest'}];
+  const STATS = [['pts','PTS'],['reb','REB'],['ast','AST'],['tpm','3PM'],['pra','PRA']];
+  const rec = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!heightTierData || !heightTierData.allGames || !rec) return false;
+
+  // The tier data is keyed by date (she plays at most one game a day), which is the same
+  // assumption the tier detail page's own game-exclusion checkboxes already make.
+  const windowed = windowMode && windowMode!=='all'
+    ? heightTierData.allGames.slice(-windowMode)
+    : heightTierData.allGames;
+  const datesByTier = {};
+  TIERS.forEach(t=>{ datesByTier[t.key] = new Set(); });
+  windowed.forEach(g=>{ if(datesByTier[g.tier]) datesByTier[g.tier].add(g.date); });
+  const logByDate = {};
+  rec.log.filter(g=>!g.dnp).forEach(g=>{ logByDate[g.date] = g; });
+
+  const wrap = document.createElement('div'); wrap.className='table-wrap'; wrap.style.marginTop='8px';
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  thead.innerHTML = '<tr><th class="left">Opposing group height</th><th>GP</th>'
+    + STATS.map(([,l])=>`<th>${l}</th>`).join('') + '</tr>';
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  let anyRow = false;
+  TIERS.forEach(t=>{
+    const games = [...datesByTier[t.key]].map(d=>logByDate[d]).filter(Boolean);
+    const tr = document.createElement('tr');
+    if(highlightTier === t.key){
+      // Same visual language as the tier outline on the Production vs. Opposing Position Height
+      // tables above: a box marks her next opponent's own group classification.
+      tr.style.cssText = 'outline:2px solid var(--navy2);outline-offset:-2px;font-weight:700;';
+    }
+    const tdName = document.createElement('td'); tdName.className='left'; tdName.textContent = t.label;
+    tr.appendChild(tdName);
+    const tdGp = document.createElement('td'); tdGp.textContent = games.length; tr.appendChild(tdGp);
+    STATS.forEach(([statKey])=>{
+      const td = document.createElement('td');
+      const node = games.length
+        ? (mode==='minutes'
+            ? buildHerShareNode(playerName, team, opp, statKey, windowMode, games)
+            : buildHerProductionShareNode(playerName, team, opp, statKey, windowMode, games))
+        : null;
+      if(node){ td.appendChild(node); anyRow = true; } else { td.textContent = '—'; }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  if(!anyRow) return false;
+  container.appendChild(wrap);
+  return true;
+}
+
+function renderShareOfAllowedSection(container, playerName, team, opp, windowMode, heightTierData, highlightTier){
   container.innerHTML = '';
   const oppFull = FULL_TEAM_NAME[opp] || opp;
   // "Her Share" of the position group's Allowed/Gm -- matches whichever window (L5/L10/L15/
@@ -4368,6 +4448,7 @@ function renderShareOfAllowedSection(container, playerName, team, opp, windowMod
     shareRow.appendChild(item);
   });
   container.appendChild(shareRow);
+  buildShareByTierTable(container, playerName, team, opp, windowMode, heightTierData, highlightTier, 'minutes');
 
   const prodShareTitle = document.createElement('div'); prodShareTitle.style.cssText = 'font-weight:700;color:var(--navy2);font-size:12.5px;margin-top:12px;';
   prodShareTitle.textContent = `Her Estimated Share of ${oppFull}'s Allowed/Gm (by Production)`;
@@ -4383,6 +4464,7 @@ function renderShareOfAllowedSection(container, playerName, team, opp, windowMod
     prodShareRow.appendChild(item);
   });
   container.appendChild(prodShareRow);
+  buildShareByTierTable(container, playerName, team, opp, windowMode, heightTierData, highlightTier, 'production');
 }
 
 function buildHeightTierSection(container, playerName, team, pageWindowMode, titleEl){
@@ -4538,6 +4620,10 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   // was made sortable. Persists across re-sorts (not reset by clicking a column), but resets
   // whenever the active tier or window changes, since that's effectively a different table.
   let sortKey = 'date', sortDir = 'desc';
+  // Her next game's O/U lines, shown as a row under the header and used to colour the stat
+  // cells. Populated by an async lookup below; null until it lands (and stays null if there
+  // are no lines posted yet), which the row renders as "loading..." / "none posted".
+  let currentLines = null, linesLoaded = false;
   // Which games have been unchecked (excluded from the footer totals), keyed by date since a
   // player only plays one game per day -- tracked outside renderTable so re-sorting doesn't
   // silently re-check everything. Reset (see windowOptions/tierOptions handlers below) when the
@@ -4613,6 +4699,38 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     const tbody = document.createElement('tbody');
     const checkboxes = [];
 
+    // ---- Today's betting lines, pinned directly under the header ----
+    // Lives in the tbody as its own first row and is re-emitted on every render, so it stays
+    // put no matter which column the table is sorted by. It carries a colSpan'd label like the
+    // summary rows do, which also keeps it out of the alignment/sticky passes' 1:1 cell mapping.
+    const lineFor = key => (currentLines && currentLines.lines
+      && currentLines.lines[key] !== null && currentLines.lines[key] !== undefined)
+      ? currentLines.lines[key] : null;
+    const linesTr = document.createElement('tr');
+    linesTr.style.cssText = 'background:#fff8e6;font-weight:700;';
+    const tdLineLabel = document.createElement('td');
+    tdLineLabel.colSpan = LEAD_COLS.length; tdLineLabel.className = 'left';
+    tdLineLabel.style.cssText = 'padding:6px 8px;font-size:11.5px;';
+    if(!linesLoaded){
+      tdLineLabel.textContent = 'Today’s line — loading…';
+    } else if(!currentLines || !Object.values(currentLines.lines || {}).some(v=>v!==null && v!==undefined)){
+      // Covers both "the lookup came back empty" and "it found her game but no lines posted yet".
+      tdLineLabel.textContent = 'Today’s line — none posted';
+    } else {
+      const oppFull = FULL_TEAM_NAME[currentLines.opponent] || currentLines.opponent || '';
+      tdLineLabel.textContent = `Today’s line vs ${oppFull}${currentLines.date ? ' (' + currentLines.date + ')' : ''}`;
+    }
+    linesTr.appendChild(tdLineLabel);
+    STAT_COLS.forEach(col=>{
+      const td = document.createElement('td');
+      td.style.cssText = 'text-align:center;padding:6px 8px;';
+      const ln = lineFor(col.key);
+      td.textContent = ln === null ? '—' : String(ln);
+      if(ln === null) td.style.color = 'var(--sub)';
+      linesTr.appendChild(td);
+    });
+    tbody.appendChild(linesTr);
+
     games.forEach(g=>{
       const tr = document.createElement('tr'); tr.style.cursor='pointer';
       const tdCb = document.createElement('td');
@@ -4645,6 +4763,14 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
           td.textContent = (v===null || v===undefined) ? '\u2014' : (v*100).toFixed(1)+'%';
         } else {
           td.textContent = (v===null || v===undefined) ? '\u2014' : v;
+        }
+        // Green when she cleared today's line for this stat that night, red when she didn't.
+        // Only the five stats a line actually exists for (PTS/REB/AST/3PM/PRA) are ever tinted;
+        // everything else is left alone rather than coloured against nothing.
+        const ln = lineFor(col.key);
+        if(ln !== null && typeof v === 'number'){
+          if(v > ln){ td.style.background = 'var(--greenbg)'; td.style.color = 'var(--green)'; td.style.fontWeight = '700'; }
+          else if(v < ln){ td.style.background = 'var(--redbg)'; td.style.color = 'var(--red)'; td.style.fontWeight = '700'; }
         }
         tr.appendChild(td);
       });
@@ -4736,6 +4862,14 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   main.insertBefore(windowRow, tierRow);
 
   renderTable();
+
+  // Async: her next game's O/U lines. Re-renders once they land rather than blocking the
+  // initial paint -- same pattern buildHeightTierSection already uses for the same data.
+  fetchHerNextGameLines(playerName, team).then(result=>{
+    currentLines = result;
+    linesLoaded = true;   // set even when result is null, so the row stops saying "loading"
+    renderTable();
+  });
 }
 
 
@@ -5476,17 +5610,22 @@ async function renderHomePage(){
   // analytics-ranked table below the original hit-rate-ranked one.
   const contentDiv2 = document.createElement('div');
   contentDiv2.style.marginTop = '24px';
+  // Third tab: the four-bar "Specials" shortlist (see computeSpecialsBets).
+  const contentDiv3 = document.createElement('div');
+  contentDiv3.style.marginTop = '24px';
   function paintHomeTabVisibility(){
     contentDiv.style.display = activeHomeTab==='standard' ? '' : 'none';
     contentDiv2.style.display = activeHomeTab==='advanced' ? '' : 'none';
+    contentDiv3.style.display = activeHomeTab==='specials' ? '' : 'none';
   }
   main.appendChild(renderStickyBottomBar(
-    [{label:'Standard', value:'standard'}, {label:'Advanced', value:'advanced'}],
+    [{label:'Standard', value:'standard'}, {label:'Advanced', value:'advanced'}, {label:'Specials', value:'specials'}],
     activeHomeTab,
     (val)=>{ activeHomeTab = val; paintHomeTabVisibility(); }
   ));
   main.appendChild(contentDiv);
   main.appendChild(contentDiv2);
+  main.appendChild(contentDiv3);
   paintHomeTabVisibility();
 
   // Captures the WHOLE table -- every row and every column, including ones off-screen or
@@ -5571,6 +5710,7 @@ async function renderHomePage(){
       const sharedKeys = new Set([...stdKeysSet].filter(k => advKeysSet.has(k)));
       renderTopBetsTable(contentDiv, cachedForToday, 30, liveGames, sharedKeys, selectedBook);
       renderAdvancedTopBetsTable(contentDiv2, cachedForToday, 30, liveGames, sharedKeys, selectedBook);
+      renderSpecialsTable(contentDiv3, cachedForToday, liveGames, selectedBook);
     };
     recompute();
     maybeSnapshotTodaysTopBets(cachedForToday); // fire-and-forget; see its own comment for the noon-ET logic
@@ -7212,6 +7352,193 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   }
   renderAdvTable();
 
+  wrap.appendChild(table);
+  container.appendChild(wrap);
+}
+
+// ==================== "Specials" (third Top Bets tab) ====================
+// A deliberately narrow list. A bet only appears if it clears ALL FOUR of:
+//   1. hit at least 50% of her last 10 games
+//   2. hit at least 50% of her last 15 games
+//   3. hit at least 80% of her games THIS SEASON against opposing position groups in the same
+//      height tier (shortest / middle / tallest) as the group she's facing tonight -- the same
+//      minutes-weighted "Group" classification the player page's Next Opponent section shows
+//   4. priced -135 or better (i.e. -135, -120, +140 all qualify; -140 does not)
+// Player props only: qualifier 3 is defined in terms of the defender's height tier, which has no
+// meaning for a moneyline, spread or total.
+const SPECIALS_MIN_PRICE = -135;
+const SPECIALS_RECENT_BAR = 0.50;   // qualifiers 1 and 2
+const SPECIALS_TIER_BAR = 0.80;     // qualifier 3
+
+// computeHeightTierData walks her whole log and every one of those games' box scores, so it is
+// far too expensive to call once per candidate leg. Memoised for the life of the page; DATA never
+// changes after load.
+const _specialsTierDataCache = {};
+function cachedHeightTierData(playerName, team){
+  const key = playerName+'|'+team;
+  if(!(key in _specialsTierDataCache)){
+    let d = null;
+    try{ d = computeHeightTierData(playerName, team, CURRENT_SEASON); }catch(e){ d = null; }
+    _specialsTierDataCache[key] = (d && d.allGames) ? d : null;
+  }
+  return _specialsTierDataCache[key];
+}
+const _specialsGroupTierCache = {};
+function cachedOpponentGroupTier(playerName, team, opp, heightTierData){
+  const key = playerName+'|'+team+'|'+opp;
+  if(!(key in _specialsGroupTierCache)){
+    const bucket = positionBucket(getPlayerPosition(playerName, team));
+    let res = null;
+    if(bucket && opp){
+      try{ res = computePositionGroupTierVsOpponent(bucket, opp, heightTierData); }catch(e){ res = null; }
+    }
+    _specialsGroupTierCache[key] = res;
+  }
+  return _specialsGroupTierCache[key];
+}
+
+// Side-aware, unlike hitRateFor(), which only ever counts OVERs. An Under hit is computed
+// directly rather than as (gp - overHits), so a game with a missing value for that stat is
+// excluded from both the numerator and the denominator instead of silently counting as a hit.
+function propHitRateSided(playerName, team, statKey, line, side, windowSize){
+  const pl = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!pl) return null;
+  const threshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
+  const played = windowSlice(pl.log, windowSize).filter(g=>!g.dnp);
+  const vals = played.map(g=>statValue(g, statKey)).filter(v=>v!==null && v!==undefined);
+  if(!vals.length) return {gp:0, hits:0, rate:0, found:true};
+  const hits = vals.filter(v => side==='under' ? v < threshold : v >= threshold).length;
+  return {gp: vals.length, hits, rate: hits/vals.length, found:true};
+}
+
+// Qualifier 3: the same bet, measured over only her season games against this height tier.
+function tierHitRateForLeg(leg, tier, heightTierData){
+  if(!heightTierData || !tier) return null;
+  const games = heightTierData.allGames.filter(g=>g.tier===tier);
+  if(!games.length) return {gp:0, hits:0, rate:0, found:true, tier};
+  const threshold = Number.isInteger(leg.line) ? leg.line+1 : Math.ceil(leg.line);
+  const vals = games.map(g => leg.statKey==='pra' ? g.pra : g[leg.statKey]).filter(v=>v!==null && v!==undefined);
+  if(!vals.length) return {gp:0, hits:0, rate:0, found:true, tier};
+  const hits = vals.filter(v => leg.side==='under' ? v < threshold : v >= threshold).length;
+  return {gp: vals.length, hits, rate: hits/vals.length, found:true, tier};
+}
+
+function computeSpecialsBets(cachedFetch, selectedBook){
+  selectedBook = selectedBook || 'draftkings';
+  const todayStr = new Date().toDateString();
+  const now = new Date();
+  const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
+  if(!todaysGames.length) return {todaysGames, bets: []};
+
+  const out = [];
+  todaysGames.forEach(({ev, detail})=>{
+    const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+    const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+    const dk = getBookmakerData(ev, selectedBook);
+    const dkDetail = detail ? getBookmakerData(detail, selectedBook) : null;
+    // gatherAllCapturedLegs (not gatherCandidateLegs) on purpose: it returns EVERY priced
+    // outcome with no hit-rate bar of its own, so the only filters applied are the four above.
+    const markets = Object.assign({}, marketsByKey(dk), marketsByKey(dkDetail));
+    const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+    const gameDate = toEasternDateStr(ev.commence_time);
+    let legs = [];
+    try{ legs = gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gameDate); }catch(e){ legs = []; }
+    legs.forEach(leg=>{
+      if(leg.betType!=='player_prop' && leg.betType!=='player_prop_alt') return;
+      if(!leg.player || !leg.team || leg.line===undefined || leg.line===null) return;
+      if(!(leg.price >= SPECIALS_MIN_PRICE)) return;                       // qualifier 4
+
+      const hr10 = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 10);
+      if(!hr10 || !hr10.gp || hr10.rate < SPECIALS_RECENT_BAR) return;     // qualifier 1
+      const hr15 = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 15);
+      if(!hr15 || !hr15.gp || hr15.rate < SPECIALS_RECENT_BAR) return;     // qualifier 2
+
+      const tierData = cachedHeightTierData(leg.player, leg.team);
+      if(!tierData) return;
+      const opp = leg.team === homeShort ? awayShort : homeShort;
+      const groupInfo = cachedOpponentGroupTier(leg.player, leg.team, opp, tierData);
+      if(!groupInfo || !groupInfo.groupTier) return;
+      const hrTier = tierHitRateForLeg(leg, groupInfo.groupTier, tierData);
+      if(!hrTier || !hrTier.gp || hrTier.rate < SPECIALS_TIER_BAR) return; // qualifier 3
+
+      out.push(Object.assign({}, leg, {
+        game: gameLabel, opponent: opp, hr10, hr15, hrTier,
+        groupTier: groupInfo.groupTier, groupHeightIn: groupInfo.weightedHeight,
+      }));
+    });
+  });
+
+  // Strongest tier record first (that's the distinguishing qualifier), then the weaker of the
+  // two recent windows, then price as a final tiebreak.
+  out.sort((a,b)=> (b.hrTier.rate - a.hrTier.rate)
+    || (Math.min(b.hr10.rate, b.hr15.rate) - Math.min(a.hr10.rate, a.hr15.rate))
+    || (b.price - a.price));
+  return {todaysGames, bets: out};
+}
+
+function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
+  container.innerHTML = '';
+  const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
+  sec.textContent = '💎 Specials';
+  container.appendChild(sec);
+  appendDefIcon(sec, `A deliberately short list — a player prop only shows up here if it clears <b>all four</b> bars at once: hit in at least ${Math.round(SPECIALS_RECENT_BAR*100)}% of her last 10 games, at least ${Math.round(SPECIALS_RECENT_BAR*100)}% of her last 15, at least ${Math.round(SPECIALS_TIER_BAR*100)}% of her games this season against opposing position groups in the same height tier she faces tonight, and priced ${SPECIALS_MIN_PRICE} or better. The height tier is the same minutes-weighted "Group" classification the player page's Next Opponent section shows — shortest / middle / tallest, measured against her own season terciles. Team bets can't appear here: the height-tier qualifier has no meaning for a moneyline, spread or total. Small samples still apply — an 80% tier record over 5 games is 4-of-5, not a probability.`);
+
+  const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
+  note.textContent = `Only today’s games still inside the pregame-through-Q1 window. Sorted by tier hit rate, then by the weaker of the L10/L15 windows.`;
+  container.appendChild(note);
+
+  const {todaysGames, bets} = computeSpecialsBets(cachedFetch, selectedBook);
+  if(!todaysGames.length){
+    const m = document.createElement('div'); m.style.cssText='font-size:13px;color:var(--sub);';
+    m.textContent = 'None of today’s games are inside their pregame-through-Q1 window right now.';
+    container.appendChild(m); return;
+  }
+  if(!bets.length){
+    const m = document.createElement('div'); m.style.cssText='font-size:13px;color:var(--sub);';
+    m.textContent = `Nothing on today’s slate clears all four Specials bars right now (${Math.round(SPECIALS_RECENT_BAR*100)}% L10, ${Math.round(SPECIALS_RECENT_BAR*100)}% L15, ${Math.round(SPECIALS_TIER_BAR*100)}% vs tonight’s height tier, ${SPECIALS_MIN_PRICE} or better).`;
+    container.appendChild(m); return;
+  }
+
+  const countDiv = document.createElement('div'); countDiv.className='footnote'; countDiv.style.marginBottom='6px';
+  countDiv.textContent = `${bets.length} bet(s) qualify.`;
+  container.appendChild(countDiv);
+
+  const wrap = document.createElement('div'); wrap.className='table-wrap';
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  thead.innerHTML = '<tr><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
+    + '<th>L10</th><th>L15</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
+    + '<th class="left">Sportsbook</th><th></th></tr>';
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  const TIER_TITLE = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
+  bets.forEach(bet=>{
+    const tr = document.createElement('tr');
+    const tdBet = document.createElement('td'); tdBet.className='left';
+    tdBet.appendChild(buildLegLabelNode(bet));
+    tr.appendChild(tdBet);
+    const tdGame = document.createElement('td'); tdGame.className='left';
+    tdGame.style.color='var(--sub)'; tdGame.textContent = bet.game;
+    tr.appendChild(tdGame);
+    const tdPrice = document.createElement('td'); tdPrice.style.fontWeight='700';
+    tdPrice.textContent = fmtAmerican(bet.price); tr.appendChild(tdPrice);
+    const tdL10 = document.createElement('td'); tdL10.appendChild(singleWindowChip('', bet.hr10)); tr.appendChild(tdL10);
+    const tdL15 = document.createElement('td'); tdL15.appendChild(singleWindowChip('', bet.hr15)); tr.appendChild(tdL15);
+    const tdGroup = document.createElement('td'); tdGroup.className='left';
+    tdGroup.textContent = `${TIER_TITLE[bet.groupTier] || bet.groupTier}`
+      + (bet.groupHeightIn ? ` (${inchesToHeightStr(bet.groupHeightIn) || ''})` : '');
+    tr.appendChild(tdGroup);
+    const tdTier = document.createElement('td'); tdTier.appendChild(singleWindowChip('', bet.hrTier)); tr.appendChild(tdTier);
+    const tdBook = document.createElement('td'); tdBook.className='left';
+    tdBook.style.cssText='color:var(--sub);font-size:11px;';
+    tdBook.textContent = bookSourceLabel({price:bet.price, book:bet.book}, selectedBook) || '';
+    tr.appendChild(tdBook);
+    const tdTrack = document.createElement('td');
+    tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 5));
+    tr.appendChild(tdTrack);
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
   wrap.appendChild(table);
   container.appendChild(wrap);
 }
