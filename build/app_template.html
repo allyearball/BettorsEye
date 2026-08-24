@@ -1902,7 +1902,7 @@ function renderGamePage(game, returnTo){
   appendDefIcon(head.querySelector('#gamePageInfoIcon'), `Full box score, each team in its own table with team totals at the bottom. Click any column header to sort, or a player's name to see her full recent game log.`);
   const back = document.createElement('button'); back.className='addbtn'; back.textContent='← Back';
   back.style.marginBottom='14px';
-  back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderTeamPage(game.home, game.date ? game.date.slice(0,4) : undefined); });
+  back.addEventListener('click', ()=>navBack(()=>{ if(returnTo) returnTo(); else renderTeamPage(game.home, game.date ? game.date.slice(0,4) : undefined); }));
   main.appendChild(back);
 
   buildBoxScoreContent(main, game);
@@ -2922,7 +2922,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   main.innerHTML = '';
 
   const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
-  back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderLeagueStatsPage(); });
+  back.addEventListener('click', ()=>navBack(()=>{ if(returnTo) returnTo(); else renderLeagueStatsPage(); }));
   main.appendChild(back);
 
   if(!fullLogObj){
@@ -3507,6 +3507,155 @@ async function initApp(){
 
   renderHomePage();
 }
+
+/* ================= Browser Back / Forward =================
+   This is a single page, so until now the browser Back button (and the iOS swipe-back gesture /
+   Android system back) walked straight out of the app to whatever was in the address bar before
+   it -- usually a search page -- no matter how deep you'd navigated inside. Every page-level
+   render function is wrapped below so in-app navigation pushes a real history entry, and
+   popstate replays it.
+
+   WHY WRAPPING INSTEAD OF EDITING CALL SITES: top-level function declarations become properties
+   of the global object, and a bare `renderTeamPage(...)` call resolves through it, so
+   reassigning window.renderTeamPage changes what every existing call reaches. ~40 call sites,
+   plus the `lastRender` thunks and every inline click handler, are covered without touching one
+   of them.
+
+   WHY THE URL DOESN'T CHANGE: pushState is passed the current href deliberately. Encoding page
+   state into the path or hash would collide with the ?setupToken=/?resetToken=/?verifyToken=
+   entry points initApp() reads, and would advertise deep links that a hard reload can't restore
+   (the entries live in memory, not in the URL). Back/forward is the goal here, not shareable
+   per-page URLs -- those would need a real serialize/parse layer for every page's arguments. */
+const HISTORY_PAGES = ['renderHomePage','renderOddsPage','renderLeagueStatsPage','renderTeamPage',
+  'renderTeamHeightPage','renderGamePage','renderPlayerPage','renderHeightTierDetailPage',
+  'renderLineHistoryPage','renderAppTrackerPage','renderBetTrackerPage','renderSettingsPage',
+  'renderAdminPage'];
+// Deliberately NOT in the list: renderAccountSetupPage / renderResetPasswordPage /
+// renderVerifyEmailPage (one-shot token landings -- backing into a consumed token is worse than
+// leaving the site) and renderAuthGate (backing into a login form you've already passed).
+
+const navEntries = [];   // {name, args, active} -- args held in memory, history.state holds only the index
+let navIdx = -1;
+let navReplaying = false; // suppresses re-recording while a popstate-driven render runs
+let navSkipPops = 0;      // popstate events to swallow (from history.back() we triggered ourselves)
+
+// Equality key for "is this the same page I'm already on". Functions collapse to 'fn' because
+// the only function arguments are `returnTo` breadcrumbs, which don't change which page you're
+// looking at.
+function navArgKey(a){
+  if(typeof a === 'function') return 'fn';
+  if(a === null || a === undefined) return '';
+  if(typeof a === 'object'){
+    if(a.gameId != null) return 'g' + a.gameId;
+    if(a.id != null) return 'i' + a.id;
+    try { return JSON.stringify(a).slice(0, 160); } catch(e){ return 'obj'; }
+  }
+  return String(a);
+}
+// Trailing empty args are trimmed so that renderTeamPage('Fever') and the `lastRender` thunk's
+// renderTeamPage('Fever', undefined, undefined, undefined) hash to the same page -- without this
+// an in-app "Back" button (which always calls the fully-argumented thunk) reads as a brand new
+// page and stacks a forward duplicate instead of moving the history pointer back.
+function navKey(name, args){
+  const parts = [...args].map(navArgKey);
+  while(parts.length && parts[parts.length-1] === '') parts.pop();
+  return name + '|' + parts.join('~');
+}
+
+// The top bar / bottom tab highlight is set by buildTopLinks()'s goHome/goExplorer/... handlers
+// BEFORE they call the render function, not by the render function itself -- so calling a render
+// function directly on a pop would replay the page with the wrong tab lit. Captured here and
+// re-applied on the way back.
+function navCaptureActive(){
+  const t = document.querySelector('#toplinks button.active');
+  const b = document.querySelector('#bottomTabBar button.active');
+  return {top: t ? [...document.querySelectorAll('#toplinks button')].indexOf(t) : -1,
+          tab: b ? b.id : ''};
+}
+function navRestoreActive(active){
+  if(!active) return;
+  const tops = [...document.querySelectorAll('#toplinks button')];
+  tops.forEach(b=>b.classList.remove('active'));
+  [...document.querySelectorAll('#bottomTabBar button')].forEach(b=>b.classList.remove('active'));
+  if(active.top >= 0 && tops[active.top]) tops[active.top].classList.add('active');
+  const tabBtn = active.tab && document.getElementById(active.tab);
+  if(tabBtn) tabBtn.classList.add('active');
+}
+
+function navRecord(name, args){
+  if(navReplaying) return;
+  const key = navKey(name, args);
+  const cur = navEntries[navIdx];
+  // Re-rendering the page you're already on (the Top Bets refresh button, the post-login
+  // `lastRender()` refresh) must not stack up duplicate history entries.
+  if(cur && cur.key === key){ cur.args = args; return; }
+  // A render that lands exactly on the previous entry IS a back navigation -- that's what every
+  // in-app "← Back" button does via its returnTo thunk. Move the real history pointer with it
+  // instead of pushing a forward duplicate, otherwise browser-Back after an in-app Back would
+  // take you deeper rather than out.
+  const prev = navEntries[navIdx - 1];
+  if(prev && prev.key === key){
+    navIdx--; navEntries[navIdx].args = args;
+    navSkipPops++;      // the render is already happening; ignore the popstate this fires
+    history.back();
+    return;
+  }
+  const isFirst = navIdx < 0;
+  navEntries.length = navIdx + 1;   // navigating after going back truncates the forward entries
+  navEntries.push({name, args, key, active: navCaptureActive()});
+  navIdx = navEntries.length - 1;
+  try {
+    // The landing page REPLACES the entry installHistoryNav() stamped rather than pushing a
+    // second one -- otherwise Back from the home page would replay the home page once before
+    // finally leaving the site.
+    if(isFirst) history.replaceState({navIdx}, '', location.href);
+    else history.pushState({navIdx}, '', location.href);
+  } catch(e){ /* Safari throttles pushState; navigation still works, just without the entry */ }
+}
+
+// What every in-app "← Back" button now calls. Delegating to real browser history rather than
+// invoking the returnTo thunk directly keeps the two in lockstep: otherwise an in-app Back would
+// render the previous page while the browser's own history pointer stayed put, so the next press
+// of the browser Back button would jump FORWARD into the page you'd just left. The thunk is kept
+// as the fallback for the one case history can't serve -- the deep-linked first page, where
+// there's nothing behind us but the site the user arrived from.
+function navBack(fallback){
+  if(navIdx > 0){ history.back(); return; }
+  if(typeof fallback === 'function') fallback();
+}
+
+function installHistoryNav(){
+  HISTORY_PAGES.forEach(name=>{
+    const orig = window[name];
+    if(typeof orig !== 'function') return;
+    window[name] = function(...args){
+      navRecord(name, args);
+      return orig.apply(this, args);
+    };
+    window[name]._orig = orig;
+  });
+  // Entry 0, so the first Back press from the landing page is the one that leaves the site.
+  try { history.replaceState({navIdx: 0}, '', location.href); } catch(e){}
+
+  window.addEventListener('popstate', (e)=>{
+    if(navSkipPops > 0){ navSkipPops--; return; }
+    const idx = e.state && typeof e.state.navIdx === 'number' ? e.state.navIdx : 0;
+    const entry = navEntries[idx];
+    // After a hard reload the in-memory entries are gone while the browser's history isn't.
+    // Nothing sensible to replay, so leave the page as-is rather than guessing.
+    if(!entry || !entry.name) return;
+    navIdx = idx;
+    navReplaying = true;
+    try {
+      navRestoreActive(entry.active);
+      nav.innerHTML = ''; nav.style.display = 'none';
+      const fn = window[entry.name] && window[entry.name]._orig;
+      if(fn) fn.apply(null, entry.args);
+    } finally { navReplaying = false; }
+  });
+}
+installHistoryNav();
+
 initApp();
 initClickTracking();
 
@@ -4703,7 +4852,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   removeGameWindowStickyBar();
 
   const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
-  back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderPlayerPage(playerName, team); });
+  back.addEventListener('click', ()=>navBack(()=>{ if(returnTo) returnTo(); else renderPlayerPage(playerName, team); }));
   main.appendChild(back);
 
   // Season selector -- lets you view this same breakdown for a prior year, or "All" for her
@@ -10269,7 +10418,7 @@ async function renderLineHistoryPage(leg, returnTo){
   main.innerHTML = '';
   removeGameWindowStickyBar();
   const back = document.createElement('button'); back.className='backbtn'; back.textContent='\u2190 Back';
-  back.addEventListener('click', ()=>{ if(returnTo) returnTo(); else renderHomePage(); });
+  back.addEventListener('click', ()=>navBack(()=>{ if(returnTo) returnTo(); else renderHomePage(); }));
   main.appendChild(back);
 
   const head = document.createElement('div'); head.className='pagehead';
