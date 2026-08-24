@@ -3891,6 +3891,14 @@ const PROP_MARKET_LABEL = {
   player_points_alternate: 'Points', player_rebounds_alternate: 'Rebounds', player_assists_alternate: 'Assists', player_threes_alternate: 'Threes',
   player_points_rebounds_assists: 'Pts+Reb+Ast', player_points_rebounds_assists_alternate: 'Pts+Reb+Ast',
 };
+// Display names for the bet-type / stat-key values carried on tracked bets. Hoisted to module
+// scope because the Bet Tracker's analysis breakdowns and the App Tracker's now use the same
+// ones -- two copies would drift the moment either page gained a bet type.
+const BET_TYPE_LABELS = {
+  moneyline:'Moneyline', spread:'Spread', total:'Game Total', team_total:'Team Total',
+  player_prop:'Player Prop', player_prop_alt:'Player Prop (Alt Line)',
+};
+const STAT_KEY_LABEL = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'Threes', pra:'Pts+Reb+Ast'};
 
 // ================= Defense vs. Position rankings (Points/Rebounds/Assists/Threes/PRA, by G/F/C) =================
 // Entirely derived from box scores already loaded client-side \u2014 no extra data source needed.
@@ -7274,6 +7282,15 @@ function compareStandardBets(a, b){
   return edgeB - edgeA;
 }
 
+// TEMPORARY, at Jon's request (2026-08-24): the Standard Top Bets list is player-props-only --
+// moneyline, spread and over/under (both Game Total and Team Total) picks are held back. Empty
+// this Set to restore them; nothing else needs changing.
+// Applied inside computeStandardTopBets rather than in gatherCandidateLegs on purpose: the
+// matchup board, the Advanced table and each game's parlay sections all share that gatherer and
+// are unaffected. Putting it here also means the App Tracker's daily snapshot records exactly
+// the list the table shows, instead of drifting from it.
+const STANDARD_EXCLUDED_BET_TYPES = new Set(['moneyline', 'spread', 'total', 'team_total']);
+
 // Standalone extraction of the Standard Top 30 list-building logic (previously inline only
 // inside renderTopBetsTable) \u2014 also used by the daily App Tracker snapshot feature, so the
 // snapshot captures exactly what this table would show, not a re-implementation of it.
@@ -7296,7 +7313,7 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
     // Game Total exclusion (see the conversation this came from) lives at the source now, inside
     // gatherCandidateLegs itself -- applies uniformly to every feature using it, not just here.
     const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL, selectedBook)
-      .filter(l => l.price >= MIN_PRICE);
+      .filter(l => l.price >= MIN_PRICE && !STANDARD_EXCLUDED_BET_TYPES.has(l.betType));
     const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
     return legs.map(l => Object.assign({}, l, {game: gameLabel}));
   }
@@ -7367,7 +7384,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
   sec.textContent = opts.title || `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Standard`;
   container.appendChild(sec);
-  appendDefIcon(sec, opts.titleDef || `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows (see "Overall %"); ties on that fall back to Season %, and further ties fall back to the L10 EMA's distance from the line (player props only \u2014 team-level bets have no per-player EMA, so they stay tied at that level). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`);
+  appendDefIcon(sec, opts.titleDef || `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. <b>Player props only right now</b> \u2014 moneyline, spread and over/under picks are held back from this list for the time being (they still appear on a game\u2019s Top Matchup Bets and in its parlay sections). Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows (see "Overall %"); ties on that fall back to Season %, and further ties fall back to the L10 EMA's distance from the line (player props only \u2014 team-level bets have no per-player EMA, so they stay tied at that level). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`);
 
   if(!usingOverride && todaysGames.length === 0){
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
@@ -7378,7 +7395,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
 
   if(topBets.length === 0){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg.textContent = opts.emptyMessage || 'Nothing in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -165 or better.';
+    msg.textContent = opts.emptyMessage || 'No player prop in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -165 or better. (Moneyline, spread and over/under picks are held back from this list for the time being.)';
     container.appendChild(msg);
     return;
   }
@@ -7911,7 +7928,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
 // modal's title. The Standard/Advanced pools get it as bet.market from gatherCandidateLegs;
 // gatherAllCapturedLegs doesn't set it, so it's mapped from statKey here using the same wording
 // PROP_MARKET_LABEL uses.
-const SPECIALS_MARKET_LABEL = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'Threes', pra:'Pts+Reb+Ast'};
+const SPECIALS_MARKET_LABEL = STAT_KEY_LABEL; // same five keys; kept as a name for readability at the call sites
 const SPECIALS_MIN_PRICE = -135;
 const SPECIALS_RECENT_BAR = 0.50;   // qualifiers 1 and 2
 const SPECIALS_TIER_BAR = 0.80;     // qualifier 3
@@ -11103,6 +11120,77 @@ async function renderAppTrackerPage(){
     tierBox.appendChild(tierTable);
     statsBoxDiv.appendChild(tierBox);
 
+    // ---- Record by bet type / by prop stat, same shape as the Bet Tracker's analysis tables ----
+    // Graded picks only: 'void' counts as neither a win nor a loss, and pending picks haven't
+    // happened yet -- but the Picks column reports EVERY pick in the category, so a row reading
+    // "2-1 (67%) ... 9 picks" is telling you six are still pending rather than hiding them.
+    function gradedRecord(list){
+      const w = list.filter(b=>b.result==='won').length;
+      const l = list.filter(b=>b.result==='lost').length;
+      return {w, l, pct: (w+l) ? Math.round((w/(w+l))*100) : null, picks: list.length};
+    }
+    // Rows whose category has no picks at all are dropped; a category with picks but nothing
+    // graded yet is kept, showing 0-0, so you can see it exists and is still in flight.
+    function buildBreakdownBox(title, defText, rows){
+      const withPicks = rows.filter(r=>r.list.length > 0);
+      if(!withPicks.length) return null;
+      const box = document.createElement('div');
+      box.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:14px;';
+      const t = document.createElement('div'); t.className='section-title'; t.style.margin='0 0 10px'; t.textContent = title;
+      box.appendChild(t);
+      if(defText) appendDefIcon(t, defText);
+      const wrap = document.createElement('div'); wrap.className='table-wrap';
+      const table = document.createElement('table'); table.style.cssText = 'font-size:11px;width:100%;';
+      // Real thead/tbody, not loose <tr>s -- see the note on the All-Time Records table above for
+      // why that distinction matters to the two DOM passes.
+      const thead = document.createElement('thead');
+      thead.innerHTML = '<tr><th class="left">Category</th><th>Record</th><th>Hit Rate</th><th>Picks</th>'
+        + APP_TRACKER_SOURCES.map(src=>`<th>${src==='advanced' ? 'Advanced' : APP_TRACKER_SOURCE_LABEL[src]}</th>`).join('')
+        + '</tr>';
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      withPicks.forEach(r=>{
+        const rec = gradedRecord(r.list);
+        const tr = document.createElement('tr');
+        const cells = [
+          {text: r.label, left: true},
+          {text: `${rec.w}-${rec.l}`},
+          {text: rec.pct !== null ? rec.pct + '%' : '\u2014', sub: rec.pct === null},
+          {text: String(rec.picks)},
+        ];
+        APP_TRACKER_SOURCES.forEach(src=>{
+          const sub = gradedRecord(r.list.filter(b=>b.snapshotSource===src));
+          cells.push({text: sub.picks ? `${sub.w}-${sub.l}` : '\u2014', sub: !sub.picks});
+        });
+        cells.forEach(c=>{
+          const td = document.createElement('td');
+          if(c.left) td.classList.add('left');
+          td.style.cssText = 'padding:4px 6px;' + (c.left ? 'font-weight:700;color:var(--navy2);' : 'text-align:center;')
+            + (c.sub ? 'color:var(--sub);' : '');
+          td.textContent = c.text;
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      box.appendChild(wrap);
+      return box;
+    }
+
+    const byTypeBox = buildBreakdownBox(
+      'All-Time Record by Bet Type',
+      'Every pick this app has ever posted, grouped by what kind of bet it was. <b>Record</b> and <b>Hit Rate</b> count graded picks only (a void is neither a win nor a loss); <b>Picks</b> counts everything in that category including pending ones, so the two won\u2019t always tie. The last three columns split the same record by which list the pick came from. Note that moneyline, spread and over/under picks are currently held back from the Standard list \u2014 those rows are history.',
+      Object.entries(BET_TYPE_LABELS).map(([key, label])=>({label, list: bets.filter(b=>b.betType===key)})));
+    if(byTypeBox) statsBoxDiv.appendChild(byTypeBox);
+
+    const propBets = bets.filter(b=>b.betType==='player_prop' || b.betType==='player_prop_alt');
+    const byStatBox = buildBreakdownBox(
+      'Player Props \u2014 by Stat',
+      'The player-prop rows above, broken down by which stat the prop was on. Same counting rules.',
+      Object.entries(STAT_KEY_LABEL).map(([key, label])=>({label, list: propBets.filter(b=>b.statKey===key)})));
+    if(byStatBox) statsBoxDiv.appendChild(byStatBox);
+
     // By-rank (1-30) breakdown, Standard and Advanced side by side, collapsed by default since
     // it's 30 rows deep in each column -- most people won't want this open every visit.
     const rankWrap = document.createElement('div');
@@ -11810,7 +11898,7 @@ async function renderBetTrackerPage(){
         return legMatchesTypeFilters(bet);
       }
 
-      const BET_TYPE_LABELS_GLOBAL = {moneyline:'Moneyline', spread:'Spread', total:'Game Total', team_total:'Team Total', player_prop:'Player Prop', player_prop_alt:'Player Prop (Alt Line)'};
+      const BET_TYPE_LABELS_GLOBAL = BET_TYPE_LABELS; // module-level map, shared with the App Tracker's breakdown
       const STAT_LABELS_GLOBAL = {points:'Points', rebounds:'Rebounds', assists:'Assists', threes:'Threes', pra:'Pts+Reb+Ast'};
       const STRUCTURE_LABELS_GLOBAL = {'pregame-straight':'Pregame Straight', 'live-straight':'Live Straight', 'pregame-parlay':'Pregame Parlay', 'live-parlay':'Live Parlay', 'pregame':'Pregame', 'live':'Live', 'straight':'Straight Bets', 'parlay':'Parlays'};
 
