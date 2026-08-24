@@ -7541,7 +7541,8 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   // existing row-building loop (star column, row tinting, etc.) never needs to change.
 
   const stdFilters = Object.assign(
-    { pos:'', minOverall:null, minL5:null, minL10:null, minL15:null, minSeason:null, minPrice:null, maxPrice:null },
+    { pos:'', minOverall:null, minL5:null, minL10:null, minL15:null, minSeason:null,
+      minTier:null, maxTier:null, minPrice:null, maxPrice:null },
     opts.defaultFilters || {});
   const filterBar = document.createElement('div');
   filterBar.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;padding:8px 10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;';
@@ -7559,7 +7560,11 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   posSel.addEventListener('change', ()=>{ stdFilters.pos = posSel.value; renderStdTable(); });
   posGroup.appendChild(posSel); filterBar.appendChild(posGroup);
 
-  [['Min Overall%','minOverall'],['Min L5%','minL5'],['Min L10%','minL10'],['Min L15%','minL15'],['Min Season%','minSeason']].forEach(([lbl,key])=>{
+  // The Vs Tier pair rides the same percentage-input builder as the rest, and sits where its
+  // column does -- right after Season%. Only offered when that column is actually on screen.
+  [['Min Overall%','minOverall'],['Min L5%','minL5'],['Min L10%','minL10'],['Min L15%','minL15'],['Min Season%','minSeason']]
+    .concat(showTierCols ? [['Min Vs Tier%','minTier'],['Max Vs Tier%','maxTier']] : [])
+    .forEach(([lbl,key])=>{
     const g = fGroup(lbl);
     const inp = document.createElement('input'); inp.type='number'; inp.min='0'; inp.max='100'; inp.placeholder='any';
     if(stdFilters[key]!==null && stdFilters[key]!==undefined) inp.value = String(stdFilters[key]);
@@ -7643,6 +7648,16 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     if(stdFilters.minL10!==null && (bet.rate10===null||bet.rate10===undefined||Math.round(bet.rate10*100)<stdFilters.minL10)) return false;
     if(stdFilters.minL15!==null && (bet.rate15===null||bet.rate15===undefined||Math.round(bet.rate15*100)<stdFilters.minL15)) return false;
     if(stdFilters.minSeason!==null && (bet.rateAll===null||bet.rateAll===undefined||Math.round(bet.rateAll*100)<stdFilters.minSeason)) return false;
+    if(showTierCols && (stdFilters.minTier!==null || stdFilters.maxTier!==null)){
+      const hr = betTierHitRate(bet);
+      // gp===0 means "no games against that tier yet", which the cell renders as an em dash.
+      // tierHitRateForLeg reports rate 0 in that case, so without the gp guard a bet with NO
+      // history would read as a genuine 0% and slip through a Max filter.
+      const pct = (hr && hr.gp) ? Math.round(hr.rate*100) : null;
+      if(pct===null) return false; // unknown can't be verified against either bound
+      if(stdFilters.minTier!==null && pct < stdFilters.minTier) return false;
+      if(stdFilters.maxTier!==null && pct > stdFilters.maxTier) return false;
+    }
     if(stdFilters.minPrice!==null && bet.price < stdFilters.minPrice) return false;
     if(stdFilters.maxPrice!==null && bet.price > stdFilters.maxPrice) return false;
     return true;
@@ -7663,7 +7678,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     {value: bet => bet.rateAll},                                                                // Season%
     ...(showTierCols ? [
       {value: bet => { const g = betGroupTierInfo(bet); return g ? g.weightedHeight : null; }, dir: 'asc'}, // Matchup Group (by height, so shortest->tallest)
-      {value: bet => { const hr = betTierHitRate(bet); return hr ? hr.rate : null; }},          // Vs That Tier
+      {value: bet => { const hr = betTierHitRate(bet); return (hr && hr.gp) ? hr.rate : null; }}, // Vs That Tier (gp 0 => null, so it sorts last like its em dash implies)
     ] : []),
     {value: betEmaValue},                                                                       // L10 EMA
     {value: betDefAllowedValue},                                                                // Allowed/Gm
