@@ -378,17 +378,32 @@ function _normalizedAlign(el){
   return a;
 }
 
+// The header row of a table, wherever it actually lives. Normally that's the last row of
+// <thead>, but innerHTML on a <table> quietly drops loose <tr>s into an auto-created <tbody> --
+// leaving tHead null and the header row sitting in the body. Both passes below used to skip
+// such a table completely, so its headers never got aligned to its data.
+function _tableHeaderCells(table){
+  if(table.tHead && table.tHead.rows.length){
+    return [...table.tHead.rows[table.tHead.rows.length - 1].cells];
+  }
+  const first = table.tBodies[0] && table.tBodies[0].rows[0];
+  if(first && first.cells.length && [...first.cells].every(c=>c.tagName === 'TH')){
+    return [...first.cells];
+  }
+  return null;
+}
+
 function syncTableHeaderAlignment(root){
   (root || document).querySelectorAll('table').forEach(table=>{
-    const headRows = table.tHead ? table.tHead.rows : null;
-    if(!headRows || !headRows.length) return;
-    const ths = [...headRows[headRows.length - 1].cells]; // the row directly above the body
+    const ths = _tableHeaderCells(table);
+    if(!ths) return;
     if(!ths.length || ths.some(th=>th.colSpan > 1)) return;
     // Body rows that map 1:1 onto the columns -- colspan'd footer/summary rows can't.
     const bodyRows = [];
     for(const tbody of table.tBodies){
       for(const tr of tbody.rows){
         const cells = [...tr.cells];
+        if(!cells.length || cells[0] === ths[0]) continue; // that IS the header row, sitting in the tbody
         if(cells.length === ths.length && !cells.some(td=>td.colSpan > 1)) bodyRows.push(tr);
       }
     }
@@ -457,9 +472,10 @@ function _setStyleProp(el, prop, value){
 function applyStickyIdentityColumns(root){
   (root || document).querySelectorAll('.table-wrap').forEach(wrap=>{
     const table = wrap.querySelector('table');
-    if(!table || !table.tHead || !table.tHead.rows.length) return;
-    const headRow = table.tHead.rows[table.tHead.rows.length - 1];
-    const ths = [...headRow.cells];
+    if(!table) return;
+    const ths = _tableHeaderCells(table);
+    if(!ths) return;
+    const headRow = ths[0].parentElement;
     const clear = ()=>{
       table.querySelectorAll('.sticky-col').forEach(c=>{
         _setClass(c, 'sticky-col', false); _setClass(c, 'sticky-col-last', false);
@@ -504,7 +520,9 @@ function applyStickyIdentityColumns(root){
     let offset = 0;
     const offsets = ths.slice(0, end).map(th=>{ const o = offset; offset += th.offsetWidth; return o; });
 
-    [headRow, ...[...table.tBodies].flatMap(tb=>[...tb.rows])].forEach(tr=>{
+    // Set, not array: when the header row lives in the tbody (see _tableHeaderCells) it would
+    // otherwise appear twice and get its offsets written twice.
+    [...new Set([headRow, ...[...table.tBodies].flatMap(tb=>[...tb.rows])])].forEach(tr=>{
       const cells = [...tr.cells];
       // Colspan'd footer rows don't map onto columns; their label cell is already at the left
       // edge, so skip them rather than mispositioning anything.
@@ -10667,13 +10685,19 @@ async function renderAppTrackerPage(){
       ['Specials', specialsBets],
       ['Both', bothBets],   // 'Both' stays standard-and-advanced specifically, as before
     ];
-    let tierHtml = '<tr><th class="left" style="padding:4px 2px;width:22%;"></th><th style="padding:4px 2px;width:26%;">Top 5</th><th style="padding:4px 2px;width:26%;">Top 10</th><th style="padding:4px 2px;width:26%;">Top 15</th></tr>';
+    // Wrapped in real <thead>/<tbody> rather than left as bare <tr>s. innerHTML on a <table>
+    // silently drops loose rows into an auto-created <tbody>, which left table.tHead null -- and
+    // both syncTableHeaderAlignment() and applyStickyIdentityColumns() key off tHead, so this
+    // table was skipped by them entirely and its right-aligned headers never got corrected to
+    // match its centred data.
+    let tierHtml = '<thead><tr><th class="left" style="padding:4px 2px;width:22%;"></th><th style="padding:4px 2px;width:26%;">Top 5</th><th style="padding:4px 2px;width:26%;">Top 10</th><th style="padding:4px 2px;width:26%;">Top 15</th></tr></thead><tbody>';
     tierRows.forEach(([label, list])=>{
       tierHtml += `<tr><td class="left" style="padding:4px 2px;font-weight:700;color:var(--navy2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${label}</td>`
         + `<td style="padding:4px 2px;text-align:center;">${fmtRecord(record(list,5))}</td>`
         + `<td style="padding:4px 2px;text-align:center;">${fmtRecord(record(list,10))}</td>`
         + `<td style="padding:4px 2px;text-align:center;">${fmtRecord(record(list,15))}</td></tr>`;
     });
+    tierHtml += '</tbody>';
     tierTable.innerHTML = tierHtml;
     tierBox.appendChild(tierTable);
     statsBoxDiv.appendChild(tierBox);
