@@ -11059,6 +11059,399 @@ function fmtResultBadge(result){
 }
 
 // ================= App Tracker page (auto-captured daily Top 30 snapshots) =================
+/* ================= App Tracker: cumulative performance over time =================
+   One running total per selected category: +1 on a win, -1 on a loss, nothing for a void or a
+   pick that hasn't graded. Above zero means that category is net ahead on picks (NOT on money --
+   this deliberately ignores price, so a -300 favourite and a +250 dog each move the line one
+   step; the Bet Tracker's P/L column is where odds are weighted).
+
+   Categories are the six bet types and the five prop stat types, so the two breakdown tables
+   above and this chart answer the same question in two shapes. Sources (Standard / Advanced /
+   Specials) are a separate axis and combine freely -- checking two of them pools their picks
+   into one line rather than drawing two. */
+const APP_TRACKER_CHART_START = '2026-08-05'; // Jon's chosen origin; earlier picks are excluded, not carried in as an opening balance
+// Categorical slots 1-6 of the validated reference palette, in its published order. Validated for
+// this app's white panel surface: adjacent CVD worst 9.1 (>=8), adjacent normal-vision worst 19.6
+// (>=15). Three of them sit under 3:1 contrast on white, which obligates "relief" -- hence the
+// direct end-labels and the Show data table toggle below, both of which are load-bearing, not
+// decoration. Six is the cap on concurrent series; the palette is never cycled to invent a 7th.
+const CHART_SERIES_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'];
+const CHART_MAX_SERIES = CHART_SERIES_COLORS.length;
+
+// A tracked bet's date on the field, which is what the x-axis is about -- NOT snapshotDate, which
+// is when the app happened to capture the pick. They're usually the same day, but a snapshot taken
+// after midnight UTC would otherwise land a pick on the wrong day. Falls back through the two other
+// date carriers rather than dropping a row.
+function appTrackerBetDate(b){
+  if(b.gameDate) return b.gameDate;
+  if(b.commenceTime){ try { return toEasternDateStr(b.commenceTime); } catch(e){ /* fall through */ } }
+  return b.snapshotDate || null;
+}
+
+// Inclusive list of YYYY-MM-DD strings. Built by stepping a UTC date so no local DST shift can
+// skip or duplicate a day.
+function chartDateRange(startStr, endStr){
+  const out = [];
+  const d = new Date(startStr + 'T00:00:00Z');
+  const end = new Date(endStr + 'T00:00:00Z');
+  if(isNaN(d) || isNaN(end) || end < d) return out;
+  while(d <= end){
+    out.push(d.toISOString().slice(0, 10));
+    d.setUTCDate(d.getUTCDate() + 1);
+    if(out.length > 2000) break; // guard against a garbage end date walking forever
+  }
+  return out;
+}
+
+function buildAppTrackerChart(container, bets){
+  const CATEGORIES = Object.entries(BET_TYPE_LABELS).map(([key, label])=>({key:'type:'+key, label, kind:'type', match: b=>b.betType===key}))
+    .concat(Object.entries(STAT_KEY_LABEL).map(([key, label])=>({
+      key:'stat:'+key, label,
+      kind:'stat',
+      match: b=>(b.betType==='player_prop' || b.betType==='player_prop_alt') && b.statKey===key,
+    })));
+  const CAT_BY_KEY = {};
+  CATEGORIES.forEach(c=>{ CAT_BY_KEY[c.key] = c; });
+
+  // Only categories that actually have a graded pick are offered -- an empty chip that draws a
+  // flat zero line is a dead end, and there are eleven of them to wade through.
+  const inRange = bets.filter(b=>{
+    const d = appTrackerBetDate(b);
+    return d && d >= APP_TRACKER_CHART_START;
+  });
+  const gradedInRange = inRange.filter(b=>b.result==='won' || b.result==='lost');
+  const available = CATEGORIES.filter(c=>gradedInRange.some(c.match));
+
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin-bottom:14px;';
+  const title = document.createElement('div'); title.className='section-title'; title.style.margin='0 0 4px';
+  title.textContent = 'Performance Over Time';
+  box.appendChild(title);
+  appendDefIcon(title, 'A running tally per category: <b>+1 for every win, −1 for every loss</b>, with voids and ungraded picks left out. Above the zero line means that category is net ahead <i>on picks</i> — price is deliberately ignored here, so a heavy favourite and a longshot each move the line one step. Days start ' + APP_TRACKER_CHART_START + ' and a pick counts on its <b>game</b> date, not the day the app captured it. Ticking more than one source pools those picks into a single line rather than drawing one line each.');
+
+  if(!available.length){
+    const na = document.createElement('div'); na.style.cssText='font-size:13px;color:var(--sub);';
+    na.textContent = 'No graded picks on or after ' + APP_TRACKER_CHART_START + ' yet — nothing to plot.';
+    box.appendChild(na);
+    container.appendChild(box);
+    return;
+  }
+
+  // ---- state ----
+  const selectedSources = new Set(APP_TRACKER_SOURCES);
+  const selected = [];                 // category keys, in the order they were picked
+  const colorOf = new Map();           // category key -> palette slot, HELD until deselected
+  // Colour follows the entity, not its rank: a slot is claimed on selection and released only on
+  // deselection, so toggling one series off never repaints the ones that stay.
+  function claimColor(key){
+    const taken = new Set(colorOf.values());
+    for(let i=0; i<CHART_MAX_SERIES; i++){ if(!taken.has(i)){ colorOf.set(key, i); return i; } }
+    return 0;
+  }
+  const firstDefault = available.find(c=>c.key==='type:player_prop') || available[0];
+  selected.push(firstDefault.key); claimColor(firstDefault.key);
+
+  let showTable = false;
+
+  // ---- controls: one row above the chart ----
+  const controls = document.createElement('div');
+  controls.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin:10px 0 12px;';
+
+  const srcRow = document.createElement('div');
+  srcRow.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px;';
+  const srcLbl = document.createElement('span');
+  srcLbl.style.cssText = 'font-weight:700;color:var(--navy2);text-transform:uppercase;font-size:10.5px;letter-spacing:.03em;';
+  srcLbl.textContent = 'Include picks from';
+  srcRow.appendChild(srcLbl);
+  APP_TRACKER_SOURCES.forEach(src=>{
+    const lab = document.createElement('label');
+    lab.style.cssText = 'display:flex;align-items:center;gap:5px;cursor:pointer;';
+    const cb = document.createElement('input'); cb.type='checkbox'; cb.checked = true;
+    cb.style.cssText = 'cursor:pointer;width:15px;height:15px;';
+    cb.addEventListener('change', ()=>{
+      if(cb.checked) selectedSources.add(src); else selectedSources.delete(src);
+      // Never let all three go dark -- an empty chart reads as broken rather than as a filter.
+      if(!selectedSources.size){ selectedSources.add(src); cb.checked = true; return; }
+      draw();
+    });
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(src==='advanced' ? 'Advanced' : APP_TRACKER_SOURCE_LABEL[src]));
+    srcRow.appendChild(lab);
+  });
+  controls.appendChild(srcRow);
+
+  const chipRow = document.createElement('div');
+  chipRow.style.cssText = 'display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;';
+  const chipLbl = document.createElement('span');
+  chipLbl.style.cssText = 'font-weight:700;color:var(--navy2);text-transform:uppercase;font-size:10.5px;letter-spacing:.03em;padding-top:6px;';
+  chipLbl.textContent = 'Show';
+  chipRow.appendChild(chipLbl);
+  const chips = new Map();
+  available.forEach(cat=>{
+    const chip = document.createElement('button');
+    chip.textContent = cat.label + (cat.kind==='stat' ? ' • prop' : '');
+    chip.addEventListener('click', ()=>{
+      const at = selected.indexOf(cat.key);
+      if(at >= 0){
+        if(selected.length === 1) return;   // keep at least one line on screen
+        selected.splice(at, 1); colorOf.delete(cat.key);
+      } else {
+        if(selected.length >= CHART_MAX_SERIES) return;
+        selected.push(cat.key); claimColor(cat.key);
+      }
+      draw();
+    });
+    chips.set(cat.key, chip);
+    chipRow.appendChild(chip);
+  });
+  controls.appendChild(chipRow);
+
+  const capNote = document.createElement('div');
+  capNote.style.cssText = 'font-size:11px;color:var(--sub);';
+  controls.appendChild(capNote);
+  box.appendChild(controls);
+
+  // ---- chart shell ----
+  const plotWrap = document.createElement('div');
+  plotWrap.style.cssText = 'position:relative;';
+  box.appendChild(plotWrap);
+
+  const tooltip = document.createElement('div');
+  tooltip.style.cssText = 'position:absolute;pointer-events:none;display:none;background:var(--panel);border:1px solid var(--line);'
+    + 'border-radius:6px;padding:7px 9px;font-size:11.5px;box-shadow:0 2px 10px rgba(0,0,0,.13);z-index:5;min-width:120px;';
+  plotWrap.appendChild(tooltip);
+
+  const legend = document.createElement('div');
+  legend.className = 'chart-legend'; // a stable hook: its DIRECT children are the legend items
+  legend.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px;';
+  box.appendChild(legend);
+
+  const tableToggle = document.createElement('button');
+  tableToggle.style.cssText = 'margin-top:10px;padding:5px 11px;border-radius:5px;border:1px solid var(--line);background:var(--panel);font-size:11.5px;cursor:pointer;font-family:var(--sans);color:var(--navy2);font-weight:700;';
+  tableToggle.addEventListener('click', ()=>{ showTable = !showTable; draw(); });
+  box.appendChild(tableToggle);
+  const tableHolder = document.createElement('div');
+  box.appendChild(tableHolder);
+
+  container.appendChild(box);
+
+  // ---- series maths ----
+  function seriesFor(catKey, days){
+    const cat = CAT_BY_KEY[catKey];
+    const perDay = new Map();
+    inRange.forEach(b=>{
+      if(!selectedSources.has(b.snapshotSource)) return;
+      if(!cat.match(b)) return;
+      if(b.result !== 'won' && b.result !== 'lost') return;
+      const d = appTrackerBetDate(b);
+      perDay.set(d, (perDay.get(d) || 0) + (b.result==='won' ? 1 : -1));
+    });
+    let running = 0;
+    const points = days.map(d=>{
+      running += (perDay.get(d) || 0);
+      return {date: d, value: running, delta: perDay.get(d) || 0};
+    });
+    return {key: catKey, label: cat.label, points, final: running,
+            color: CHART_SERIES_COLORS[colorOf.get(catKey) || 0]};
+  }
+
+  function draw(){
+    // x runs to the last day that actually carries a graded pick, or today, whichever is later --
+    // so the line never trails off into a flat stretch of future days.
+    let lastDated = APP_TRACKER_CHART_START;
+    inRange.forEach(b=>{
+      if(b.result!=='won' && b.result!=='lost') return;
+      if(!selectedSources.has(b.snapshotSource)) return;
+      const d = appTrackerBetDate(b);
+      if(d && d > lastDated) lastDated = d;
+    });
+    let today = APP_TRACKER_CHART_START;
+    try { today = nowInEastern().dateStr; } catch(e){ /* keep the fallback */ }
+    const end = today > lastDated ? today : lastDated;
+    const days = chartDateRange(APP_TRACKER_CHART_START, end);
+
+    chips.forEach((chip, key)=>{
+      const on = selected.indexOf(key) >= 0;
+      const atCap = !on && selected.length >= CHART_MAX_SERIES;
+      const col = on ? CHART_SERIES_COLORS[colorOf.get(key) || 0] : null;
+      chip.style.cssText = 'padding:5px 11px;border-radius:14px;font-size:12px;font-family:var(--sans);cursor:'
+        + (atCap ? 'not-allowed' : 'pointer') + ';border:1px solid ' + (on ? col : 'var(--line)') + ';'
+        + 'background:' + (on ? col : 'var(--panel)') + ';color:' + (on ? '#fff' : (atCap ? 'var(--sub)' : 'var(--ink)')) + ';'
+        + 'font-weight:' + (on ? '700' : '400') + ';opacity:' + (atCap ? '.5' : '1') + ';';
+      chip.disabled = atCap;
+    });
+    capNote.textContent = selected.length >= CHART_MAX_SERIES
+      ? 'Showing the maximum of ' + CHART_MAX_SERIES + ' categories at once — untick one to swap another in.'
+      : '';
+
+    const series = selected.map(k=>seriesFor(k, days));
+
+    plotWrap.querySelectorAll('svg').forEach(el=>el.remove());
+    const W = 900, H = 340, padL = 46, padR = 96, padT = 14, padB = 34;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+
+    let lo = 0, hi = 0;
+    series.forEach(s=>s.points.forEach(p=>{ if(p.value < lo) lo = p.value; if(p.value > hi) hi = p.value; }));
+    if(lo === hi){ lo -= 1; hi += 1; }
+    const span = hi - lo, pad = Math.max(1, Math.ceil(span * 0.12));
+    lo -= pad; hi += pad;
+
+    const xAt = i => padL + (days.length <= 1 ? innerW/2 : (i / (days.length - 1)) * innerW);
+    const yAt = v => padT + innerH - ((v - lo) / (hi - lo)) * innerH;
+
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('role', 'img');
+    svg.style.cssText = 'width:100%;height:auto;display:block;overflow:visible;';
+    const mk = (tag, attrs)=>{ const el = document.createElementNS(NS, tag); Object.entries(attrs).forEach(([k,v])=>el.setAttribute(k, v)); return el; };
+
+    // y gridlines on clean integers, hairline and recessive
+    const tickStep = Math.max(1, Math.ceil((hi - lo) / 6));
+    for(let v = Math.ceil(lo/tickStep)*tickStep; v <= hi; v += tickStep){
+      const y = yAt(v);
+      svg.appendChild(mk('line', {x1:padL, x2:padL+innerW, y1:y, y2:y, stroke:'var(--line)', 'stroke-width':1}));
+      const t = mk('text', {x:padL-8, y:y+4, 'text-anchor':'end', 'font-size':11, fill:'var(--sub)'});
+      t.textContent = (v > 0 ? '+' : '') + v;
+      svg.appendChild(t);
+    }
+    // zero is the reading line for this chart -- a step darker than the grid, still not data ink
+    svg.appendChild(mk('line', {x1:padL, x2:padL+innerW, y1:yAt(0), y2:yAt(0), stroke:'#9aa3b0', 'stroke-width':1.5}));
+
+    const labelEvery = Math.max(1, Math.ceil(days.length / 8));
+    days.forEach((d, i)=>{
+      if(i % labelEvery !== 0 && i !== days.length-1) return;
+      const t = mk('text', {x:xAt(i), y:H-12, 'text-anchor':'middle', 'font-size':11, fill:'var(--sub)'});
+      t.textContent = Number(d.slice(5,7)) + '/' + Number(d.slice(8,10));
+      svg.appendChild(t);
+    });
+
+    series.forEach(s=>{
+      const dAttr = s.points.map((p,i)=>(i?'L':'M') + xAt(i).toFixed(1) + ' ' + yAt(p.value).toFixed(1)).join(' ');
+      svg.appendChild(mk('path', {d:dAttr, fill:'none', stroke:s.color, 'stroke-width':2, 'stroke-linejoin':'round', 'stroke-linecap':'round'}));
+      const lastI = s.points.length - 1;
+      // end marker: r>=4 with a 2px surface ring so overlapping endpoints stay separable
+      svg.appendChild(mk('circle', {cx:xAt(lastI), cy:yAt(s.points[lastI].value), r:4.5, fill:s.color, stroke:'var(--panel)', 'stroke-width':2}));
+    });
+
+    // Direct end-labels are the contrast relief for the light hues -- text in ink, identity from
+    // the coloured line beside it. Skipped past 4 series, where they'd collide.
+    if(series.length <= 4){
+      const placed = [];
+      series.slice().sort((a,b)=>b.final-a.final).forEach(s=>{
+        let y = yAt(s.points[s.points.length-1].value) + 4;
+        while(placed.some(p=>Math.abs(p - y) < 13)) y += 13;
+        placed.push(y);
+        svg.appendChild(mk('line', {x1:padL+innerW+8, x2:padL+innerW+20, y1:y-4, y2:y-4, stroke:s.color, 'stroke-width':2, 'stroke-linecap':'round'}));
+        const t = mk('text', {x:padL+innerW+24, y:y, 'font-size':11, fill:'var(--ink)'});
+        t.textContent = s.label + ' ' + (s.final>0?'+':'') + s.final;
+        svg.appendChild(t);
+      });
+    }
+
+    // crosshair + hit layer: the reader aims at a date, never at a 2px line
+    const hair = mk('line', {x1:0, x2:0, y1:padT, y2:padT+innerH, stroke:'#9aa3b0', 'stroke-width':1, opacity:0});
+    svg.appendChild(hair);
+    const dots = mk('g', {opacity:0});
+    svg.appendChild(dots);
+    const hit = mk('rect', {x:padL, y:padT, width:innerW, height:innerH, fill:'transparent'});
+    svg.appendChild(hit);
+
+    function hideHover(){ hair.setAttribute('opacity', 0); dots.setAttribute('opacity', 0); tooltip.style.display='none'; }
+    hit.addEventListener('pointerleave', hideHover);
+    hit.addEventListener('pointermove', ev=>{
+      const r = svg.getBoundingClientRect();
+      const px = (ev.clientX - r.left) / r.width * W;
+      const i = Math.max(0, Math.min(days.length-1, Math.round((px - padL) / (innerW || 1) * (days.length - 1))));
+      const x = xAt(i);
+      hair.setAttribute('x1', x); hair.setAttribute('x2', x); hair.setAttribute('opacity', 1);
+      while(dots.firstChild) dots.removeChild(dots.firstChild);
+      series.forEach(s=>{
+        dots.appendChild(mk('circle', {cx:x, cy:yAt(s.points[i].value), r:4, fill:s.color, stroke:'var(--panel)', 'stroke-width':2}));
+      });
+      dots.setAttribute('opacity', 1);
+
+      tooltip.textContent = '';
+      const head = document.createElement('div');
+      head.style.cssText = 'font-weight:700;color:var(--navy2);margin-bottom:4px;';
+      head.textContent = days[i];
+      tooltip.appendChild(head);
+      series.forEach(s=>{
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;white-space:nowrap;';
+        const key = document.createElement('span');
+        key.style.cssText = 'display:inline-block;width:12px;height:2px;border-radius:1px;flex:none;background:' + s.color + ';';
+        const val = document.createElement('b');
+        val.style.cssText = 'color:var(--ink);';
+        const v = s.points[i].value;
+        val.textContent = (v>0?'+':'') + v;
+        const nm = document.createElement('span');
+        nm.style.cssText = 'color:var(--sub);';
+        nm.textContent = s.label;
+        const dlt = document.createElement('span');
+        dlt.style.cssText = 'color:var(--sub);margin-left:auto;padding-left:8px;';
+        const dv = s.points[i].delta;
+        dlt.textContent = dv ? '(' + (dv>0?'+':'') + dv + ' that day)' : '';
+        row.appendChild(key); row.appendChild(val); row.appendChild(nm); row.appendChild(dlt);
+        tooltip.appendChild(row);
+      });
+      tooltip.style.display = 'block';
+      const leftPx = (x / W) * plotWrap.clientWidth;
+      const flip = leftPx > plotWrap.clientWidth * 0.6;
+      tooltip.style.left = flip ? (leftPx - tooltip.offsetWidth - 12) + 'px' : (leftPx + 12) + 'px';
+      tooltip.style.top = '8px';
+    });
+
+    plotWrap.insertBefore(svg, tooltip);
+
+    // legend: always present for two or more series
+    legend.textContent = '';
+    if(series.length >= 2){
+      series.forEach(s=>{
+        const item = document.createElement('span');
+        item.style.cssText = 'display:flex;align-items:center;gap:6px;';
+        const key = document.createElement('span');
+        key.style.cssText = 'display:inline-block;width:16px;height:2px;border-radius:1px;background:' + s.color + ';';
+        const nm = document.createElement('span'); nm.style.color = 'var(--ink)';
+        nm.textContent = s.label + ' (' + (s.final>0?'+':'') + s.final + ')';
+        item.appendChild(key); item.appendChild(nm);
+        legend.appendChild(item);
+      });
+    }
+
+    tableToggle.textContent = showTable ? 'Hide data table' : 'Show data table';
+    tableHolder.textContent = '';
+    if(showTable){
+      const wrap = document.createElement('div'); wrap.className='table-wrap'; wrap.style.marginTop='8px';
+      const table = document.createElement('table'); table.style.cssText='font-size:11.5px;width:100%;';
+      const thead = document.createElement('thead');
+      const htr = document.createElement('tr');
+      const th0 = document.createElement('th'); th0.className='left'; th0.textContent='Date'; htr.appendChild(th0);
+      series.forEach(s=>{ const th=document.createElement('th'); th.textContent=s.label; htr.appendChild(th); });
+      thead.appendChild(htr); table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      // Only days where something actually moved -- a row per calendar day would be mostly repeats.
+      days.forEach((d, i)=>{
+        if(i !== days.length-1 && !series.some(s=>s.points[i].delta !== 0)) return;
+        const tr = document.createElement('tr');
+        const td0 = document.createElement('td'); td0.className='left'; td0.textContent = d; tr.appendChild(td0);
+        series.forEach(s=>{
+          const td = document.createElement('td'); td.style.textAlign='center';
+          const v = s.points[i].value, dv = s.points[i].delta;
+          td.textContent = (v>0?'+':'') + v + (dv ? ' (' + (dv>0?'+':'') + dv + ')' : '');
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      tableHolder.appendChild(wrap);
+    }
+  }
+
+  draw();
+}
+
 async function renderAppTrackerPage(){
   lastRender = () => renderAppTrackerPage();
   main.innerHTML = '';
@@ -11439,6 +11832,8 @@ async function renderAppTrackerPage(){
       'The player-prop rows above, broken down by which stat the prop was on. Same counting rules.',
       Object.entries(STAT_KEY_LABEL).map(([key, label])=>({label, list: propBets.filter(b=>b.statKey===key)})));
     if(byStatBox) statsBoxDiv.appendChild(byStatBox);
+
+    buildAppTrackerChart(statsBoxDiv, bets);
 
     // By-rank (1-30) breakdown, Standard and Advanced side by side, collapsed by default since
     // it's 30 rows deep in each column -- most people won't want this open every visit.
