@@ -5775,7 +5775,7 @@ async function renderHomePage(){
       const canvas = await html2canvas(clone, {backgroundColor:'#ffffff', scale:2});
       document.body.removeChild(clone);
       const link = document.createElement('a');
-      link.download = `wnba-${filenamePrefix}-bets-${new Date().toISOString().slice(0,10)}.png`;
+      link.download = `wnba-${filenamePrefix}-bets-${toEasternDateStr(new Date().toISOString())}.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
     }catch(e){
@@ -11301,10 +11301,14 @@ async function renderBetTrackerPage(){
       b.addEventListener('click', ()=>{
         activePreset = key;
         const now = new Date();
-        if(key==='7d'){ const d=new Date(now); d.setDate(d.getDate()-7); analysisRangeStart=d.toISOString().slice(0,10); analysisRangeEnd=null; }
-        else if(key==='30d'){ const d=new Date(now); d.setDate(d.getDate()-30); analysisRangeStart=d.toISOString().slice(0,10); analysisRangeEnd=null; }
-        else if(key==='month'){ analysisRangeStart = now.toISOString().slice(0,8)+'01'; analysisRangeEnd=null; }
-        else if(key==='year'){ analysisRangeStart = now.toISOString().slice(0,4)+'-01-01'; analysisRangeEnd=null; }
+        // These boundaries are compared against snapshotDate, which is an EASTERN date string
+        // (nowInEastern().dateStr) -- so they have to be Eastern too. Deriving them from
+        // toISOString() put them a day out for the whole 8pm-midnight ET window.
+        const etDay = toEasternDateStr(now.toISOString());
+        if(key==='7d'){ const d=new Date(now); d.setDate(d.getDate()-7); analysisRangeStart=toEasternDateStr(d.toISOString()); analysisRangeEnd=null; }
+        else if(key==='30d'){ const d=new Date(now); d.setDate(d.getDate()-30); analysisRangeStart=toEasternDateStr(d.toISOString()); analysisRangeEnd=null; }
+        else if(key==='month'){ analysisRangeStart = etDay.slice(0,8)+'01'; analysisRangeEnd=null; }
+        else if(key==='year'){ analysisRangeStart = etDay.slice(0,4)+'-01-01'; analysisRangeEnd=null; }
         else { analysisRangeStart=null; analysisRangeEnd=null; }
         startInput.value = analysisRangeStart || '';
         endInput.value = analysisRangeEnd || '';
@@ -12094,7 +12098,9 @@ async function renderBetTrackerPage(){
       if(!fileInput.files.length){ parseStatus.textContent = 'Choose at least one image first.'; return; }
       goBtn.disabled = true; parseStatus.textContent = 'Reading images\u2026';
       const teamList = Object.entries(FULL_TEAM_NAME).map(([short,full])=>`${short} = ${full}`).join(', ');
-      const todayIso = new Date().toISOString().slice(0,10);
+      // Eastern, not UTC: this is what Claude uses to date a bet slip that only shows a
+      // weekday or "Today", and a wrong date here feeds straight into grading.
+      const todayIso = toEasternDateStr(new Date().toISOString());
       const promptText = `You are extracting structured sports-bet data from DraftKings bet-slip screenshot(s). `
         + `For EACH bet slip shown (there may be several in one image, or one per image), return one JSON object. `
         + `Return ONLY a JSON array, no markdown fences, no commentary.\n\n`
