@@ -62,6 +62,15 @@
      scrolling underneath show straight through it. */
   thead tr{background:#eef1f6;}
   thead th{position:sticky;top:0;background:#eef1f6;color:var(--navy2);font-size:11px;text-transform:uppercase;cursor:pointer;user-select:none;border-bottom:2px solid var(--line);}
+  /* Persistent emphasis on the four columns most bets are written against (PTS/3PM/REB/AST,
+     plus the P+R+A total). Deliberately declared BEFORE the .col-highlighted rules below and at
+     matching specificity, so click-to-highlight a column still visibly wins on top of it. Green
+     family rather than the selection blue, so the two never read as the same state. */
+  thead th.key-stat{background:#dbeee4;color:#0b5c30;}
+  td.key-stat{background:#f0f8f3;}
+  tbody tr:nth-child(even) td.key-stat{background:#e8f3ed;}
+  tbody tr:hover td.key-stat{background:#e0f0e7;}
+  td.key-stat:not(.left){font-weight:700;}
   thead th.col-highlighted{background:#cfe0fc;}
   td.col-highlighted{background:#eaf1fd;}
   tbody tr:nth-child(even) td.col-highlighted{background:#e0ebfb;}
@@ -645,6 +654,7 @@ function makeTable(container, columns, rows, opts){
     th.dataset.colKey = col.key || ''; // read by the frozen-column logic, which prefers a real key over the visible label
     if(col.left) th.classList.add('left');
     if(col.compactHide) th.classList.add('compact-hide');
+    if(col.keyStat) th.classList.add('key-stat');
     appendDefIcon(th, col.def || STAT_DEFINITIONS[col.key]);
     const arrow = document.createElement('span'); arrow.className='arrow'; th.appendChild(arrow);
     th.addEventListener('click', ()=>{
@@ -723,6 +733,7 @@ function makeTable(container, columns, rows, opts){
       columns.forEach(col=>{
         const td = document.createElement('td'); if(col.left) td.classList.add('left');
         if(col.compactHide) td.classList.add('compact-hide');
+        if(col.keyStat) td.classList.add('key-stat');
         if(col.noBoldStarter) td.classList.add('no-starter-bold');
         td.style.cursor = 'pointer';
         td.addEventListener('click', ()=>{
@@ -781,6 +792,7 @@ function makeTable(container, columns, rows, opts){
         columns.forEach((col, i)=>{
           const td = document.createElement('td'); if(col.left) td.classList.add('left');
           if(col.compactHide) td.classList.add('compact-hide');
+          if(col.keyStat) td.classList.add('key-stat');
           if(i===0){ td.textContent = fr.label; }
           else if(fr.values && Object.prototype.hasOwnProperty.call(fr.values, col.key)){
             td.textContent = fmtFooterVal(fr.values[col.key], col, fr);
@@ -800,16 +812,19 @@ function makeTable(container, columns, rows, opts){
   render();
 }
 
+const PRA_COL_DEF = 'Points + rebounds + assists for that game — the combined line most books price as a single prop. Blank for a game she didn’t play rather than shown as 0.';
 const GAME_COLS = [
   {key:'team', label:'Team', left:true, teamLink:true}, {key:'player', label:'Player', left:true},
   {key:'jersey', label:'#'}, {key:'pos', label:'Pos', left:true}, {key:'starter', label:'Start', bool:true},
-  {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
+  {key:'min', label:'MIN'}, {key:'pts', label:'PTS', keyStat:true},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
-  {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
+  {key:'tpm', label:'3PM', keyStat:true}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
   {key:'ftm', label:'FTM'}, {key:'fta', label:'FTA'}, {key:'ftPct', label:'FT%', pct:true},
-  {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB'},
-  {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
-  {key:'to', label:'TO'}, {key:'pf', label:'PF'}, {key:'plusMinus', label:'+/-'},
+  {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB', keyStat:true},
+  {key:'ast', label:'AST', keyStat:true}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
+  {key:'to', label:'TO'}, {key:'pf', label:'PF'},
+  {key:'pra', label:'P+R+A', keyStat:true, def:PRA_COL_DEF},
+  {key:'plusMinus', label:'+/-'},
   {key:'height', label:'Height', left:true}, {key:'weight', label:'Wt (lb)'}, {key:'age', label:'Age'}, {key:'dob', label:'DOB', left:true},
 ];
 const TOTALS_COLS = [
@@ -1823,6 +1838,7 @@ function computeGameTeamTotals(rows, team){
     ftm, fta, ftPct: fta? Math.round((ftm/fta)*10000)/10000 : null,
     oreb: sum('oreb'), dreb: sum('dreb'), reb: sum('reb'),
     ast: sum('ast'), stl: sum('stl'), blk: sum('blk'), to: sum('to'), pf: sum('pf'),
+    pra: sum('pts') + sum('reb') + sum('ast'),
   };
 }
 
@@ -1844,9 +1860,11 @@ function buildLineScoreTable(container, game){
   const title = document.createElement('div'); title.className='section-title';
   title.textContent = hasPeriods ? 'Line Score' : 'Final Score';
   container.appendChild(title);
-  if(!hasPeriods){
-    appendDefIcon(title, 'Quarter-by-quarter scoring isn’t available for this game — the data feed didn’t include a period breakdown for it, so only the final score is shown.');
-  }
+  // One tooltip, not two -- appendDefIcon adds an icon per call, and a heading with two of them
+  // looks like a bug.
+  appendDefIcon(title, hasPeriods
+    ? 'Points by quarter, then the final score, the result (W/L), and that team’s season record as of the end of this game — this game included, matching the Team Rec column on the gamelogs.'
+    : 'Quarter-by-quarter scoring isn’t available for this game — the data feed didn’t include a period breakdown for it, so only the final score is shown, alongside the result (W/L) and each team’s season record as of the end of this game. Running <code>backfill_periods.py</code> in the pipeline fills the quarters in for older games.');
   const wrap = document.createElement('div'); wrap.className='table-wrap'; wrap.style.cssText='margin-bottom:16px;display:inline-block;';
   const table = document.createElement('table'); table.style.width='auto';
   const thead = document.createElement('thead');
@@ -1854,15 +1872,15 @@ function buildLineScoreTable(container, game){
   for(let i=1; i<=numPeriods; i++){
     headerHtml += `<th>${i<=4 ? i : (i===5?'OT':'OT'+(i-4))}</th>`;
   }
-  headerHtml += `<th>${hasPeriods ? 'T' : 'Final'}</th></tr>`;
+  headerHtml += `<th>${hasPeriods ? 'T' : 'Final'}</th><th>Result</th><th>Record</th></tr>`;
   thead.innerHTML = headerHtml;
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   const season = game.date ? game.date.slice(0,4) : undefined;
   const won = (a,b) => (typeof a==='number' && typeof b==='number' && a>b);
   [
-    {team:game.away, score:game.awayScore, periods:(hasPeriods ? game.periods.away : []), isWinner: won(game.awayScore, game.homeScore), venue:'Away'},
-    {team:game.home, score:game.homeScore, periods:(hasPeriods ? game.periods.home : []), isWinner: won(game.homeScore, game.awayScore), venue:'Home'},
+    {team:game.away, score:game.awayScore, oppScore:game.homeScore, periods:(hasPeriods ? game.periods.away : []), isWinner: won(game.awayScore, game.homeScore), venue:'Away'},
+    {team:game.home, score:game.homeScore, oppScore:game.awayScore, periods:(hasPeriods ? game.periods.home : []), isWinner: won(game.homeScore, game.awayScore), venue:'Home'},
   ].forEach(side=>{
     const tr = document.createElement('tr');
     const tdTeam = document.createElement('td'); tdTeam.className='left'; tdTeam.style.fontWeight='700';
@@ -1881,6 +1899,24 @@ function buildLineScoreTable(container, game){
     if(side.isWinner) tdTotal.style.color = 'var(--green)';
     tdTotal.textContent = (side.score===null||side.score===undefined) ? '\u2014' : side.score;
     tr.appendChild(tdTotal);
+
+    // Result and standing, in that order. `isWinner` alone can't distinguish a loss from a game
+    // with no final score at all, so the result is derived from both scores here rather than
+    // treating "not the winner" as a loss.
+    const tdResult = document.createElement('td'); tdResult.style.fontWeight='800';
+    const bothScored = typeof side.score==='number' && typeof side.oppScore==='number';
+    if(!bothScored){ tdResult.textContent = '\u2014'; tdResult.style.color = 'var(--sub)'; }
+    else if(side.score > side.oppScore){ tdResult.textContent = 'W'; tdResult.style.color = 'var(--green)'; }
+    else if(side.score < side.oppScore){ tdResult.textContent = 'L'; tdResult.style.color = 'var(--red)'; }
+    else { tdResult.textContent = 'T'; tdResult.style.color = 'var(--sub)'; }
+    tr.appendChild(tdResult);
+
+    // Season record INCLUDING this game -- same convention as the gamelogs' Team Rec column, so
+    // a box score opened from a gamelog row shows the identical number.
+    const tdRecord = document.createElement('td'); tdRecord.style.color = 'var(--sub)';
+    const rec = game.date ? teamRecordAsOf(side.team, game.date) : null;
+    tdRecord.textContent = rec ? rec.text : '\u2014';
+    tr.appendChild(tdRecord);
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
@@ -1890,7 +1926,7 @@ function buildLineScoreTable(container, game){
 
 function buildBoxScoreContent(container, game){
   buildLineScoreTable(container, game);
-  const rowsWithBio = game.rows.map(r => Object.assign({}, r, bioLookup(r.player, r.team)));
+  const rowsWithBio = attachPra(game.rows.map(r => Object.assign({}, r, bioLookup(r.player, r.team))));
   [{team:game.away, label:`${FULL_TEAM_NAME[game.away]||game.away} (Away)`}, {team:game.home, label:`${FULL_TEAM_NAME[game.home]||game.home} (Home)`}].forEach(side=>{
     const sec = document.createElement('div'); sec.className='section-title'; sec.textContent = side.label;
     container.appendChild(sec);
@@ -1934,6 +1970,19 @@ function mode(arr){
   return best;
 }
 function statValues(log, key){ return log.filter(g=>!g.dnp).map(g=>g[key]).filter(v=>v!==null && v!==undefined); }
+
+// PTS+REB+AST, the combined prop line. Stamped onto the row objects rather than derived inside
+// the column definition, because sorting reads r[key] directly and the TOTAL/MIN/MAX/AVERAGE/
+// MEDIAN/MODE footer rows run over real row values -- a display-only column would sort as
+// undefined and leave every summary cell blank. Null if any component is missing (a DNP), so it
+// never reads as a genuine zero.
+function attachPra(rows){
+  (rows || []).forEach(r=>{
+    const missing = v => v===null || v===undefined;
+    r.pra = (missing(r.pts) || missing(r.reb) || missing(r.ast)) ? null : r.pts + r.reb + r.ast;
+  });
+  return rows;
+}
 
 // ================= Advanced analytics (rolling-window forecasting metrics) =================
 // Standard deviation, IQR, EMA, Usage Rate, and Defense-vs-Position Index, computed entirely
@@ -2565,16 +2614,18 @@ const PLAYER_LOG_COLS = [
   {key:'date', label:'Date', left:true, noBoldStarter:true, gameLink:true}, {key:'opp', label:'Opponent', left:true, noBoldStarter:true, teamLink:true},
   ...RECORD_COLS,
   {key:'homeAway', label:'H/A', left:true, noBoldStarter:true}, {key:'starter', label:'Start', bool:true}, {key:'dnp', label:'DNP', bool:true},
-  {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
+  {key:'min', label:'MIN'}, {key:'pts', label:'PTS', keyStat:true},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
-  {key:'tpm', label:'3PM'}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
+  {key:'tpm', label:'3PM', keyStat:true}, {key:'tpa', label:'3PA'}, {key:'tpPct', label:'3P%', pct:true},
   {key:'ftm', label:'FTM'}, {key:'fta', label:'FTA'}, {key:'ftPct', label:'FT%', pct:true},
-  {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB'},
-  {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
-  {key:'to', label:'TO'}, {key:'pf', label:'PF'}, {key:'plusMinus', label:'+/-'},
+  {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB', keyStat:true},
+  {key:'ast', label:'AST', keyStat:true}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
+  {key:'to', label:'TO'}, {key:'pf', label:'PF'},
+  {key:'pra', label:'P+R+A', keyStat:true, def:PRA_COL_DEF},
+  {key:'plusMinus', label:'+/-'},
 ];
 const STAT_KEYS_FOR_SUMMARY = ['min','pts','fgm','fga','fgPct','tpm','tpa','tpPct','ftm','fta','ftPct',
-  'oreb','dreb','reb','ast','stl','blk','to','pf','plusMinus'];
+  'oreb','dreb','reb','ast','stl','blk','to','pf','pra','plusMinus'];
 
 // Same box score columns as the main log, plus point-in-time DvP for the specific opponent
 // every row in this table is against (see dvpIndexAsOf above).
@@ -3235,6 +3286,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     to: g.to, pf: g.pf, plusMinus: g.plusMinus,
   }));
   attachGameRecords(logRows, team);
+  attachPra(logRows);
 
   const footerRows = [];
   const labels = [
@@ -3247,7 +3299,9 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   ];
   labels.forEach(({label, fn})=>{
     const values = {};
-    STAT_KEYS_FOR_SUMMARY.forEach(k=>{ values[k] = fn(statValues(pl.log, k)); });
+    // logRows, not pl.log: identical games and the same `dnp` flags, but these carry the derived
+    // P+R+A that the raw log has no field for.
+    STAT_KEYS_FOR_SUMMARY.forEach(k=>{ values[k] = fn(statValues(logRows, k)); });
     footerRows.push({label, values, oneDecimal:true});
   });
 
@@ -3281,7 +3335,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   function renderVsOpponentTables(opponentShort){
     vsOppStdContainer.innerHTML = ''; vsOppAdvContainer.innerHTML = '';
     if(!opponentShort) return;
-    const rows = attachGameRecords(gamesVsOpponentRows(playerName, team, opponentShort), team);
+    const rows = attachPra(attachGameRecords(gamesVsOpponentRows(playerName, team, opponentShort), team));
     if(!rows.length){
       const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;';
       na.textContent = `No meetings with ${FULL_TEAM_NAME[opponentShort]||opponentShort} yet this season.`;
