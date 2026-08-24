@@ -706,9 +706,15 @@ function makeTable(container, columns, rows, opts){
     // short code stored on the row -- otherwise "Las Vegas Aces" would sort under A and
     // "Atlanta Dream" under D, and an alphabetical sort would read as no sort at all.
     const sortedCol = columns.find(c=>c.key===state.sortKey);
-    const sortVal = r => (sortedCol && sortedCol.teamLink && r[state.sortKey])
-      ? (FULL_TEAM_NAME[r[state.sortKey]] || r[state.sortKey])
-      : r[state.sortKey];
+    // col.sortBy names a companion field to sort on instead of the displayed one -- e.g. the
+    // W-L record columns display "10-5" but sort on win percentage, since "10-5" would otherwise
+    // land below "9-6" alphabetically.
+    const sortVal = r => {
+      if(sortedCol && sortedCol.sortBy) return r[sortedCol.sortBy];
+      return (sortedCol && sortedCol.teamLink && r[state.sortKey])
+        ? (FULL_TEAM_NAME[r[state.sortKey]] || r[state.sortKey])
+        : r[state.sortKey];
+    };
     data.sort((a,b)=>{ const d=cmp(sortVal(a),sortVal(b)); return state.sortDir==='asc'?d:-d; });
     tbody.innerHTML='';
     data.forEach(r=>{
@@ -2270,8 +2276,72 @@ function computeTeamDefenseTotalRow(team){
   return row;
 }
 
+/* ---- Running W-L records, for the Opp Rec / Team Rec gamelog columns ----
+   Built from DATA.games rather than DATA.teamRecords, because teamRecords only carries the FINAL
+   season record -- a gamelog needs the standing as it stood on each row's own date, so a 28-point
+   night against a team that was 2-9 at the time reads differently from one against a 9-2 team.
+   Bucketed by season so a multi-season log never mixes years. The record INCLUDES the game on
+   that row (the Basketball-Reference convention), which is why the lookup below is the last entry
+   with date <= d rather than < d. */
+let _teamRecordRunning = null;
+function runningTeamRecords(){
+  if(_teamRecordRunning) return _teamRecordRunning;
+  const bucket = new Map();
+  Object.values(DATA.games || {}).forEach(g=>{
+    if(!g || typeof g.date !== 'string' || g.homeScore === null || g.homeScore === undefined
+       || g.awayScore === null || g.awayScore === undefined) return;
+    [[g.home, g.homeScore, g.awayScore], [g.away, g.awayScore, g.homeScore]].forEach(pair=>{
+      const t = pair[0]; if(!t) return;
+      const k = t + '|' + g.date.slice(0,4);
+      if(!bucket.has(k)) bucket.set(k, []);
+      bucket.get(k).push({date: g.date, won: pair[1] > pair[2], lost: pair[1] < pair[2]});
+    });
+  });
+  const out = new Map();
+  bucket.forEach((arr, k)=>{
+    arr.sort((a,b)=> a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+    let w = 0, l = 0;
+    out.set(k, arr.map(e=>{ if(e.won) w++; else if(e.lost) l++; return {date: e.date, w, l}; }));
+  });
+  _teamRecordRunning = out;
+  return out;
+}
+// {text:'8-6', pct:0.571} for `team` as of the end of play on `dateStr`, or null if that team has
+// no completed games on or before it (which is what a scheduled-but-unplayed row would hit).
+function teamRecordAsOf(team, dateStr){
+  if(!team || typeof dateStr !== 'string') return null;
+  const arr = runningTeamRecords().get(team + '|' + dateStr.slice(0,4));
+  if(!arr || !arr.length) return null;
+  let hit = null;
+  for(let i = 0; i < arr.length; i++){ if(arr[i].date <= dateStr) hit = arr[i]; else break; }
+  if(!hit) return null;
+  const gp = hit.w + hit.l;
+  return {text: hit.w + '-' + hit.l, pct: gp ? hit.w / gp : 0};
+}
+// Stamps teamRec/oppRec (what's displayed) plus teamRecSort/oppRecSort (win pct, so the columns
+// sort by strength of opponent instead of lexicographically -- "10-5" would otherwise sort below
+// "9-6"). Rows must carry `date` and `opp`. Every call site passes freshly-built row objects.
+function attachGameRecords(rows, team){
+  (rows || []).forEach(r=>{
+    const mine = teamRecordAsOf(team, r.date);
+    const theirs = teamRecordAsOf(r.opp, r.date);
+    r.teamRec = mine ? mine.text : null;
+    r.teamRecSort = mine ? mine.pct : null;
+    r.oppRec = theirs ? theirs.text : null;
+    r.oppRecSort = theirs ? theirs.pct : null;
+  });
+  return rows;
+}
+const RECORD_COL_DEF_OPP = 'That opponent’s win–loss record for the season as of the end of this game (this game included). Sorts by win percentage, not alphabetically.';
+const RECORD_COL_DEF_TEAM = 'Her own team’s win–loss record for the season as of the end of this game (this game included). Sorts by win percentage, not alphabetically.';
+const RECORD_COLS = [
+  {key:'oppRec', label:'Opp Rec', left:true, noBoldStarter:true, sortBy:'oppRecSort', def:RECORD_COL_DEF_OPP},
+  {key:'teamRec', label:'Team Rec', left:true, noBoldStarter:true, sortBy:'teamRecSort', def:RECORD_COL_DEF_TEAM},
+];
+
 const PLAYER_ADV_COLS = [
   {key:'date', label:'Date', left:true, gameLink:true}, {key:'opp', label:'Opponent', left:true, teamLink:true},
+  ...RECORD_COLS,
   {key:'homeAway', label:'H/A', left:true}, {key:'dnp', label:'DNP', bool:true}, {key:'min', label:'MIN'},
   {key:'usgPct', label:'USG%', round2:true},
   {key:'ptsEma', label:'PTS EMA', round2:true}, {key:'ptsStd', label:'PTS StdDev(L10)', round2:true}, {key:'ptsIqr', label:'PTS IQR(L10)', round2:true},
@@ -2467,6 +2537,7 @@ function computePlayerAdvancedLog(pl, team){
 
 const PLAYER_LOG_COLS = [
   {key:'date', label:'Date', left:true, noBoldStarter:true, gameLink:true}, {key:'opp', label:'Opponent', left:true, noBoldStarter:true, teamLink:true},
+  ...RECORD_COLS,
   {key:'homeAway', label:'H/A', left:true, noBoldStarter:true}, {key:'starter', label:'Start', bool:true}, {key:'dnp', label:'DNP', bool:true},
   {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
   {key:'fgm', label:'FGM'}, {key:'fga', label:'FGA'}, {key:'fgPct', label:'FG%', pct:true},
@@ -3137,6 +3208,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     oreb: g.oreb, dreb: g.dreb, reb: g.reb, ast: g.ast, stl: g.stl, blk: g.blk,
     to: g.to, pf: g.pf, plusMinus: g.plusMinus,
   }));
+  attachGameRecords(logRows, team);
 
   const footerRows = [];
   const labels = [
@@ -3159,7 +3231,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
 
   const t5 = document.createElement('div'); t5.className='section-title'; t5.textContent=`Gamelog - Advanced, ${windowLabelText} (DNPs included)`; gamelogTabContent.appendChild(t5);
   appendDefIcon(t5, 'Same games as the box score table above, but built for forecasting against a sportsbook line instead of describing what already happened. USG% is the standard Basketball-Reference formula. EMA (exponential moving average) weights recent games more heavily and is computed using every game up to and including that row, oldest to newest. StdDev/IQR use a trailing window of up to the last 10 games played (not the calendar window above) \u2014 a high value means the average is a less reliable predictor of any single game than it looks. DvP Index compares that game\u2019s opponent to the league-average defense against her position for that stat, using ONLY games that had already been played before that game\u2019s tip-off (not the final, full-season DvP, which would leak in results from games that hadn\u2019t happened yet) \u2014 above 1.05 is a plus matchup (favors the Over), below 0.95 is a tougher one. "Potential Assists" isn\u2019t included \u2014 it genuinely can\u2019t be computed from this app\u2019s data source (see the Team page\u2019s Advanced Metrics section for the longer explanation).');
-  const advLogRows = computePlayerAdvancedLog(pl, team);
+  const advLogRows = attachGameRecords(computePlayerAdvancedLog(pl, team), team);
   makeTable(gamelogTabContent, PLAYER_ADV_COLS, advLogRows, {defaultSort:'date', defaultDir:'desc', hideLabel:'Hide games she didn\u2019t play (DNP)', gameIdFor: gameIdForLogRow});
 
   // ---- Vs Opponent: full-season gamelog + advanced metrics against one selected team ----
@@ -3183,7 +3255,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   function renderVsOpponentTables(opponentShort){
     vsOppStdContainer.innerHTML = ''; vsOppAdvContainer.innerHTML = '';
     if(!opponentShort) return;
-    const rows = gamesVsOpponentRows(playerName, team, opponentShort);
+    const rows = attachGameRecords(gamesVsOpponentRows(playerName, team, opponentShort), team);
     if(!rows.length){
       const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:16px;';
       na.textContent = `No meetings with ${FULL_TEAM_NAME[opponentShort]||opponentShort} yet this season.`;
@@ -3193,7 +3265,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     }
     const footerRows = buildStandardFooterRows(rows, STAT_KEYS_FOR_SUMMARY);
     makeTable(vsOppStdContainer, PLAYER_VS_OPP_COLS, rows, {defaultSort:'date', defaultDir:'desc', footerRows, gameIdFor: gameIdForLogRow});
-    const advRows = computePlayerAdvancedLogVsOpponent(playerName, team, opponentShort);
+    const advRows = attachGameRecords(computePlayerAdvancedLogVsOpponent(playerName, team, opponentShort), team);
     const ADV_STAT_KEYS = ['min','usgPct','ptsEma','ptsStd','ptsIqr','rebEma','rebStd','rebIqr','astEma','astStd','astIqr','dvpPts','dvpReb','dvpAst'];
     const advFooterRows = buildStandardFooterRows(advRows, ADV_STAT_KEYS);
     makeTable(vsOppAdvContainer, PLAYER_ADV_COLS, advRows, {defaultSort:'date', defaultDir:'desc', footerRows: advFooterRows, gameIdFor: gameIdForLogRow});
@@ -4893,6 +4965,10 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     return;
   }
 
+  // Stamps teamRec/oppRec onto the tier rows for the two record columns below. Idempotent, so
+  // it's safe against the memoised heightData the Specials tab shares.
+  attachGameRecords(heightData.allGames, team);
+
   let activeTier = initialTier;
   let activeSize = initialWindowSize;
   const head = document.createElement('div'); head.className='pagehead';
@@ -4928,6 +5004,11 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     {key:null, label:''},
     {key:'date', label:'Date', left:true, type:'string'},
     {key:'opp', label:'Opponent', left:true, type:'string'},
+    // Keyed on the sort field, not the display field: this table has its own comparator, and
+    // type:'number' on the win pct is what makes "10-5" sort above "9-6" here the same way
+    // makeTable's col.sortBy does in the gamelog tables.
+    {key:'oppRecSort', label:'Opp Rec', left:true, type:'number', fmt: (v, g)=> (g && g.oppRec) || '—'},
+    {key:'teamRecSort', label:'Team Rec', left:true, type:'number', fmt: (v, g)=> (g && g.teamRec) || '—'},
     {key:'oppHeight', label:'Opp Height', type:'number', fmt: v=>inchesToHeightStr(v) || '—'},
     {key:'homeAway', label:'H/A', left:true, type:'string'},
     {key:'starter', label:'Start', type:'number', fmt: v=>v?'Y':'N'},
@@ -5049,7 +5130,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
         } else if(col.key === 'opp' && g.opp){
           td.appendChild(teamLinkEl(g.opp, FULL_TEAM_NAME[g.opp] || g.opp, g.date ? g.date.slice(0,4) : undefined));
         } else if(col.fmt){
-          td.textContent = col.fmt(v);
+          td.textContent = col.fmt(v, g);
         } else if(col.pct){
           td.textContent = (v===null || v===undefined) ? '\u2014' : (v*100).toFixed(1)+'%';
         } else {
