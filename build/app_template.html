@@ -4727,14 +4727,23 @@ function computePositionGroupTierVsOpponent(bucket, opp, heightTierData){
       return { player: pname, avgMin, heightIn: bio.heightIn, height: bio.height || '—', tier: tier ? tier.charAt(0).toUpperCase()+tier.slice(1) : null, status };
     }).filter(Boolean).sort((a,b)=>b.avgMin-a.avgMin);
 
-  const withHeight = rows.filter(r=>r.heightIn!==undefined && r.heightIn!==null && r.avgMin>0);
+  // Players ruled OUT are excluded from the minutes-weighted height: if their 6'8" centre is out
+  // tonight, the group she actually faces IS shorter, and leaving that player in the average
+  // reports a tier she won't see. Day-To-Day is kept -- those players usually suit up, and
+  // dropping them would swing the tier on a maybe.
+  const measurable = r => r.heightIn !== undefined && r.heightIn !== null && r.avgMin > 0;
+  const available = rows.filter(r => measurable(r) && r.status !== 'Out');
+  // If literally everyone measurable is out, fall back to the full group rather than reporting no
+  // tier at all -- a stale tier is more useful than a blank one.
+  const withHeight = available.length ? available : rows.filter(measurable);
+  const excludedForInjury = available.length ? rows.filter(r => measurable(r) && r.status === 'Out').length : 0;
   let groupTier = null, weightedHeight = null;
   if(withHeight.length){
     const totalMin = withHeight.reduce((a,r)=>a+r.avgMin,0);
     weightedHeight = withHeight.reduce((a,r)=>a+r.heightIn*r.avgMin,0)/totalMin;
     groupTier = tierFor(weightedHeight); // lowercase ('shortest'/'middle'/'tallest') -- matches the keys buildHeightTierSection's stats object uses
   }
-  return { bucket, opp, rows, groupTier, weightedHeight };
+  return { bucket, opp, rows, groupTier, weightedHeight, excludedForInjury };
 }
 
 async function computeNextOpponentGroupTier(playerName, team, heightTierData){
@@ -6381,8 +6390,9 @@ function renderOddsPage(){
         resultsDiv.appendChild(holder);
         renderTopBetsTable(holder, cachedFetch, 0, [], new Set(), selectedBook, {
           bets: computeMatchupTopBets(mEv, mDetail, selectedBook),
+          showTierColumns: true,
           title: `\u2b50 Top Matchup Bets \u2014 ${matchupLabel}`,
-          titleDef: `Every bet the selected sportsbook is currently offering on this matchup, ranked 1 (most likely) downward by worst-case hit rate across the last-5, last-10 and last-15-game windows \u2014 the same "Overall %" ranking the Top Bets page uses, with the same columns and filters. Unlike that page there is no hit-rate qualifier and no cap on how many bets are listed, so low-probability bets appear here too, further down. <b>Min Price starts at -165</b> to match the Top Bets cutoff; clear or change it to see bets at any price. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.`,
+          titleDef: `Every bet the selected sportsbook is currently offering on this matchup, ranked 1 (most likely) downward by worst-case hit rate across the last-5, last-10 and last-15-game windows \u2014 the same "Overall %" ranking the Top Bets page uses, with the same columns and filters, plus two the Top Bets page doesn\u2019t carry: <b>Matchup Group</b> (the height tier of the opposing players at her position tonight, counting only those not ruled Out) and <b>Vs That Tier</b> (her season record against that same tier, across every team she\u2019s faced). Unlike that page there is no hit-rate qualifier and no cap on how many bets are listed, so low-probability bets appear here too, further down. <b>Min Price starts at -165</b> to match the Top Bets cutoff; clear or change it to see bets at any price. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.`,
           emptyMessage: `No lines are posted for ${matchupLabel} yet at the selected sportsbook \u2014 books typically post player props a day or two before tip-off. Try switching the Sportsbook selector above.`,
           defaultFilters: {minPrice: -165},
         });
@@ -7350,6 +7360,125 @@ function computeMatchupTopBets(ev, detail, selectedBook){
   return legs;
 }
 
+/* ================= Click-to-sort for the Top Bets tables =================
+   Standard, Advanced, Specials and the per-matchup board don't go through makeTable -- their cells
+   are bespoke (hit-rate chips, team links, two-line sub-labels, click-through rank cells), so this
+   bolts sorting onto a <thead> that already exists. `specs` is one entry per column, index-parallel
+   with the header cells; an entry of null, or one without a .value function, leaves that header
+   inert -- which is how the composite "Vs Opponent" / "Vs Similar Defenses" cells opt out, since
+   there's no single number they could sensibly sort on.
+
+   Nulls always sort LAST in both directions, so an empty cell never floats to the top looking like
+   the best (or worst) value. Text columns default to A-Z and numeric ones to high-first, because
+   that's the useful first click in each case. */
+function attachTableSort(thead, specs, onChange){
+  const ths = [...thead.querySelectorAll('th')];
+  if(ths.length !== specs.length){
+    console.warn(`attachTableSort: ${specs.length} specs for ${ths.length} header cells -- sorting may be wired to the wrong columns.`);
+  }
+  const state = {index: null, dir: 'desc'};
+  specs.forEach((spec, i)=>{
+    const th = ths[i];
+    if(!th || !spec || typeof spec.value !== 'function') return;
+    th.style.cursor = 'pointer';
+    th.title = 'Click to sort by this column';
+    const arrow = document.createElement('span');
+    arrow.className = 'tbl-sort-arrow';
+    arrow.style.cssText = 'font-size:9px;margin-left:3px;color:var(--sub);';
+    th.appendChild(arrow);
+    th.addEventListener('click', ()=>{
+      if(state.index === i){ state.dir = state.dir === 'asc' ? 'desc' : 'asc'; }
+      else { state.index = i; state.dir = spec.dir || 'desc'; }
+      onChange();
+    });
+  });
+  state.updateArrows = ()=>{
+    ths.forEach((th, i)=>{
+      const arrow = th && th.querySelector('.tbl-sort-arrow');
+      if(arrow) arrow.textContent = state.index === i ? (state.dir === 'asc' ? '\u25B2' : '\u25BC') : '';
+    });
+  };
+  // Returns a sorted COPY, leaving the caller's array (and therefore the original rank order) alone.
+  // `unwrap` pulls the bet out of whatever the caller is iterating -- the Standard and Advanced
+  // tables iterate {bet, origRank} wrappers, Specials iterates bets directly.
+  state.apply = (rows, unwrap)=>{
+    if(state.index === null) return rows;
+    const spec = specs[state.index];
+    if(!spec || typeof spec.value !== 'function') return rows;
+    const dir = state.dir === 'asc' ? 1 : -1;
+    const isBlank = v => v === null || v === undefined || (typeof v === 'number' && isNaN(v)) || v === '';
+    return rows.slice().sort((a, b)=>{
+      const va = spec.value(unwrap ? unwrap(a) : a, a);
+      const vb = spec.value(unwrap ? unwrap(b) : b, b);
+      if(isBlank(va) && isBlank(vb)) return 0;
+      if(isBlank(va)) return 1;
+      if(isBlank(vb)) return -1;
+      if(typeof va === 'string' || typeof vb === 'string') return String(va).localeCompare(String(vb)) * dir;
+      return (va - vb) * dir;
+    });
+  };
+  return state;
+}
+
+// Scalar accessors behind the composite cells, so a header sorts by the same number the cell
+// shows. Each dispatches on whether the bet is a player prop (position-specific defense metrics)
+// or team-level, exactly as the cell builders do, and returns null when the value isn't available.
+function betIsProp(bet){ return bet.betType === 'player_prop' || bet.betType === 'player_prop_alt'; }
+function betPositionBucket(bet){ return positionBucket(getPlayerPosition(bet.player, bet.team)); }
+function betDefRankValue(bet, windowSize){
+  if(!bet.opponent) return null;
+  if(betIsProp(bet)){
+    const bucket = betPositionBucket(bet);
+    if(!bucket) return null;
+    const r = windowSize === 5 ? getDefenseRankL5(bet.opponent, bet.statKey, bucket)
+                               : getDefenseRank(bet.opponent, bet.statKey, bucket);
+    return r ? r.rank : null;
+  }
+  const r = getTeamDefenseRank(bet.opponent, windowSize === 5 ? 5 : null);
+  return r ? r.rank : null;
+}
+function betDefAllowedValue(bet){
+  if(!bet.opponent) return null;
+  let r;
+  if(betIsProp(bet)){
+    const bucket = betPositionBucket(bet);
+    r = bucket ? getDefenseRank(bet.opponent, bet.statKey, bucket) : null;
+  } else {
+    r = getTeamDefenseRank(bet.opponent, null);
+  }
+  if(!r || r.perGame === null || r.perGame === undefined) return null;
+  const n = Number(r.perGame);
+  return isNaN(n) ? null : n;
+}
+function betDvpValue(bet, windowSize){
+  if(!bet.opponent) return null;
+  if(betIsProp(bet)){
+    const bucket = betPositionBucket(bet);
+    return bucket ? dvpIndexWindow(bet.opponent, bet.statKey, bucket, windowSize) : null;
+  }
+  return teamDvpIndex(bet.opponent, windowSize);
+}
+function betEmaValue(bet){
+  if(betIsProp(bet)) return betTiebreakEma(bet);
+  const metric = teamBetMetricType(bet.betType);
+  return (metric && bet.team) ? teamEma(bet.team, metric, 10) : null;
+}
+function betPosValue(bet){ return betIsProp(bet) ? (getPlayerPosition(bet.player, bet.team) || null) : null; }
+// The opposing position group's height tier for a specific bet, and her season record against
+// that tier. Both lean on the Specials caches, so repeated calls across a table's rows are cheap.
+function betGroupTierInfo(bet){
+  if(!betIsProp(bet) || !bet.player || !bet.team || !bet.opponent) return null;
+  const tierData = cachedHeightTierData(bet.player, bet.team);
+  if(!tierData) return null;
+  return cachedOpponentGroupTier(bet.player, bet.team, bet.opponent, tierData);
+}
+function betTierHitRate(bet){
+  const g = betGroupTierInfo(bet);
+  if(!g || !g.groupTier) return null;
+  const tierData = cachedHeightTierData(bet.player, bet.team);
+  return tierData ? tierHitRateForLeg(bet, g.groupTier, tierData) : null;
+}
+
 // Identifies "the same specific bet" across the Standard and Advanced tables, so a shared row
 // can be gold-starred. Only meaningful for player props (the only bet type Advanced covers) --
 // team-level bets (moneyline/spread/total) can never appear in Advanced, so they never match.
@@ -7402,20 +7531,6 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
 
   // Filter bar: narrows the topBets list itself before any rendering below happens, so the
   // existing row-building loop (star column, row tinting, etc.) never needs to change.
-  // Single DvP Index value for ANY bet type (player prop or team-level), for sorting purposes
-  // -- dispatches to the position-specific version for props, team-level for everything else.
-  function betDvpValue(bet, windowSize){
-    if(!bet.opponent) return null;
-    if(bet.betType==='player_prop' || bet.betType==='player_prop_alt'){
-      const bucket = positionBucket(getPlayerPosition(bet.player, bet.team));
-      return bucket ? dvpIndexWindow(bet.opponent, bet.statKey, bucket, windowSize) : null;
-    }
-    return teamDvpIndex(bet.opponent, windowSize);
-  }
-  // Click-to-sort state for the four DvP columns specifically -- `active` tracks whether ANY
-  // DvP column is currently driving the sort (key alone can't tell us that, since key=null is
-  // itself a legitimate selection -- it means the Season window, not "nothing selected").
-  const dvpSort = { active: false, key: null, dir: 'desc' };
 
   const stdFilters = Object.assign(
     { pos:'', minOverall:null, minL5:null, minL10:null, minL15:null, minSeason:null, minPrice:null, maxPrice:null },
@@ -7477,45 +7592,34 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   toggleRow.appendChild(expandLabel);
   container.appendChild(toggleRow);
 
+  // The opposing height-tier pair, opt-in per caller. Only the per-matchup board asks for them:
+  // on the day-wide Top 30 they'd mean 30 separate opponent lookups for a column that's really a
+  // single-matchup question.
+  const showTierCols = !!opts.showTierColumns;
   const wrap = document.createElement('div'); wrap.className='table-wrap compact-show-all'; // all details shown from the start, in both Full and Compact mode -- no toggle needed
   expandCb.addEventListener('change', ()=>{ wrap.classList.toggle('show-simdef-extra', expandCb.checked); });
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th>Price</th><th class="th-overall">Overall %</th>'
-    +'<th class="th-l5 compact-hide">L5%</th><th class="th-l10 compact-hide">L10%</th><th class="th-l15 compact-hide">L15%</th><th class="th-season compact-hide">Season%</th><th class="th-l10ema compact-hide">L10 EMA</th>'
+    +'<th class="th-l5 compact-hide">L5%</th><th class="th-l10 compact-hide">L10%</th><th class="th-l15 compact-hide">L15%</th><th class="th-season compact-hide">Season%</th>'
+    + (showTierCols ? '<th class="left th-group compact-hide">Matchup Group</th><th class="th-vstier compact-hide">Vs That Tier</th>' : '')
+    +'<th class="th-l10ema compact-hide">L10 EMA</th>'
     +'<th class="defcol th-defallowed compact-hide">Allowed/Gm</th><th class="left compact-hide">Game</th><th class="left compact-hide">Vs Opponent This Season</th>'
     +'<th class="left defcol th-defrank compact-hide">Opp Def Rank</th><th class="left th-simdef compact-hide">Vs Similar Defenses</th>'
     +'<th class="left defcol th-defrankl5 compact-hide">Opp Def Rank (L5)</th><th class="left th-simdefl5 compact-hide">Vs Similar Defenses (L5)</th>'
-    +'<th class="defcol th-dvpseason compact-hide" style="cursor:pointer;">DvP (Season)</th><th class="defcol th-dvpl15 compact-hide" style="cursor:pointer;">DvP (L15)</th>'
-    +'<th class="defcol th-dvpl10 compact-hide" style="cursor:pointer;">DvP (L10)</th><th class="defcol th-dvpl5 compact-hide" style="cursor:pointer;">DvP (L5)</th>'
+    +'<th class="defcol th-dvpseason compact-hide">DvP (Season)</th><th class="defcol th-dvpl15 compact-hide">DvP (L15)</th>'
+    +'<th class="defcol th-dvpl10 compact-hide">DvP (L10)</th><th class="defcol th-dvpl5 compact-hide">DvP (L5)</th>'
     +'<th class="left compact-hide">Sportsbook</th><th></th></tr>';
-  // Each DvP header sorts the table by that specific window's value on click -- click again to
-  // flip direction, same as any other sortable column elsewhere in this app. Click a DIFFERENT
-  // DvP column and it takes over as the active sort. Nulls (no data available) always sort last
-  // regardless of direction, so an empty cell never ends up looking like "the best/worst" value.
-  [['th-dvpseason', null], ['th-dvpl15', 15], ['th-dvpl10', 10], ['th-dvpl5', 5]].forEach(([cls, windowSize])=>{
-    const th = thead.querySelector('.'+cls);
-    const arrow = document.createElement('span'); arrow.className = 'dvp-sort-arrow';
-    th.appendChild(arrow);
-    th.addEventListener('click', ()=>{
-      if(dvpSort.active && dvpSort.key === windowSize){ dvpSort.dir = dvpSort.dir==='desc' ? 'asc' : 'desc'; }
-      else { dvpSort.active = true; dvpSort.key = windowSize; dvpSort.dir = 'desc'; }
-      renderStdTable();
-    });
-  });
-  function updateDvpSortArrows(){
-    [['th-dvpseason', null], ['th-dvpl15', 15], ['th-dvpl10', 10], ['th-dvpl5', 5]].forEach(([cls, windowSize])=>{
-      const th = thead.querySelector('.'+cls);
-      const arrow = th.querySelector('.dvp-sort-arrow');
-      arrow.textContent = (dvpSort.active && dvpSort.key===windowSize) ? (dvpSort.dir==='asc' ? ' \u25B2' : ' \u25BC') : '';
-    });
-  }
   appendDefIcon(thead.querySelector('.th-dvpseason'), 'Opponent\u2019s season-long DvP Index \u2014 how much more (or less) than league-average this defense yields to her position for this stat. Above 1.05 favors the Over, 0.95 or below favors the Under. Click to sort the table by this column.');
   appendDefIcon(thead.querySelector('.th-dvpl15'), 'Same as DvP (Season), but built on the opponent\u2019s last 15 games instead of the full season. Click to sort.');
   appendDefIcon(thead.querySelector('.th-dvpl10'), 'Same as DvP (Season), but built on the opponent\u2019s last 10 games instead of the full season. Click to sort.');
   appendDefIcon(thead.querySelector('.th-dvpl5'), 'Same as DvP (Season), but built on the opponent\u2019s last 5 games instead of the full season -- catches recent form the season-long window would smooth over. Click to sort.');
   appendDefIcon(thead.querySelector('.th-l10ema'), 'Her exponential moving average (recent games weighted more heavily) over her last 10 games played, for this exact stat \u2014 used as the second tiebreaker when Overall % and Season % are both tied (the actual number this drives is the signed distance from the line in this bet\u2019s favor, so it\u2019s directly comparable across Over and Under bets).');
   appendDefIcon(thead.querySelector('.th-simdefl5'), 'Same idea as Vs Similar Defenses, but \u201csimilarly ranked\u201d is based on each team\u2019s defense over just their last 5 games, not the full season \u2014 catches recent form the season-long window would smooth over.');
+  if(showTierCols){
+    appendDefIcon(thead.querySelector('.th-group'), 'The height tier of the opposing position group she\u2019ll be matched up against tonight \u2014 minutes-weighted average height of the opponent\u2019s players at her position, placed against her own season terciles (shortest / middle / tallest). <b>Players ruled Out are excluded</b>, so this reflects who can actually take the floor; Day-To-Day players are kept. The height in brackets is that weighted average.');
+    appendDefIcon(thead.querySelector('.th-vstier'), 'How often this exact bet would have hit in her games this season against opposing position groups in that same height tier \u2014 every team she\u2019s faced, not just tonight\u2019s opponent. Small samples are common here: 80% over 5 games is 4-of-5, not a probability.');
+  }
   appendDefIcon(thead.querySelector('.th-overall'), 'The actual number this table is ranked by: the worst-case (minimum) hit rate across whichever of L5/L10/L15 are available for this bet. A bet only ranks as high as its weakest window \u2014 one great window can\u2019t hide a mediocre one.');
   appendDefIcon(thead.querySelector('.th-l5'), 'Hit rate over her last 5 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-l10'), 'Hit rate over her last 10 games played, with the actual record (hits/games) in parentheses.');
@@ -7540,20 +7644,46 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     return true;
   }
 
+  // One entry per header cell, in header order. The two "Vs ..." columns and the trailing Track
+  // column are deliberately null -- they render multi-line composites with no single sortable value.
+  const stdSortSpecs = [
+    {value: bet => { const k = betIdentityKey(bet); return k && starredKeys.has(k) ? 1 : 0; }}, // star
+    {value: (bet, row) => row.origRank, dir: 'asc'},                                            // Rank
+    {value: betPosValue, dir: 'asc'},                                                           // Pos
+    {value: bet => bet.label, dir: 'asc'},                                                      // Bet
+    {value: bet => bet.price},                                                                  // Price
+    {value: bet => worstCaseRate(bet)},                                                         // Overall %
+    {value: bet => bet.rate5},                                                                  // L5%
+    {value: bet => bet.rate10},                                                                 // L10%
+    {value: bet => bet.rate15},                                                                 // L15%
+    {value: bet => bet.rateAll},                                                                // Season%
+    ...(showTierCols ? [
+      {value: bet => { const g = betGroupTierInfo(bet); return g ? g.weightedHeight : null; }, dir: 'asc'}, // Matchup Group (by height, so shortest->tallest)
+      {value: bet => { const hr = betTierHitRate(bet); return hr ? hr.rate : null; }},          // Vs That Tier
+    ] : []),
+    {value: betEmaValue},                                                                       // L10 EMA
+    {value: betDefAllowedValue},                                                                // Allowed/Gm
+    {value: bet => bet.game, dir: 'asc'},                                                       // Game
+    null,                                                                                       // Vs Opponent This Season
+    {value: bet => betDefRankValue(bet, null), dir: 'asc'},                                     // Opp Def Rank (1 = toughest)
+    null,                                                                                       // Vs Similar Defenses
+    {value: bet => betDefRankValue(bet, 5), dir: 'asc'},                                        // Opp Def Rank (L5)
+    null,                                                                                       // Vs Similar Defenses (L5)
+    {value: bet => betDvpValue(bet, null)},                                                     // DvP (Season)
+    {value: bet => betDvpValue(bet, 15)},                                                       // DvP (L15)
+    {value: bet => betDvpValue(bet, 10)},                                                       // DvP (L10)
+    {value: bet => betDvpValue(bet, 5)},                                                        // DvP (L5)
+    {value: bet => bet.sportsbook, dir: 'asc'},                                                 // Sportsbook
+    null,                                                                                       // Track
+  ];
+  const stdSort = attachTableSort(thead, stdSortSpecs, ()=>renderStdTable());
+
   function renderStdTable(){
     tbody.innerHTML = '';
-    updateDvpSortArrows();
+    stdSort.updateArrows();
     const withOrigRank = topBets.map((bet, i) => ({bet, origRank: i+1}));
     let filtered = withOrigRank.filter(({bet}) => passesStdFilters(bet));
-    if(dvpSort.active){
-      filtered = filtered.slice().sort((a,b)=>{
-        const va = betDvpValue(a.bet, dvpSort.key), vb = betDvpValue(b.bet, dvpSort.key);
-        if(va===null && vb===null) return 0;
-        if(va===null) return 1;  // nulls always sort last, regardless of direction
-        if(vb===null) return -1;
-        return dvpSort.dir==='asc' ? va-vb : vb-va;
-      });
-    }
+    filtered = stdSort.apply(filtered, row => row.bet);
     stdCountDiv.textContent = `${filtered.length} / ${topBets.length} rows shown`;
     filtered.forEach(({bet, origRank})=>{
     const idx = origRank - 1; // preserves the bet's ORIGINAL Top 30 rank even when filtered, rather than renumbering the filtered subset from 1
@@ -7613,6 +7743,43 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     const tdL15 = mkRate(bet.rate15, bet.gp15, isProp ? hitCountFor(bet,15) : null);
     const tdSeason = mkRate(bet.rateAll, bet.gpAll, isProp ? hitCountFor(bet,'all') : null);
     [tdL5, tdL10, tdL15, tdSeason].forEach(td=>td.classList.add('compact-hide'));
+    // Opposing height tier + her season record against that tier. Both are memoised per player
+    // (and per player+opponent), so the ~70 rows of a matchup board cost roughly one heavy
+    // computeHeightTierData call per distinct player, not one per row.
+    let tdGroupTier = null, tdVsTier = null;
+    if(showTierCols){
+      tdGroupTier = document.createElement('td'); tdGroupTier.className='left compact-hide';
+      tdGroupTier.style.cssText = cellStyle.replace('text-align:center;','');
+      tdVsTier = document.createElement('td'); tdVsTier.style.cssText = cellStyle; tdVsTier.classList.add('compact-hide');
+      const g = betGroupTierInfo(bet);
+      if(g && g.groupTier){
+        const link = document.createElement('a');
+        link.href = 'javascript:void(0)'; link.className = 'player-link';
+        link.textContent = TIER_LABEL[g.groupTier] || g.groupTier;
+        link.title = `${bet.player}\u2019s season game log vs ${TIER_LABEL[g.groupTier] || g.groupTier} opposing groups \u2014 every team, not just tonight\u2019s`;
+        link.addEventListener('click', ()=>renderHeightTierDetailPage(bet.player, bet.team, g.groupTier, null, lastRender, CURRENT_SEASON));
+        tdGroupTier.appendChild(link);
+        if(g.weightedHeight){
+          const h = document.createElement('span');
+          h.style.cssText = 'color:var(--sub);font-size:11px;margin-left:4px;';
+          h.textContent = `(${inchesToHeightStr(g.weightedHeight) || ''})`;
+          tdGroupTier.appendChild(h);
+        }
+        if(g.excludedForInjury){
+          const note = document.createElement('div');
+          note.style.cssText = 'font-size:10px;color:var(--sub);';
+          note.textContent = `${g.excludedForInjury} out`;
+          note.title = `${g.excludedForInjury} player(s) at this position are ruled Out and are excluded from the weighted height above.`;
+          tdGroupTier.appendChild(note);
+        }
+      } else {
+        tdGroupTier.textContent = '\u2014'; tdGroupTier.style.color = 'var(--sub)';
+      }
+      const hr = betTierHitRate(bet);
+      if(hr) tdVsTier.appendChild(singleWindowChip('', hr));
+      else { tdVsTier.textContent = '\u2014'; tdVsTier.style.color = 'var(--sub)'; }
+    }
+
     const tdL10Ema = document.createElement('td'); tdL10Ema.style.cssText = cellStyle; tdL10Ema.classList.add('compact-hide');
     if(isProp){
       const ema = betTiebreakEma(bet);
@@ -7696,7 +7863,10 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar, tdRank, tdPos, tdLabel, tdPrice, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdL10Ema, tdAllowed, tdGame, tdVsOpp, tdDef, tdSimDef, tdDefL5, tdSimDefL5, tdDvpSeason, tdDvpL15, tdDvpL10, tdDvpL5col, tdSportsbook, tdTrack].forEach(td=>tr.appendChild(td));
+    [tdStar, tdRank, tdPos, tdLabel, tdPrice, tdOverall, tdL5, tdL10, tdL15, tdSeason]
+      .concat(showTierCols ? [tdGroupTier, tdVsTier] : [])
+      .concat([tdL10Ema, tdAllowed, tdGame, tdVsOpp, tdDef, tdSimDef, tdDefL5, tdSimDefL5, tdDvpSeason, tdDvpL15, tdDvpL10, tdDvpL5col, tdSportsbook, tdTrack])
+      .forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
     });
   }
@@ -7820,10 +7990,37 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     return true;
   }
 
+  // Header order: star, Rank, Pos, Bet, Game, Vs Opponent, Price, Sportsbook, Opp Def Rank,
+  // Opp Def Rank L5, Allowed/Gm, L5, L10, L15, Season, Agree, DvP Idx, Injury, Track.
+  const advSortSpecs = [
+    {value: bet => { const k = betIdentityKey(bet); return k && starredKeys.has(k) ? 1 : 0; }},
+    {value: (bet, row) => row.origRank, dir: 'asc'},
+    {value: betPosValue, dir: 'asc'},
+    {value: bet => bet.label, dir: 'asc'},
+    {value: bet => bet.game, dir: 'asc'},
+    null,                                                        // Vs Opponent This Season -- composite
+    {value: bet => bet.price},
+    {value: bet => bet.sportsbook, dir: 'asc'},
+    {value: bet => betDefRankValue(bet, null), dir: 'asc'},
+    {value: bet => betDefRankValue(bet, 5), dir: 'asc'},
+    {value: betDefAllowedValue},
+    {value: bet => bet.edge && bet.edge.l5},                     // these four are EMAs, not hit rates
+    {value: bet => bet.edge && bet.edge.l10},
+    {value: bet => bet.edge && bet.edge.l15},
+    {value: bet => bet.edge && bet.edge.full},
+    {value: bet => bet.edge && bet.edge.agreement},
+    {value: bet => bet.edge && bet.edge.dvp},
+    {value: bet => bet.injuryNote || null, dir: 'asc'},
+    null,                                                        // Track
+  ];
+  const advSort = attachTableSort(thead, advSortSpecs, ()=>renderAdvTable());
+
   function renderAdvTable(){
     tbody.innerHTML = '';
+    advSort.updateArrows();
     const withOrigRank = topBets.map((bet, i) => ({bet, origRank: i+1}));
-    const filtered = withOrigRank.filter(({bet}) => passesAdvFilters(bet));
+    let filtered = withOrigRank.filter(({bet}) => passesAdvFilters(bet));
+    filtered = advSort.apply(filtered, row => row.bet);
     advCountDiv.textContent = `${filtered.length} / ${topBets.length} rows shown`;
     filtered.forEach(({bet, origRank})=>{
     const idx = origRank - 1;
@@ -8094,65 +8291,93 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   const TIER_TITLE = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
-  bets.forEach(bet=>{
-    const tr = document.createElement('tr');
-    const tdBet = document.createElement('td'); tdBet.className='left';
-    tdBet.appendChild(buildLegLabelNode(bet));
-    tr.appendChild(tdBet);
-    const tdGame = document.createElement('td'); tdGame.className='left';
-    // Both teams clickable rather than one flat string.
-    if(bet.awayShort && bet.homeShort){
-      tdGame.appendChild(teamLinkEl(bet.awayShort, bet.awayFull || FULL_TEAM_NAME[bet.awayShort]));
-      tdGame.appendChild(document.createTextNode(' @ '));
-      tdGame.appendChild(teamLinkEl(bet.homeShort, bet.homeFull || FULL_TEAM_NAME[bet.homeShort]));
-    } else {
-      tdGame.style.color='var(--sub)'; tdGame.textContent = bet.game;
-    }
-    tr.appendChild(tdGame);
-    const tdPrice = document.createElement('td'); tdPrice.style.fontWeight='700';
-    tdPrice.textContent = fmtAmerican(bet.price); tr.appendChild(tdPrice);
-    const tdL5 = document.createElement('td'); tdL5.appendChild(singleWindowChip('', bet.hr5)); tr.appendChild(tdL5);
-    const tdL10 = document.createElement('td'); tdL10.appendChild(singleWindowChip('', bet.hr10)); tr.appendChild(tdL10);
-    const tdL15 = document.createElement('td'); tdL15.appendChild(singleWindowChip('', bet.hr15)); tr.appendChild(tdL15);
-    const tdGroup = document.createElement('td'); tdGroup.className='left';
-    // Clicking the tier opens her full game-by-game record against opposing groups in that
-    // height band -- across every team she's faced, not just tonight's opponent.
-    const groupText = `${TIER_TITLE[bet.groupTier] || bet.groupTier}`
-      + (bet.groupHeightIn ? ` (${inchesToHeightStr(bet.groupHeightIn) || ''})` : '');
-    const groupLink = document.createElement('a');
-    groupLink.href = 'javascript:void(0)'; groupLink.className = 'player-link';
-    groupLink.textContent = groupText;
-    groupLink.title = `${bet.player}'s season game log vs ${TIER_TITLE[bet.groupTier] || bet.groupTier} opposing ${POSITION_LABEL[positionBucket(getPlayerPosition(bet.player, bet.team))] || 'players'} — every team, not just tonight's`;
-    groupLink.addEventListener('click', ()=>{
-      renderHeightTierDetailPage(bet.player, bet.team, bet.groupTier, null, ()=>renderHomePage(), CURRENT_SEASON);
+  // Header order: Bet, Game, Price, L5, L10, L15, Tonight's Group, Vs That Tier, Vs That Team,
+  // Opp Def Rank, Opp Def Rank L5, Sportsbook, Track. The hit-rate cells hold {found, rate, hits,
+  // gp} objects, so each sorts on .rate -- and only when that window actually has games behind it.
+  const hrRate = hr => (hr && hr.found && hr.gp) ? hr.rate : null;
+  const specialsSortSpecs = [
+    {value: bet => bet.label, dir: 'asc'},
+    {value: bet => bet.game, dir: 'asc'},
+    {value: bet => bet.price},
+    {value: bet => hrRate(bet.hr5)},
+    {value: bet => hrRate(bet.hr10)},
+    {value: bet => hrRate(bet.hr15)},
+    // Sorted by the group's actual weighted height, not the tier name -- that keeps
+    // shortest -> middle -> tallest in a meaningful order instead of alphabetical.
+    {value: bet => bet.groupHeightIn, dir: 'asc'},
+    {value: bet => hrRate(bet.hrTier)},
+    null,                                                    // Vs That Team -- composite cell
+    {value: bet => betDefRankValue(bet, null), dir: 'asc'},
+    {value: bet => betDefRankValue(bet, 5), dir: 'asc'},
+    {value: bet => bookSourceLabel({price: bet.price, book: bet.book}, selectedBook) || null, dir: 'asc'},
+    null,                                                    // Track
+  ];
+  const specialsSort = attachTableSort(thead, specialsSortSpecs, ()=>renderSpecialsRows());
+
+  function renderSpecialsRows(){
+    tbody.innerHTML = '';
+    specialsSort.updateArrows();
+    specialsSort.apply(bets).forEach(bet=>{
+      const tr = document.createElement('tr');
+      const tdBet = document.createElement('td'); tdBet.className='left';
+      tdBet.appendChild(buildLegLabelNode(bet));
+      tr.appendChild(tdBet);
+      const tdGame = document.createElement('td'); tdGame.className='left';
+      // Both teams clickable rather than one flat string.
+      if(bet.awayShort && bet.homeShort){
+        tdGame.appendChild(teamLinkEl(bet.awayShort, bet.awayFull || FULL_TEAM_NAME[bet.awayShort]));
+        tdGame.appendChild(document.createTextNode(' @ '));
+        tdGame.appendChild(teamLinkEl(bet.homeShort, bet.homeFull || FULL_TEAM_NAME[bet.homeShort]));
+      } else {
+        tdGame.style.color='var(--sub)'; tdGame.textContent = bet.game;
+      }
+      tr.appendChild(tdGame);
+      const tdPrice = document.createElement('td'); tdPrice.style.fontWeight='700';
+      tdPrice.textContent = fmtAmerican(bet.price); tr.appendChild(tdPrice);
+      const tdL5 = document.createElement('td'); tdL5.appendChild(singleWindowChip('', bet.hr5)); tr.appendChild(tdL5);
+      const tdL10 = document.createElement('td'); tdL10.appendChild(singleWindowChip('', bet.hr10)); tr.appendChild(tdL10);
+      const tdL15 = document.createElement('td'); tdL15.appendChild(singleWindowChip('', bet.hr15)); tr.appendChild(tdL15);
+      const tdGroup = document.createElement('td'); tdGroup.className='left';
+      // Clicking the tier opens her full game-by-game record against opposing groups in that
+      // height band -- across every team she's faced, not just tonight's opponent.
+      const groupText = `${TIER_TITLE[bet.groupTier] || bet.groupTier}`
+        + (bet.groupHeightIn ? ` (${inchesToHeightStr(bet.groupHeightIn) || ''})` : '');
+      const groupLink = document.createElement('a');
+      groupLink.href = 'javascript:void(0)'; groupLink.className = 'player-link';
+      groupLink.textContent = groupText;
+      groupLink.title = `${bet.player}'s season game log vs ${TIER_TITLE[bet.groupTier] || bet.groupTier} opposing ${POSITION_LABEL[positionBucket(getPlayerPosition(bet.player, bet.team))] || 'players'} — every team, not just tonight's`;
+      groupLink.addEventListener('click', ()=>{
+        renderHeightTierDetailPage(bet.player, bet.team, bet.groupTier, null, ()=>renderHomePage(), CURRENT_SEASON);
+      });
+      tdGroup.appendChild(groupLink);
+      tr.appendChild(tdGroup);
+      const tdTier = document.createElement('td'); tdTier.appendChild(singleWindowChip('', bet.hrTier)); tr.appendChild(tdTier);
+      const tdVsTeam = document.createElement('td'); tdVsTeam.className='left';
+      tdVsTeam.style.cssText = 'font-size:11px;';
+      tdVsTeam.appendChild(buildVsOpponentCell(bet)); // same green-dot / red-X treatment as the Standard and Advanced tables
+      tr.appendChild(tdVsTeam);
+      // Season and last-5 opponent defensive rank vs her position -- the same two cell builders
+      // (and the same click-through to the league-wide modal) the Standard and Advanced tables use.
+      const tdDef = document.createElement('td'); tdDef.className='left defcol'; tdDef.style.cssText='font-size:12px;';
+      const tdDefL5 = document.createElement('td'); tdDefL5.className='left defcol'; tdDefL5.style.cssText='font-size:12px;';
+      if(bet.opponent){
+        tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
+        tdDefL5.appendChild(defRankL5Cell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
+      } else {
+        tdDef.textContent = '\u2014'; tdDefL5.textContent = '\u2014';
+      }
+      tr.appendChild(tdDef); tr.appendChild(tdDefL5);
+      const tdBook = document.createElement('td'); tdBook.className='left';
+      tdBook.style.cssText='color:var(--sub);font-size:11px;';
+      tdBook.textContent = bookSourceLabel({price:bet.price, book:bet.book}, selectedBook) || '';
+      tr.appendChild(tdBook);
+      const tdTrack = document.createElement('td');
+      tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 5));
+      tr.appendChild(tdTrack);
+      tbody.appendChild(tr);
     });
-    tdGroup.appendChild(groupLink);
-    tr.appendChild(tdGroup);
-    const tdTier = document.createElement('td'); tdTier.appendChild(singleWindowChip('', bet.hrTier)); tr.appendChild(tdTier);
-    const tdVsTeam = document.createElement('td'); tdVsTeam.className='left';
-    tdVsTeam.style.cssText = 'font-size:11px;';
-    tdVsTeam.appendChild(buildVsOpponentCell(bet)); // same green-dot / red-X treatment as the Standard and Advanced tables
-    tr.appendChild(tdVsTeam);
-    // Season and last-5 opponent defensive rank vs her position -- the same two cell builders
-    // (and the same click-through to the league-wide modal) the Standard and Advanced tables use.
-    const tdDef = document.createElement('td'); tdDef.className='left defcol'; tdDef.style.cssText='font-size:12px;';
-    const tdDefL5 = document.createElement('td'); tdDefL5.className='left defcol'; tdDefL5.style.cssText='font-size:12px;';
-    if(bet.opponent){
-      tdDef.appendChild(defRankCell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
-      tdDefL5.appendChild(defRankL5Cell(bet.opponent, bet.statKey, bet.player, bet.team, bet.market));
-    } else {
-      tdDef.textContent = '\u2014'; tdDefL5.textContent = '\u2014';
-    }
-    tr.appendChild(tdDef); tr.appendChild(tdDefL5);
-    const tdBook = document.createElement('td'); tdBook.className='left';
-    tdBook.style.cssText='color:var(--sub);font-size:11px;';
-    tdBook.textContent = bookSourceLabel({price:bet.price, book:bet.book}, selectedBook) || '';
-    tr.appendChild(tdBook);
-    const tdTrack = document.createElement('td');
-    tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 5));
-    tr.appendChild(tdTrack);
-    tbody.appendChild(tr);
-  });
+  }
+  renderSpecialsRows();
   table.appendChild(tbody);
   wrap.appendChild(table);
   container.appendChild(wrap);
