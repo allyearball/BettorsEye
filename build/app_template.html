@@ -8864,10 +8864,25 @@ function findHistoricalGame(team, opponent, gameDate){
   // (no exact match yet, since it hasn't been played/ingested) would silently fall back to the
   // closest PAST meeting between the same two teams (they play each other multiple times a
   // season) and get incorrectly graded against that old game instead of staying pending.
-  const todayStr = new Date().toISOString().slice(0,10);
+  //
+  // "Today" MUST be computed in Eastern, not UTC. WNBA games are date-tagged in US Eastern and
+  // tip at 7-10pm ET, which is already the NEXT day in UTC. Using UTC here meant that from 8pm
+  // ET onwards every same-day pick saw todayStr roll forward to tomorrow, so `gameDate >=
+  // todayStr` went false, the guard stopped firing, and tonight's picks were silently graded
+  // against an earlier meeting between the same two teams -- producing real-looking but wrong
+  // finals, and a bogus VOID (DNP) for anyone who hadn't played in that older game. Same
+  // Eastern-vs-UTC boundary bug the pipeline hit in build.py.
+  const todayStr = toEasternDateStr(new Date().toISOString());
   if(gameDate && gameDate >= todayStr) return null;
   if(gameDate){
     candidates.sort((a,b)=> Math.abs(new Date(a.date)-new Date(gameDate)) - Math.abs(new Date(b.date)-new Date(gameDate)));
+    // Belt and braces: the fuzzy fallback exists only to heal a gameDate that's off by a day
+    // (older stored picks predating the Eastern-time fix). Matching a game further away than
+    // that is never "healing" anything -- it's grading against a different fixture, which is
+    // exactly the failure above. Anything beyond +/-1 day stays ungraded instead.
+    const best = candidates[0];
+    const daysApart = Math.abs(new Date(best.date) - new Date(gameDate)) / 86400000;
+    if(daysApart > 1) return null;
   }
   return candidates[0];
 }
