@@ -12133,7 +12133,13 @@ async function renderBetTrackerPage(){
       }
 
       const BET_TYPE_LABELS_GLOBAL = BET_TYPE_LABELS; // module-level map, shared with the App Tracker's breakdown
-      const STAT_LABELS_GLOBAL = {points:'Points', rebounds:'Rebounds', assists:'Assists', threes:'Threes', pra:'Pts+Reb+Ast'};
+      // MUST be keyed by the stat keys legs actually carry -- pts/reb/ast/tpm/pra. This used to be
+      // its own map keyed by points/rebounds/assists/threes, which matched nothing: every prop leg
+      // fell through, and 'pra' was the only row that ever appeared because it's the one key spelled
+      // the same in both. It also silently broke the stat-type checkbox filter, since
+      // selectedStatTypes was being populated with keys no leg could ever equal. Now the shared
+      // module-level map, so it can't drift from what the rest of the app writes.
+      const STAT_LABELS_GLOBAL = STAT_KEY_LABEL;
       const STRUCTURE_LABELS_GLOBAL = {'pregame-straight':'Pregame Straight', 'live-straight':'Live Straight', 'pregame-parlay':'Pregame Parlay', 'live-parlay':'Live Parlay', 'pregame':'Pregame', 'live':'Live', 'straight':'Straight Bets', 'parlay':'Parlays'};
 
       const typeFilterActive = selectedBetTypes.size>0 || selectedStatTypes.size>0 || selectedStructures.size>0;
