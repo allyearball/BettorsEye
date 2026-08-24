@@ -762,6 +762,13 @@ function makeTable(container, columns, rows, opts){
         } else {
           td.textContent = fmtVal(r[col.key], col, r);
         }
+        // col.tone(row) -> a CSS colour-var name ('green'/'red') or null. Text colour only, not a
+        // background: these cells can be frozen, and a sticky cell paints over the row tint it
+        // would otherwise inherit.
+        if(col.tone){
+          const tone = col.tone(r);
+          if(tone){ td.style.color = 'var(--' + tone + ')'; td.style.fontWeight = '700'; }
+        }
         tr.appendChild(td);
       });
       tbody.appendChild(tr);
@@ -2329,12 +2336,31 @@ function attachGameRecords(rows, team){
     r.teamRecSort = mine ? mine.pct : null;
     r.oppRec = theirs ? theirs.text : null;
     r.oppRecSort = theirs ? theirs.pct : null;
+    // Result + final score, from the row's own game rather than the record index -- the index
+    // only knows win/loss counts, and this column shows the actual scoreline.
+    const gid = r.gameId || findGameIdForTeamDate(team, r.date);
+    const g = gid ? DATA.games[String(gid)] : null;
+    r.wl = null; r.wlSort = null; r.wlWon = null;
+    if(g && g.homeScore !== null && g.homeScore !== undefined
+       && g.awayScore !== null && g.awayScore !== undefined){
+      const isHome = g.home === team;
+      const us = isHome ? g.homeScore : g.awayScore;
+      const them = isHome ? g.awayScore : g.homeScore;
+      r.wlWon = us > them ? true : (us < them ? false : null);
+      r.wl = (r.wlWon === true ? 'W' : r.wlWon === false ? 'L' : 'T') + ' ' + us + '-' + them;
+      r.wlSort = us - them; // point margin: sorts blowout wins above narrow ones, and W above L
+    }
   });
   return rows;
 }
 const RECORD_COL_DEF_OPP = 'That opponent’s win–loss record for the season as of the end of this game (this game included). Sorts by win percentage, not alphabetically.';
 const RECORD_COL_DEF_TEAM = 'Her own team’s win–loss record for the season as of the end of this game (this game included). Sorts by win percentage, not alphabetically.';
+const RECORD_COL_DEF_WL = 'Whether her team won or lost this game, with the final score from her team’s point of view. Sorts by point margin, so the biggest wins lead and the worst losses trail.';
+// Shared tint rule, so the W/L cell reads the same in makeTable's tables and in the tier detail
+// page's own renderer. Returns a CSS var *name*, not a colour, so both callers stay theme-driven.
+function wlTone(r){ return r && r.wlWon === true ? 'green' : (r && r.wlWon === false ? 'red' : null); }
 const RECORD_COLS = [
+  {key:'wl', label:'W/L', left:true, noBoldStarter:true, sortBy:'wlSort', tone:wlTone, def:RECORD_COL_DEF_WL},
   {key:'oppRec', label:'Opp Rec', left:true, noBoldStarter:true, sortBy:'oppRecSort', def:RECORD_COL_DEF_OPP},
   {key:'teamRec', label:'Team Rec', left:true, noBoldStarter:true, sortBy:'teamRecSort', def:RECORD_COL_DEF_TEAM},
 ];
@@ -5006,7 +5032,8 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     {key:'opp', label:'Opponent', left:true, type:'string'},
     // Keyed on the sort field, not the display field: this table has its own comparator, and
     // type:'number' on the win pct is what makes "10-5" sort above "9-6" here the same way
-    // makeTable's col.sortBy does in the gamelog tables.
+    // makeTable's col.sortBy does in the gamelog tables. Same trick for W/L, which sorts by margin.
+    {key:'wlSort', label:'W/L', left:true, type:'number', fmt: (v, g)=> (g && g.wl) || '—', tone: wlTone},
     {key:'oppRecSort', label:'Opp Rec', left:true, type:'number', fmt: (v, g)=> (g && g.oppRec) || '—'},
     {key:'teamRecSort', label:'Team Rec', left:true, type:'number', fmt: (v, g)=> (g && g.teamRec) || '—'},
     {key:'oppHeight', label:'Opp Height', type:'number', fmt: v=>inchesToHeightStr(v) || '—'},
@@ -5135,6 +5162,10 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
           td.textContent = (v===null || v===undefined) ? '\u2014' : (v*100).toFixed(1)+'%';
         } else {
           td.textContent = (v===null || v===undefined) ? '\u2014' : v;
+        }
+        if(col.tone){
+          const tone = col.tone(g);
+          if(tone){ td.style.color = 'var(--' + tone + ')'; td.style.fontWeight = '700'; }
         }
         // Green when she cleared today's line for this stat that night, red when she didn't.
         // Only the five stats a line actually exists for (PTS/REB/AST/3PM/PRA) are ever tinted;
@@ -6181,6 +6212,7 @@ function renderOddsPage(){
 
   let cachedFetch = []; // [{ev, detail}] — so switching the window re-renders without hitting the API again
   let viewingSingleGame = null; // {ev, detail} when drilled into one game, else null
+  let viewingMatchupBets = false; // sub-view of the single-game view: that matchup's full ranked bet board
   let singleGameWindow = 'all';
   // Persists the single-game view's tab/section state (which of Game Lines/1st Half/.../Parlay
   // Recommendations is active) across period changes -- renderGameOddsBlock was previously
@@ -6228,6 +6260,7 @@ function renderOddsPage(){
       card.addEventListener('mouseleave', ()=>{ card.style.boxShadow='none'; });
       card.addEventListener('click', ()=>{
         viewingSingleGame = {ev, detail};
+        viewingMatchupBets = false;
         singleGameWindow = 'all';
         singleGameUiState = {collapsed: undefined, sections: {}}; // fresh tab state for the newly-selected game -- don't carry over e.g. "Points" being active from whatever game was viewed before
         renderResultsArea();
@@ -6265,11 +6298,50 @@ function renderOddsPage(){
     if(viewingSingleGame){
       gameBoxesDiv.style.display = 'none';
       const backBtn = document.createElement('button'); backBtn.className='backbtn'; backBtn.textContent='\u2190 Back to all games';
-      backBtn.addEventListener('click', ()=>{ viewingSingleGame = null; renderResultsArea(); });
+      backBtn.addEventListener('click', ()=>{ viewingSingleGame = null; viewingMatchupBets = false; renderResultsArea(); });
       resultsDiv.appendChild(backBtn);
 
+      const mEv = viewingSingleGame.ev, mDetail = viewingSingleGame.detail;
+      const matchupLabel = `${mEv.away_team} @ ${mEv.home_team}`;
+
+      if(viewingMatchupBets){
+        // Same table component as the Standard Top 30 -- same columns, filter bar, sorting and
+        // row rendering -- fed this one game's entire ranked board instead of the day's top 30.
+        // The period bar doesn't apply to this view. Clearing resultsDiv already removed the
+        // element, but in Compact mode that bar is position:fixed and also sets body padding,
+        // which only removeGameWindowStickyBar() undoes.
+        removeGameWindowStickyBar();
+        const backToGame = document.createElement('button'); backToGame.className='backbtn';
+        backToGame.textContent = '\u2190 Back to this matchup\u2019s lines';
+        backToGame.addEventListener('click', ()=>{ viewingMatchupBets = false; renderResultsArea(); });
+        resultsDiv.appendChild(backToGame);
+        const holder = document.createElement('div');
+        resultsDiv.appendChild(holder);
+        renderTopBetsTable(holder, cachedFetch, 0, [], new Set(), selectedBook, {
+          bets: computeMatchupTopBets(mEv, mDetail, selectedBook),
+          title: `\u2b50 Top Matchup Bets \u2014 ${matchupLabel}`,
+          titleDef: `Every bet the selected sportsbook is currently offering on this matchup, ranked 1 (most likely) downward by worst-case hit rate across the last-5, last-10 and last-15-game windows \u2014 the same "Overall %" ranking the Top Bets page uses, with the same columns and filters. Unlike that page there is no hit-rate qualifier and no cap on how many bets are listed, so low-probability bets appear here too, further down. <b>Min Price starts at -165</b> to match the Top Bets cutoff; clear or change it to see bets at any price. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.`,
+          emptyMessage: `No lines are posted for ${matchupLabel} yet at the selected sportsbook \u2014 books typically post player props a day or two before tip-off. Try switching the Sportsbook selector above.`,
+          defaultFilters: {minPrice: -165},
+        });
+        return;
+      }
+
+      // Link sits above the period bar and the odds block -- "at the very top" of the matchup
+      // view, right under the back button.
+      const matchupBetsRow = document.createElement('div');
+      matchupBetsRow.style.cssText = 'margin:4px 0 14px;';
+      const matchupBetsLink = document.createElement('a');
+      matchupBetsLink.href = 'javascript:void(0)';
+      matchupBetsLink.style.cssText = 'display:inline-block;padding:8px 14px;border-radius:6px;border:1px solid var(--navy2);background:var(--navy2);color:#fff;font-size:13px;font-weight:700;text-decoration:none;cursor:pointer;font-family:var(--sans);';
+      matchupBetsLink.textContent = '\u2b50 Top Matchup Bets \u2192';
+      matchupBetsLink.title = 'Every bet offered on this matchup, ranked by probability';
+      matchupBetsLink.addEventListener('click', ()=>{ viewingMatchupBets = true; renderResultsArea(); });
+      matchupBetsRow.appendChild(matchupBetsLink);
+      resultsDiv.appendChild(matchupBetsRow);
+
       resultsDiv.appendChild(renderGameWindowStickyBar(singleGameWindow, (val)=>{ singleGameWindow = val; renderResultsArea(); }, 'Period (this game):'));
-      renderGameOddsBlock(resultsDiv, viewingSingleGame.ev, viewingSingleGame.detail, singleGameWindow, null, false, singleGameUiState, selectedBook);
+      renderGameOddsBlock(resultsDiv, mEv, mDetail, singleGameWindow, null, false, singleGameUiState, selectedBook);
     } else {
       // Period bar intentionally not shown here -- it didn't meaningfully affect anything on
       // this box-score-only view. Still fully present in the single-game view above, where the
@@ -7129,6 +7201,25 @@ function buildAdvancedEdgeCandidates(todaysGames, selectedBook){
   return pool;
 }
 
+// The Standard table's ranking order, shared by the Top 30 list and the per-matchup list so the
+// two can never drift apart. Ranked primarily by worst-case (min of L5/L10/L15) hit rate. When
+// that ties -- which it regularly does, since hit rates are quantized to whole game counts --
+// falls back to season rate, and if THAT also ties, to the L10 EMA's directional distance from
+// the line (player props only; team-level bets have no per-player EMA, so they stay tied at that
+// level and just keep whatever order they were gathered in). Previously ties fell through to
+// array insertion order with nothing deliberate deciding between them.
+function compareStandardBets(a, b){
+  const wcDiff = worstCaseRate(b) - worstCaseRate(a);
+  if(wcDiff !== 0) return wcDiff;
+  const seasonDiff = (b.rateAll||0) - (a.rateAll||0);
+  if(seasonDiff !== 0) return seasonDiff;
+  const edgeA = betTiebreakEdge(a), edgeB = betTiebreakEdge(b);
+  if(edgeA===null && edgeB===null) return 0;
+  if(edgeA===null) return 1;
+  if(edgeB===null) return -1;
+  return edgeB - edgeA;
+}
+
 // Standalone extraction of the Standard Top 30 list-building logic (previously inline only
 // inside renderTopBetsTable) \u2014 also used by the daily App Tracker snapshot feature, so the
 // snapshot captures exactly what this table would show, not a re-implementation of it.
@@ -7164,25 +7255,28 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
     const seen = new Set(pool.map(c=>c.game+'|'+c.label));
     widerPool.forEach(c=>{ const key = c.game+'|'+c.label; if(!seen.has(key)){ pool.push(c); seen.add(key); } });
   }
-  // Ranked primarily by worst-case (min of L5/L10/L15) hit rate. When that ties -- which it
-  // regularly does, since hit rates are quantized to whole game counts -- falls back to season
-  // rate, and if THAT also ties, to the L10 EMA's directional distance from the line (player
-  // props only; team-level bets have no per-player EMA, so they stay tied at that level and
-  // just keep whatever order they were gathered in). Previously ties fell through to array
-  // insertion order with nothing deliberate deciding between them -- this replaces that with an
-  // actual, explainable tiebreak chain.
-  pool.sort((a,b)=>{
-    const wcDiff = worstCaseRate(b) - worstCaseRate(a);
-    if(wcDiff !== 0) return wcDiff;
-    const seasonDiff = (b.rateAll||0) - (a.rateAll||0);
-    if(seasonDiff !== 0) return seasonDiff;
-    const edgeA = betTiebreakEdge(a), edgeB = betTiebreakEdge(b);
-    if(edgeA===null && edgeB===null) return 0;
-    if(edgeA===null) return 1;
-    if(edgeB===null) return -1;
-    return edgeB - edgeA;
-  });
+  pool.sort(compareStandardBets);
   return { todaysGames, topBets: pool.slice(0, topN) };
+}
+
+// Every leg the book is offering on ONE matchup, ranked by the same probability chain the
+// Standard Top 30 uses -- but with NO hit-rate qualifier (QUAL 0), no price floor, and no cap,
+// because the point of the matchup view is to see the whole board for that game rather than a
+// pre-trimmed shortlist. The price floor comes back as a *default filter value* in the UI
+// instead, where it can be lowered or cleared. Also skips the today/Q1-grace eligibility gate
+// that computeStandardTopBets applies: you got here by deliberately drilling into this game, and
+// Live Lines lists each team's NEXT game, which is frequently not today.
+function computeMatchupTopBets(ev, detail, selectedBook){
+  selectedBook = selectedBook || 'best';
+  const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+  const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+  const gameMarkets = marketsByKey(getBookmakerData(ev, selectedBook));
+  const detailMarkets = marketsByKey(detail ? getBookmakerData(detail, selectedBook) : null);
+  const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+  const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0, selectedBook)
+    .map(l => Object.assign({}, l, {game: gameLabel}));
+  legs.sort(compareStandardBets);
+  return legs;
 }
 
 // Identifies "the same specific bet" across the Standard and Advanced tables, so a shared row
@@ -7193,20 +7287,35 @@ function betIdentityKey(bet){
   return [bet.player, bet.team, bet.statKey, bet.side, bet.line].join('|');
 }
 
-function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys, selectedBook){
+// opts (all optional) lets a caller reuse this exact table -- same columns, same filter bar,
+// same row rendering -- for a different list of bets. The per-matchup "Top Matchup Bets" view on
+// Live Lines passes a precomputed, uncapped list plus a default Min Price; everything else about
+// the table is identical, which is the point: one implementation, no second copy to keep in sync.
+//   bets            precomputed list; skips computeStandardTopBets and the today/Q1 gate entirely
+//   title           section heading text
+//   titleDef        the \u24d8 tooltip on that heading
+//   emptyMessage    shown instead of the table when `bets` comes back empty
+//   defaultFilters  seed values for the filter bar, e.g. {minPrice: -165}; the inputs render
+//                   pre-filled so it's visible that a filter is active, and Clear Filters still
+//                   clears to nothing rather than snapping back to these
+function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys, selectedBook, opts){
+  opts = opts || {};
   liveGames = liveGames || [];
   starredKeys = starredKeys || new Set();
   topN = topN || 30;
   container.innerHTML = '';
-  if(!cachedFetch.length) return;
+  const usingOverride = Array.isArray(opts.bets);
+  if(!usingOverride && !cachedFetch.length) return;
 
-  const { todaysGames, topBets } = computeStandardTopBets(cachedFetch, topN, selectedBook);
+  const computed = usingOverride ? null : computeStandardTopBets(cachedFetch, topN, selectedBook);
+  const todaysGames = usingOverride ? null : computed.todaysGames;
+  const topBets = usingOverride ? opts.bets : computed.topBets;
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
-  sec.textContent = `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Standard`;
+  sec.textContent = opts.title || `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Standard`;
   container.appendChild(sec);
-  appendDefIcon(sec, `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows (see "Overall %"); ties on that fall back to Season %, and further ties fall back to the L10 EMA's distance from the line (player props only \u2014 team-level bets have no per-player EMA, so they stay tied at that level). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`);
+  appendDefIcon(sec, opts.titleDef || `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows (see "Overall %"); ties on that fall back to Season %, and further ties fall back to the L10 EMA's distance from the line (player props only \u2014 team-level bets have no per-player EMA, so they stay tied at that level). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.`);
 
-  if(todaysGames.length === 0){
+  if(!usingOverride && todaysGames.length === 0){
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
     msg0.textContent = 'None of today\u2019s games are within their pregame-through-Q1 window right now \u2014 nothing to rank here yet. (Bets drop out after an estimated end of the 1st quarter \u2014 tap the \u24d8 above for details.)';
     container.appendChild(msg0);
@@ -7215,7 +7324,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
 
   if(topBets.length === 0){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg.textContent = 'Nothing in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -165 or better.';
+    msg.textContent = opts.emptyMessage || 'Nothing in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -165 or better.';
     container.appendChild(msg);
     return;
   }
@@ -7237,7 +7346,9 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   // itself a legitimate selection -- it means the Season window, not "nothing selected").
   const dvpSort = { active: false, key: null, dir: 'desc' };
 
-  const stdFilters = { pos:'', minOverall:null, minL5:null, minL10:null, minL15:null, minSeason:null, minPrice:null, maxPrice:null };
+  const stdFilters = Object.assign(
+    { pos:'', minOverall:null, minL5:null, minL10:null, minL15:null, minSeason:null, minPrice:null, maxPrice:null },
+    opts.defaultFilters || {});
   const filterBar = document.createElement('div');
   filterBar.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:10px;padding:8px 10px;background:var(--panel);border:1px solid var(--line);border-radius:6px;';
   function fGroup(label){
@@ -7257,6 +7368,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   [['Min Overall%','minOverall'],['Min L5%','minL5'],['Min L10%','minL10'],['Min L15%','minL15'],['Min Season%','minSeason']].forEach(([lbl,key])=>{
     const g = fGroup(lbl);
     const inp = document.createElement('input'); inp.type='number'; inp.min='0'; inp.max='100'; inp.placeholder='any';
+    if(stdFilters[key]!==null && stdFilters[key]!==undefined) inp.value = String(stdFilters[key]);
     inp.style.cssText = 'width:52px;padding:4px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:var(--sans);';
     inp.addEventListener('change', ()=>{ stdFilters[key] = inp.value===''?null:Number(inp.value); renderStdTable(); });
     g.appendChild(inp); filterBar.appendChild(g);
@@ -7264,6 +7376,9 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   [['Min Price','minPrice'],['Max Price','maxPrice']].forEach(([lbl,key])=>{
     const g = fGroup(lbl);
     const inp = document.createElement('input'); inp.type='number'; inp.placeholder='any';
+    // A seeded default is written into the box, not just into state -- a filter silently
+    // dropping rows with an empty-looking input is the kind of thing that reads as a bug.
+    if(stdFilters[key]!==null && stdFilters[key]!==undefined) inp.value = String(stdFilters[key]);
     inp.style.cssText = 'width:64px;padding:4px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:var(--sans);';
     inp.addEventListener('change', ()=>{ stdFilters[key] = inp.value===''?null:Number(inp.value); renderStdTable(); });
     g.appendChild(inp); filterBar.appendChild(g);
@@ -8271,9 +8386,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     }
     const oppShort = t.isHome ? awayShort : homeShort;
     const oppFull = t.isHome ? ev.away_team : ev.home_team;
-    const h2h = rec.vsOpponent[oppShort];
+    // Defensive: vsOpponent/home/away come from the pipeline, and a record object missing any
+    // of them would otherwise take down the whole Live Lines block rather than one pill.
+    const h2h = (rec.vsOpponent || {})[oppShort];
     const homeAwayLabel = t.isHome ? 'Home' : 'Away';
-    const homeAwayRec = t.isHome ? rec.home : rec.away;
+    const homeAwayRec = t.isHome ? rec.home : rec.away; // recordText() already renders null as an em dash
     const pillRow = document.createElement('div'); pillRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
     pillRow.appendChild(statPill('Overall', recordText(rec.overall)));
     pillRow.appendChild(statPill(homeAwayLabel, recordText(homeAwayRec)));
