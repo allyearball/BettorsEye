@@ -1,7 +1,7 @@
 {
-  "name": "WNBA Box Score Explorer",
-  "short_name": "WNBA Explorer",
-  "description": "WNBA box scores, player props, and live DraftKings odds with historical hit rates.",
+  "name": "Bettor's Eye",
+  "short_name": "BettorsEye",
+  "description": "Box scores, player props, and live odds with historical hit rates.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
