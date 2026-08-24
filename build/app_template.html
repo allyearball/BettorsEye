@@ -11160,7 +11160,12 @@ async function renderAppTrackerPage(){
         ];
         APP_TRACKER_SOURCES.forEach(src=>{
           const sub = gradedRecord(r.list.filter(b=>b.snapshotSource===src));
-          cells.push({text: sub.picks ? `${sub.w}-${sub.l}` : '\u2014', sub: !sub.picks});
+          // Record AND hit rate per source, same "W-L (NN%)" shape the All-Time Records table
+          // above uses. The percentage is dropped rather than shown as 0% when nothing in that
+          // cell has graded yet -- 0-0 (0%) would read as "this source never wins".
+          const text = !sub.picks ? '\u2014'
+            : (sub.pct !== null ? `${sub.w}-${sub.l} (${sub.pct}%)` : `${sub.w}-${sub.l}`);
+          cells.push({text, sub: !sub.picks || sub.pct === null});
         });
         cells.forEach(c=>{
           const td = document.createElement('td');
@@ -11180,7 +11185,7 @@ async function renderAppTrackerPage(){
 
     const byTypeBox = buildBreakdownBox(
       'All-Time Record by Bet Type',
-      'Every pick this app has ever posted, grouped by what kind of bet it was. <b>Record</b> and <b>Hit Rate</b> count graded picks only (a void is neither a win nor a loss); <b>Picks</b> counts everything in that category including pending ones, so the two won\u2019t always tie. The last three columns split the same record by which list the pick came from. Note that moneyline, spread and over/under picks are currently held back from the Standard list \u2014 those rows are history.',
+      'Every pick this app has ever posted, grouped by what kind of bet it was. <b>Record</b> and <b>Hit Rate</b> count graded picks only (a void is neither a win nor a loss); <b>Picks</b> counts everything in that category including pending ones, so the two won\u2019t always tie. The last three columns split the same record and hit rate by which list the pick came from, so you can compare how Standard, Advanced and Specials are each doing on that bet type. Note that moneyline, spread and over/under picks are currently held back from the Standard list \u2014 those rows are history.',
       Object.entries(BET_TYPE_LABELS).map(([key, label])=>({label, list: bets.filter(b=>b.betType===key)})));
     if(byTypeBox) statsBoxDiv.appendChild(byTypeBox);
 
