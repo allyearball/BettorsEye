@@ -1,4 +1,4 @@
-name: Rebuild and deploy WNBA app
+name: Rebuild and deploy BettorsEye
 on:
   schedule:
     # Runs every 10 minutes, all day, every day. GitHub's scheduler is best-effort —
