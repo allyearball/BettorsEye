@@ -15,6 +15,7 @@
     --navy:#0d7a3e; --navy2:#0d7a3e; --bg:#f4f5f7; --panel:#ffffff; --line:#dfe3ea; --ink:#000000; --sub:#5b6472;
     --green:#0d7a3e; --greenbg:#e6f6ec; --red:#b3261e; --redbg:#fdecea;
     --gold:#8a6d00; --goldbg:#fff3c4;
+    --blue:#1558b0; --bluebg:#e7f0fb;   /* high-confidence marker: the theme's navy vars are green, so this is the only actual blue */
     --sans: 'Inter','Segoe UI',Arial,sans-serif;
   }
   *{box-sizing:border-box;}
@@ -772,7 +773,7 @@ function makeTable(container, columns, rows, opts){
         } else {
           td.textContent = fmtVal(r[col.key], col, r);
         }
-        // col.tone(row) -> a CSS colour-var name ('green'/'red') or null. Text colour only, not a
+        // col.tone(row) -> a CSS color-var name ('green'/'red') or null. Text color only, not a
         // background: these cells can be frozen, and a sticky cell paints over the row tint it
         // would otherwise inherit.
         if(col.tone){
@@ -922,7 +923,7 @@ const TEAM_GAME_COLS = [
 
    Deliberately NOT threaded through the history entries. The ask is "whatever tab I had last
    selected", which is a property of the session, not of a particular history position; making it
-   an argument to every render function would touch far more code to reach the same behaviour.
+   an argument to every render function would touch far more code to reach the same behavior.
 
    Player and team tabs are keyed by INDEX rather than label, since both tab bars are built from
    an array and an index survives a label being reworded. */
@@ -2495,7 +2496,7 @@ const RECORD_COL_DEF_OPP = 'That opponent’s win–loss record for the season a
 const RECORD_COL_DEF_TEAM = 'Her own team’s win–loss record for the season as of the end of this game (this game included). Sorts by win percentage, not alphabetically.';
 const RECORD_COL_DEF_WL = 'Whether her team won or lost this game, with the final score from her team’s point of view. Sorts by point margin, so the biggest wins lead and the worst losses trail.';
 // Shared tint rule, so the W/L cell reads the same in makeTable's tables and in the tier detail
-// page's own renderer. Returns a CSS var *name*, not a colour, so both callers stay theme-driven.
+// page's own renderer. Returns a CSS var *name*, not a color, so both callers stay theme-driven.
 function wlTone(r){ return r && r.wlWon === true ? 'green' : (r && r.wlWon === false ? 'red' : null); }
 const RECORD_COLS = [
   {key:'wl', label:'W/L', left:true, noBoldStarter:true, sortBy:'wlSort', tone:wlTone, def:RECORD_COL_DEF_WL},
@@ -2937,7 +2938,7 @@ async function fetchHerNextGameLinesUncached(playerName, team, cached){
     // 'best' rather than 'draftkings'. This was hardcoded to DK, which meant any market DK didn't
     // post came back as a dash even when another book had it -- and DK is patchy on assists and
     // especially Pts+Reb+Ast, so those two lines were missing for most players and their columns
-    // never tinted. getBookmakerData's 'best' synthesiser merges every book's markets and walks
+    // never tinted. getBookmakerData's 'best' synthesizer merges every book's markets and walks
     // them in book order, so DK still wins wherever it does post the market.
     const dk = detail ? getBookmakerData(detail, 'best') : null;
     const markets = dk ? marketsByKey(dk) : {};
@@ -2947,7 +2948,7 @@ async function fetchHerNextGameLinesUncached(playerName, team, cached){
       if(!m) return null;
       const o = dkPlayerOutcomes(m, playerName, 'Over') || dkPlayerOutcomes(m, playerName, 'Under');
       if(!o || o.point===undefined) return null;
-      // _bestBooks is stamped by the synthesiser -- keep it so the row can say where a line came
+      // _bestBooks is stamped by the synthesizer -- keep it so the row can say where a line came
       // from rather than implying every number is DraftKings'.
       if(o._bestBooks && o._bestBooks.length) lineBooks[statKey] = o._bestBooks[0];
       return o.point;
@@ -5016,7 +5017,7 @@ function computePositionGroupTierVsOpponent(bucket, opp, heightTierData){
       return { player: pname, avgMin, heightIn: bio.heightIn, height: bio.height || '—', tier: tier ? tier.charAt(0).toUpperCase()+tier.slice(1) : null, status };
     }).filter(Boolean).sort((a,b)=>b.avgMin-a.avgMin);
 
-  // Players ruled OUT are excluded from the minutes-weighted height: if their 6'8" centre is out
+  // Players ruled OUT are excluded from the minutes-weighted height: if their 6'8" center is out
   // tonight, the group she actually faces IS shorter, and leaving that player in the average
   // reports a tier she won't see. Day-To-Day is kept -- those players usually suit up, and
   // dropping them would swing the tier on a maybe.
@@ -5372,7 +5373,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
   // was made sortable. Persists across re-sorts (not reset by clicking a column), but resets
   // whenever the active tier or window changes, since that's effectively a different table.
   let sortKey = 'date', sortDir = 'desc';
-  // Her next game's O/U lines, shown as a row under the header and used to colour the stat
+  // Her next game's O/U lines, shown as a row under the header and used to color the stat
   // cells. Populated by an async lookup below; null until it lands (and stays null if there
   // are no lines posted yet), which the row renders as "loading..." / "none posted".
   let currentLines = null, linesLoaded = false;
@@ -5534,7 +5535,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
         // Green when she cleared today's line for this stat that night, red when she didn't.
         // Driven purely by whether a line exists for that column, so all eight prop stats
         // (PTS/REB/AST/3PM/PRA/P+R/P+A/R+A) tint; box-score columns with no line are left alone
-        // rather than coloured against nothing.
+        // rather than colored against nothing.
         const ln = lineFor(col.key);
         if(ln !== null && typeof v === 'number'){
           if(v > ln){ td.style.background = 'var(--greenbg)'; td.style.color = 'var(--green)'; td.style.fontWeight = '700'; }
@@ -5922,7 +5923,7 @@ function statValue(g, statKey){
 // field. That field is empty across the current dataset, so today every DNP is treated as
 // non-injury. That is the conservative direction (it can overstate a decrease for an injured
 // player, never understate a real benching), and when a data pull backfills the reason both
-// features start honouring it at once.
+// features start honoring it at once.
 const MINUTES_TREND_WINDOW = 5;
 const MINUTES_TREND_PCT_BAR = 0.20;   // 20% swing...
 const MINUTES_TREND_ABS_BAR = 5;      // ...AND at least 5 minutes, so a 4->5 min bench player
@@ -6540,13 +6541,17 @@ async function renderHomePage(){
       const todaysGamesForStars = cachedForToday.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStrForStars && isEligibleForTopBets(ev, nowForStars));
       const stdKeysSet = new Set(computeStandardTopBets(cachedForToday, 30, selectedBook).topBets.map(betIdentityKey).filter(Boolean));
       const advKeysSet = new Set(buildAdvancedEdgeCandidates(todaysGamesForStars, selectedBook).slice(0, 30).map(betIdentityKey).filter(Boolean));
-      const sharedKeys = new Set([...stdKeysSet].filter(k => advKeysSet.has(k)));
+      // ALL THREE tables, not just Standard + Advanced. Specials is a bar-clearing shortlist that
+      // is empty on plenty of days, so this set is often empty -- which is the point: a bet that
+      // clears three independent methodologies at once is rare and worth marking.
+      const specKeysSet = new Set(computeSpecialsBets(cachedForToday, selectedBook).bets.map(betIdentityKey).filter(Boolean));
+      const sharedKeys = new Set([...stdKeysSet].filter(k => advKeysSet.has(k) && specKeysSet.has(k)));
       // Tier columns on here too: now that the Standard list is player-props only, every row has
       // a position group to look up, and the per-player memo caches are shared with the Specials
       // tab below (which already builds the same data for today's slate), so this is close to free.
       renderTopBetsTable(contentDiv, cachedForToday, 30, liveGames, sharedKeys, selectedBook, {showTierColumns: true});
       renderAdvancedTopBetsTable(contentDiv2, cachedForToday, 30, liveGames, sharedKeys, selectedBook);
-      renderSpecialsTable(contentDiv3, cachedForToday, liveGames, selectedBook);
+      renderSpecialsTable(contentDiv3, cachedForToday, liveGames, selectedBook, sharedKeys);
     };
     recompute();
     maybeSnapshotTodaysTopBets(cachedForToday); // fire-and-forget; see its own comment for the noon-ET logic
@@ -7186,9 +7191,16 @@ function advConfidenceExplanation(bet, conf){
 // Shared visual: gold left-accent + background tint on the row, plus a tappable info icon
 // (reusing the same appendDefIcon component used for every other info tooltip in this app)
 // showing the specific numbers behind why this particular bet qualified.
-function applyConfidenceHighlight(tr, iconAnchorTd, explanation){
-  tr.style.backgroundColor = 'rgba(212,175,55,0.14)';
-  tr.style.boxShadow = 'inset 4px 0 0 0 #D4AF37';
+// High-confidence pick. This used to paint the whole row gold, which OVERWROTE the opponent-
+// defense row tint -- so the two most useful signals on a row could not both be read at once and
+// confidence silently won. It now boxes the BET CELL in blue and leaves the row background to
+// the defense tint. On the cell rather than the row on purpose: the outlier flag already owns a
+// row-level border, and two competing row borders would be unreadable.
+function applyConfidenceHighlight(tr, iconAnchorTd, explanation, betCell){
+  if(betCell){
+    betCell.style.boxShadow = 'inset 0 0 0 2px var(--blue)';
+    betCell.style.borderRadius = '4px';
+  }
   const icon = document.createElement('span');
   icon.style.cssText = 'margin-left:4px;';
   iconAnchorTd.appendChild(icon);
@@ -7579,7 +7591,7 @@ function computeTeamVsOpponentGames(leg){
 // the 5 before, with the percentage in parentheses -- "+18.0 (+150%)". Memoised per player,
 // because a matchup board renders ~70 rows and each would otherwise rescan her whole log.
 //
-// Only a shift that clears BOTH bars is coloured; anything smaller is shown in muted text so
+// Only a shift that clears BOTH bars is colored; anything smaller is shown in muted text so
 // the number is still there to read without implying a role change that isn't one.
 const _minutesTrendCache = {};
 function betMinutesTrend(bet){
@@ -7616,7 +7628,7 @@ function fillMinutesTrendCell(td, bet){
 // ==================== "Potential outlier" flag ====================
 // A bet on a player whose role has just changed: minutes moved more than 20% AND by at least
 // 5 min/gm over her last 5 games versus the 5 before. Both bars are the same ones the Min Trend
-// column colours on -- betMinutesTrend().significant IS the definition, so the border and the
+// column colors on -- betMinutesTrend().significant IS the definition, so the border and the
 // column can never disagree about what counts.
 //
 // Why flag it: every hit rate in these tables is built on games played under her OLD role. A
@@ -7630,7 +7642,7 @@ function betIsOutlier(bet){
 // Solid 3px, drawn INSIDE the row via outline-offset so it doesn't shift any layout (the same
 // trick the height-tier table already uses for its highlighted row). A bright #F5C518 rather
 // than the muted #D4AF37 used by the confidence sidebar -- those two must not read as the same
-// signal, and the colour key spells out the difference.
+// signal, and the color key spells out the difference.
 const OUTLIER_BORDER_COLOR = '#F5C518';
 function applyOutlierStyle(tr, bet){
   const t = betMinutesTrend(bet);
@@ -7664,35 +7676,35 @@ function buildExcludeOutliersToggle(container, onChange){
   return { excluded: () => cb.checked, input: cb };
 }
 
-// ==================== Colour key ====================
+// ==================== Color key ====================
 // One legend, built from a list of keys so every table shows only the marks it actually uses --
 // a key that describes columns a table doesn't have is worse than no key.
 const COLOR_KEY_ITEMS = {
   outlier: {swatch: {outline: OUTLIER_BORDER_COLOR}, label: 'Potential outlier',
     note: 'her minutes just changed by >' + Math.round(MINUTES_TREND_PCT_BAR*100) + '% and \u2265' + MINUTES_TREND_ABS_BAR + ' min/gm \u2014 hit rates predate the new role'},
-  confidence: {swatch: {bar: '#D4AF37', fill: 'rgba(212,175,55,0.14)'}, label: 'High-confidence pick',
-    note: 'gold bar down the left edge; hover the \u24d8 beside its rank for the specific reason'},
-  star: {swatch: {text: '\u2605', color: '#D4AF37'}, label: 'Appears in both tables',
-    note: 'this bet is also in the other Top Bets list on this page'},
+  confidence: {swatch: {box: 'var(--blue)'}, label: 'High-confidence pick',
+    note: 'a blue box around the bet; hover the \u24d8 beside its rank for the specific reason'},
+  star: {swatch: {text: '\u2605', color: 'var(--blue)'}, label: 'Appears in all three tables',
+    note: 'this exact bet clears Standard, Advanced AND Specials \u2014 three independent methods agreeing, which is rare'},
   defTint: {swatch: {fill: 'rgba(220,53,69,0.07)', fill2: 'rgba(255,193,7,0.10)', fill3: 'rgba(40,167,69,0.07)'},
-    label: 'Row tint = opponent defence', note: 'red = a top-5 defence against her position for this stat, amber = middle, green = bottom third (easiest matchup)'},
+    label: 'Row tint = opponent defense', note: 'red = a top-5 defense against her position for this stat, amber = middle, green = bottom third (easiest matchup)'},
   rate: {swatch: {fill: 'var(--greenbg)', color: 'var(--green)', text: '60%'}, label: 'Hit-rate chips',
-    note: 'green at 60% or better, red at 40% or worse, grey in between'},
+    note: 'green at 60% or better, red at 40% or worse, gray in between'},
   minTrend: {swatch: {color: 'var(--green)', text: '+8.0'}, label: 'Min Trend',
-    note: 'green when minutes rose enough to count as a role change, red when they fell, grey when the move is too small to mean anything'},
+    note: 'green when minutes rose enough to count as a role change, red when they fell, gray when the move is too small to mean anything'},
   vsTeam: {swatch: {dot: 'var(--green)'}, label: 'Vs That Team',
     note: 'a green dot marks a past meeting where this exact bet would have hit; a red \u2715 marks one where it would have missed'},
   dvp: {swatch: {color: 'var(--green)', text: '1.12'}, label: 'DvP Index',
-    note: 'green when the matchup favours this side of the bet, red when it works against it'},
+    note: 'green when the matchup favors this side of the bet, red when it works against it'},
   injury: {swatch: {color: 'var(--red)', text: 'Out'}, label: 'Injury',
-    note: 'colour-coded by severity \u2014 red Out, amber Day-To-Day'},
+    note: 'color-coded by severity \u2014 red Out, amber Day-To-Day'},
 };
 function buildColorKey(container, keys){
   const wrap = document.createElement('details');
   wrap.style.cssText = 'margin:6px 0 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);';
   const summary = document.createElement('summary');
   summary.style.cssText = 'cursor:pointer;padding:7px 10px;font-size:12.5px;font-weight:700;color:var(--navy2);list-style:revert;';
-  summary.textContent = 'Colour key';
+  summary.textContent = 'Color key';
   wrap.appendChild(summary);
   const body = document.createElement('div');
   body.style.cssText = 'padding:4px 12px 12px;display:flex;flex-direction:column;gap:7px;';
@@ -7707,6 +7719,7 @@ function buildColorKey(container, keys){
     if(d.outline){ sw.style.outline = `3px solid ${d.outline}`; sw.style.outlineOffset = '-3px'; sw.style.background = 'var(--panel)'; }
     if(d.fill) sw.style.background = d.fill;
     if(d.bar) sw.style.boxShadow = `inset 4px 0 0 0 ${d.bar}`;
+    if(d.box){ sw.style.boxShadow = `inset 0 0 0 2px ${d.box}`; sw.style.borderRadius = '4px'; }
     if(d.color) sw.style.color = d.color;
     if(d.text) sw.textContent = d.text;
     if(d.dot){
@@ -7714,7 +7727,7 @@ function buildColorKey(container, keys){
       dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;background:${d.dot};`;
       sw.appendChild(dot);
     }
-    // The three-way defence tint needs three swatches to be legible as a scale.
+    // The three-way defense tint needs three swatches to be legible as a scale.
     if(d.fill2){
       sw.style.width='auto'; sw.style.padding='0'; sw.style.border='none'; sw.style.background='none';
       [d.fill, d.fill2, d.fill3].forEach(c=>{
@@ -8023,6 +8036,7 @@ function betTierHitRate(bet){
 // Identifies "the same specific bet" across the Standard and Advanced tables, so a shared row
 // can be gold-starred. Only meaningful for player props (the only bet type Advanced covers) --
 // team-level bets (moneyline/spread/total) can never appear in Advanced, so they never match.
+const STAR_ALL_THREE_TITLE = 'Appears in all three Top Bets tables \u2014 Standard, Advanced and Specials';
 function betIdentityKey(bet){
   if(bet.betType!=='player_prop' && bet.betType!=='player_prop_alt') return null;
   return [bet.player, bet.team, bet.statKey, bet.side, bet.line].join('|');
@@ -8274,24 +8288,24 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     const key = betIdentityKey(bet);
     if(key && starredKeys.has(key)){
       tdStar.textContent = '\u2605';
-      tdStar.style.color = '#D4AF37';
+      tdStar.style.color = 'var(--blue)';
       tdStar.style.fontSize = '15px';
-      tdStar.title = 'Also appears in the Advanced Analytics table below';
+      tdStar.title = STAR_ALL_THREE_TITLE;
     }
 
     const tdRank = document.createElement('td'); tdRank.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
     tdRank.textContent = idx+1;
+    // Computed here, applied below once the Bet cell it boxes actually exists.
     const stdConf = computeStdConfidence(bet);
-    if(stdConf) applyConfidenceHighlight(tr, tdRank, stdConfidenceExplanation(bet, stdConf));
-    // Applied AFTER the confidence highlight, which sets backgroundColor and an inset box-shadow.
-    // The outline is a separate property, so a bet can legitimately be both a high-confidence
-    // pick and an outlier -- and seeing both at once is exactly the case worth noticing.
+    // The outlier outline is a row-level property and the confidence box is a cell-level one, so
+    // a bet can legitimately be both -- and seeing both at once is exactly the case worth noticing.
     if(betIsOutlier(bet)) applyOutlierStyle(tr, bet);
     const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
     tdPos.textContent = isProp ? (getPlayerPosition(bet.player, bet.team) || '\u2014') : '\u2014';
 
     const tdLabel = document.createElement('td'); tdLabel.className='left';
     tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
+    if(stdConf) applyConfidenceHighlight(tr, tdRank, stdConfidenceExplanation(bet, stdConf), tdLabel);
     tdLabel.appendChild(buildLegLabelNode(bet));
     const subLine1 = document.createElement('div');
     subLine1.style.cssText = 'font-size:10.5px;color:var(--sub);margin-top:2px;';
@@ -8627,18 +8641,18 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     const key = betIdentityKey(bet);
     if(key && starredKeys.has(key)){
       tdStar.textContent = '\u2605';
-      tdStar.style.color = '#D4AF37';
+      tdStar.style.color = 'var(--blue)';
       tdStar.style.fontSize = '15px';
-      tdStar.title = 'Also appears in the Standard table above';
+      tdStar.title = STAR_ALL_THREE_TITLE;
     }
     const tdRank = document.createElement('td'); tdRank.style.cssText = cellStyle + 'font-weight:800;color:var(--navy2);';
     tdRank.textContent = idx+1;
     const advConf = computeAdvConfidence(bet);
-    if(advConf) applyConfidenceHighlight(tr, tdRank, advConfidenceExplanation(bet, advConf));
     if(betIsOutlier(bet)) applyOutlierStyle(tr, bet);
     const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
     tdPos.textContent = getPlayerPosition(bet.player, bet.team) || '\u2014';
     const tdLabel = document.createElement('td'); tdLabel.className='left'; tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
+    if(advConf) applyConfidenceHighlight(tr, tdRank, advConfidenceExplanation(bet, advConf), tdLabel);
     tdLabel.appendChild(buildLegLabelNode(bet));
     const subLine2 = document.createElement('div');
     subLine2.style.cssText = 'font-size:10.5px;color:var(--sub);margin-top:2px;';
@@ -8840,7 +8854,8 @@ function computeSpecialsBets(cachedFetch, selectedBook){
   return {todaysGames, bets: out};
 }
 
-function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
+function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook, starredKeys){
+  starredKeys = starredKeys || new Set();
   container.innerHTML = '';
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
   sec.textContent = '💎 Specials';
@@ -8869,14 +8884,15 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   const spToggleRow = document.createElement('div'); spToggleRow.style.cssText = 'margin-bottom:8px;display:flex;gap:18px;flex-wrap:wrap;';
   const spOutliers = buildExcludeOutliersToggle(spToggleRow, ()=>renderSpecialsRows());
   container.appendChild(spToggleRow);
-  // No confidence sidebar, no star and no defence row-tint on this table -- listing them would
-  // describe marks that aren't here.
-  buildColorKey(container, ['outlier','rate','minTrend','vsTeam']);
+  // No confidence box here (Specials has no confidence score of its own), but it does carry the
+  // star and the defense row-tint. An earlier version of this comment claimed the table had
+  // neither -- asserted without checking the row builder, which has tinted rows all along.
+  buildColorKey(container, ['outlier','star','defTint','rate','minTrend','vsTeam']);
 
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table');
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
+  thead.innerHTML = '<tr><th class="th-sp-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
     + '<th>L5</th><th>L10</th><th>L15</th><th>Season</th><th class="th-sp-mintrend">Min Trend</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
     + '<th class="left">Vs That Team</th>'
     + '<th class="left defcol th-sp-defrank">Opp Def Rank</th><th class="left defcol th-sp-defrankl5">Opp Def Rank L5</th>'
@@ -8887,11 +8903,16 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   const TIER_TITLE = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
-  // Header order: Bet, Game, Price, L5, L10, L15, Season, Min Trend, Tonight's Group, Vs That Tier, Vs That Team,
+  // Header order: Star, Rank, Pos, Bet, Game, Price, L5, L10, L15, Season, Min Trend, Tonight's Group, Vs That Tier, Vs That Team,
   // Opp Def Rank, Opp Def Rank L5, Sportsbook, Track. The hit-rate cells hold {found, rate, hits,
   // gp} objects, so each sorts on .rate -- and only when that window actually has games behind it.
   const hrRate = hr => (hr && hr.found && hr.gp) ? hr.rate : null;
   const specialsSortSpecs = [
+    {value: bet => { const k = betIdentityKey(bet); return k && starredKeys.has(k) ? 1 : 0; }}, // Star
+    {value: bet => bet.specialsRank, dir: 'asc'},            // Rank
+    {value: betPosValue, dir: 'asc'},                        // Pos -- shares the Standard table's
+                                                             // G/F/C ordering rather than sorting
+                                                             // the letters alphabetically
     {value: bet => bet.label, dir: 'asc'},
     {value: bet => bet.game, dir: 'asc'},
     {value: bet => bet.price},
@@ -8920,9 +8941,41 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
     if(spOutliers.excluded()) shown = bets.filter(b=>!betIsOutlier(b));
     countDiv.textContent = `${shown.length} bet(s) qualify.`
       + (hiddenOutliers ? ` ${hiddenOutliers} outlier(s) excluded.` : '');
+    // Rank is frozen to this list's own qualifying order (the sort at the end of
+    // computeSpecialsBets) BEFORE the table sort runs, so re-sorting by any column re-orders the
+    // rows without renumbering them -- the same convention as the Standard table's origRank.
+    shown.forEach((bet, i)=>{ bet.specialsRank = i + 1; });
     specialsSort.apply(shown).forEach(bet=>{
       const tr = document.createElement('tr');
+      // Same defense-rank row tint as the Standard and Advanced tables: a top-5 defense against
+      // her position for this stat tints faint red, middle-third amber, bottom third green.
+      // Every Specials row is a player prop by construction (the height-tier qualifier excludes
+      // team bets), so there is no non-prop case to guard here.
+      if(bet.opponent){
+        const bucket = positionBucket(getPlayerPosition(bet.player, bet.team));
+        const r = bucket ? getDefenseRank(bet.opponent, bet.statKey, bucket) : null;
+        if(r){
+          tr.style.backgroundColor = r.rank<=5 ? 'rgba(220,53,69,0.07)' : r.rank<=10 ? 'rgba(255,193,7,0.10)' : 'rgba(40,167,69,0.07)';
+        }
+      }
+      // After the tint: the outline is a separate property, so a tinted row can also be an outlier.
       if(betIsOutlier(bet)) applyOutlierStyle(tr, bet);
+      const tdStar = document.createElement('td'); tdStar.style.textAlign = 'center';
+      const starKey = betIdentityKey(bet);
+      if(starKey && starredKeys.has(starKey)){
+        tdStar.textContent = '\u2605';
+        tdStar.style.color = 'var(--blue)';
+        tdStar.style.fontSize = '15px';
+        tdStar.title = STAR_ALL_THREE_TITLE;
+      }
+      tr.appendChild(tdStar);
+      const tdRank = document.createElement('td');
+      tdRank.style.cssText = 'text-align:center;font-weight:800;color:var(--navy2);';
+      tdRank.textContent = bet.specialsRank;
+      tr.appendChild(tdRank);
+      const tdPos = document.createElement('td'); tdPos.className='left';
+      tdPos.textContent = getPlayerPosition(bet.player, bet.team) || '\u2014';
+      tr.appendChild(tdPos);
       const tdBet = document.createElement('td'); tdBet.className='left';
       tdBet.appendChild(buildLegLabelNode(bet));
       tr.appendChild(tdBet);
@@ -9510,7 +9563,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
 
   const windowLabelText = windowSize==='all' ? 'Full Season' : `Last ${windowSize}`;
 
-  // Builds a labeled, color-coded chip (green/red/grey background, matching every other hit-rate
+  // Builds a labeled, color-coded chip (green/red/gray background, matching every other hit-rate
   // display in this app) for the O/U expand row and the Alt Lines expand panel -- reuses
   // singleWindowChip exactly rather than a separate plain-text format, so this looks and behaves
   // identically to every other hit-rate badge in the app (same 60%/40% thresholds, same colors).
@@ -9774,7 +9827,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     function applyFilter(){
       filterableRows.forEach(({tr, pname, r, detailTr})=>{
         // "Exclude outliers" HIDES the row outright rather than dimming it like the other
-        // filters do -- the point is to take the bet out of consideration, not to de-emphasise
+        // filters do -- the point is to take the bet out of consideration, not to de-emphasize
         // it. Its detail row goes with it, otherwise an orphaned expansion is left behind.
         if(ouOutliers.excluded() && betIsOutlier({player: pname, team: r.team})){
           tr.style.display = 'none';
@@ -10105,7 +10158,7 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   const MIN_GP_10 = 6;  // 60% of a 10-game window
   const MIN_GP_15 = 9;  // 60% of a 15-game window
   // P+R+A included: everything downstream already understood the 'pra' stat key -- statValue(),
-  // hitRateFor(), multiWindowStats() for the EMA tiebreak, the DvP indices, defence ranks, live
+  // hitRateFor(), multiWindowStats() for the EMA tiebreak, the DvP indices, defense ranks, live
   // in-game scoring and grading all handle it. The ONLY reason the app never recommended a
   // Pts+Reb+Ast bet was that this market list didn't ask the book for one.
   ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists','player_points_rebounds','player_points_assists','player_rebounds_assists'].forEach(mkey=>{
@@ -11693,7 +11746,7 @@ function fmtResultBadge(result){
 /* ================= App Tracker: cumulative performance over time =================
    One running total per selected category: +1 on a win, -1 on a loss, nothing for a void or a
    pick that hasn't graded. Above zero means that category is net ahead on picks (NOT on money --
-   this deliberately ignores price, so a -300 favourite and a +250 dog each move the line one
+   this deliberately ignores price, so a -300 favorite and a +250 dog each move the line one
    step; the Bet Tracker's P/L column is where odds are weighted).
 
    Categories are the six bet types and the five prop stat types, so the two breakdown tables
@@ -11758,7 +11811,7 @@ function buildAppTrackerChart(container, bets){
   const title = document.createElement('div'); title.className='section-title'; title.style.margin='0 0 4px';
   title.textContent = 'Performance Over Time';
   box.appendChild(title);
-  appendDefIcon(title, 'A running tally per category: <b>+1 for every win, −1 for every loss</b>, with voids and ungraded picks left out. Above the zero line means that category is net ahead <i>on picks</i> — price is deliberately ignored here, so a heavy favourite and a longshot each move the line one step. Days start ' + APP_TRACKER_CHART_START + ' and a pick counts on its <b>game</b> date, not the day the app captured it. Ticking more than one source pools those picks into a single line rather than drawing one line each.');
+  appendDefIcon(title, 'A running tally per category: <b>+1 for every win, −1 for every loss</b>, with voids and ungraded picks left out. Above the zero line means that category is net ahead <i>on picks</i> — price is deliberately ignored here, so a heavy favorite and a longshot each move the line one step. Days start ' + APP_TRACKER_CHART_START + ' and a pick counts on its <b>game</b> date, not the day the app captured it. Ticking more than one source pools those picks into a single line rather than drawing one line each.');
 
   if(!available.length){
     const na = document.createElement('div'); na.style.cssText='font-size:13px;color:var(--sub);';
@@ -11772,7 +11825,7 @@ function buildAppTrackerChart(container, bets){
   const selectedSources = new Set(APP_TRACKER_SOURCES);
   const selected = [];                 // category keys, in the order they were picked
   const colorOf = new Map();           // category key -> palette slot, HELD until deselected
-  // Colour follows the entity, not its rank: a slot is claimed on selection and released only on
+  // Color follows the entity, not its rank: a slot is claimed on selection and released only on
   // deselection, so toggling one series off never repaints the ones that stay.
   function claimColor(key){
     const taken = new Set(colorOf.values());
@@ -11966,7 +12019,7 @@ function buildAppTrackerChart(container, bets){
     });
 
     // Direct end-labels are the contrast relief for the light hues -- text in ink, identity from
-    // the coloured line beside it. Skipped past 4 series, where they'd collide.
+    // the colored line beside it. Skipped past 4 series, where they'd collide.
     if(series.length <= 4){
       const placed = [];
       series.slice().sort((a,b)=>b.final-a.final).forEach(s=>{
@@ -12375,7 +12428,7 @@ async function renderAppTrackerPage(){
     // silently drops loose rows into an auto-created <tbody>, which left table.tHead null -- and
     // both syncTableHeaderAlignment() and applyStickyIdentityColumns() key off tHead, so this
     // table was skipped by them entirely and its right-aligned headers never got corrected to
-    // match its centred data.
+    // match its centered data.
     let tierHtml = '<thead><tr><th class="left" style="padding:4px 2px;width:22%;"></th><th style="padding:4px 2px;width:26%;">Top 5</th><th style="padding:4px 2px;width:26%;">Top 10</th><th style="padding:4px 2px;width:26%;">Top 15</th></tr></thead><tbody>';
     tierRows.forEach(([label, list])=>{
       tierHtml += `<tr><td class="left" style="padding:4px 2px;font-weight:700;color:var(--navy2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${label}</td>`
@@ -14039,7 +14092,7 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
     });
   }
   // P+R+A included: everything downstream already understood the 'pra' stat key -- statValue(),
-  // hitRateFor(), multiWindowStats() for the EMA tiebreak, the DvP indices, defence ranks, live
+  // hitRateFor(), multiWindowStats() for the EMA tiebreak, the DvP indices, defense ranks, live
   // in-game scoring and grading all handle it. The ONLY reason the app never recommended a
   // Pts+Reb+Ast bet was that this market list didn't ask the book for one.
   ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists','player_points_rebounds','player_points_assists','player_rebounds_assists'].forEach(mkey=>{
