@@ -8423,7 +8423,7 @@ function computeSpecialsBets(cachedFetch, selectedBook){
         gp5: hr5.gp, gp10: hr10.gp, gp15: hr15.gp, gpAll: hrAll ? hrAll.gp : 0,
         sportsbook: bookSourceLabel({price: leg.price, book: leg.book}, selectedBook),
         market: SPECIALS_MARKET_LABEL[leg.statKey] || leg.statKey,
-        game: gameLabel, opponent: opp, hr5, hr10, hr15, hrTier,
+        game: gameLabel, opponent: opp, hr5, hr10, hr15, hrAll, hrTier,
         groupTier: groupInfo.groupTier, groupHeightIn: groupInfo.weightedHeight,
         // Carried so the rendered Game cell can link BOTH teams, rather than re-deriving
         // shorts from the display string.
@@ -8448,7 +8448,7 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   appendDefIcon(sec, `A deliberately short list — a player prop only shows up here if it clears <b>all four</b> bars at once: hit in at least ${Math.round(SPECIALS_RECENT_BAR*100)}% of her last 10 games, at least ${Math.round(SPECIALS_RECENT_BAR*100)}% of her last 15, at least ${Math.round(SPECIALS_TIER_BAR*100)}% of her games this season against opposing position groups in the same height tier she faces tonight, and priced ${SPECIALS_MIN_PRICE} or better. The height tier is the same minutes-weighted "Group" classification the player page's Next Opponent section shows — shortest / middle / tallest, measured against her own season terciles. Team bets can't appear here: the height-tier qualifier has no meaning for a moneyline, spread or total. Small samples still apply — an 80% tier record over 5 games is 4-of-5, not a probability.`);
 
   const note = document.createElement('div'); note.className='footnote'; note.style.marginBottom='10px';
-  note.textContent = `Only today’s games still inside the pregame-through-Q1 window. Sorted by tier hit rate, then by the weaker of the L10/L15 windows. L5 and Vs That Team are shown for context — neither is one of the four qualifying bars.`;
+  note.textContent = `Only today’s games still inside the pregame-through-Q1 window. Sorted by tier hit rate, then by the weaker of the L10/L15 windows. L5, Season and Vs That Team are shown for context — none of the three is one of the four qualifying bars.`;
   container.appendChild(note);
 
   const {todaysGames, bets} = computeSpecialsBets(cachedFetch, selectedBook);
@@ -8471,7 +8471,7 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   const table = document.createElement('table');
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
-    + '<th>L5</th><th>L10</th><th>L15</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
+    + '<th>L5</th><th>L10</th><th>L15</th><th>Season</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
     + '<th class="left">Vs That Team</th>'
     + '<th class="left defcol th-sp-defrank">Opp Def Rank</th><th class="left defcol th-sp-defrankl5">Opp Def Rank L5</th>'
     + '<th class="left">Sportsbook</th><th></th></tr>';
@@ -8480,7 +8480,7 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   const TIER_TITLE = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
-  // Header order: Bet, Game, Price, L5, L10, L15, Tonight's Group, Vs That Tier, Vs That Team,
+  // Header order: Bet, Game, Price, L5, L10, L15, Season, Tonight's Group, Vs That Tier, Vs That Team,
   // Opp Def Rank, Opp Def Rank L5, Sportsbook, Track. The hit-rate cells hold {found, rate, hits,
   // gp} objects, so each sorts on .rate -- and only when that window actually has games behind it.
   const hrRate = hr => (hr && hr.found && hr.gp) ? hr.rate : null;
@@ -8491,6 +8491,7 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
     {value: bet => hrRate(bet.hr5)},
     {value: bet => hrRate(bet.hr10)},
     {value: bet => hrRate(bet.hr15)},
+    {value: bet => hrRate(bet.hrAll)},
     // Sorted by the group's actual weighted height, not the tier name -- that keeps
     // shortest -> middle -> tallest in a meaningful order instead of alphabetical.
     {value: bet => bet.groupHeightIn, dir: 'asc'},
@@ -8526,6 +8527,9 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
       const tdL5 = document.createElement('td'); tdL5.appendChild(singleWindowChip('', bet.hr5)); tr.appendChild(tdL5);
       const tdL10 = document.createElement('td'); tdL10.appendChild(singleWindowChip('', bet.hr10)); tr.appendChild(tdL10);
       const tdL15 = document.createElement('td'); tdL15.appendChild(singleWindowChip('', bet.hr15)); tr.appendChild(tdL15);
+      // Full-season record for the same bet, same chip formatting as the three windows above.
+      // Not one of the four qualifying bars -- context, like L5.
+      const tdSeason = document.createElement('td'); tdSeason.appendChild(singleWindowChip('', bet.hrAll)); tr.appendChild(tdSeason);
       const tdGroup = document.createElement('td'); tdGroup.className='left';
       // Clicking the tier opens her full game-by-game record against opposing groups in that
       // height band -- across every team she's faced, not just tonight's opponent.
