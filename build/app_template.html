@@ -1292,20 +1292,6 @@ function renderGameWindowStickyBar(currentWindowMode, onSelect, labelText){
 // Shared top-of-page toggle between the two Stats pages -- replaces the old "League" nav
 // sidebar group, now that Team pages are reached directly by clicking a team name in the
 // League Stats tables instead of a separate "Teams" nav group.
-function statsPageSwitcher(activeKey){
-  const row = document.createElement('div');
-  row.style.cssText = 'display:flex;gap:8px;margin-bottom:16px;';
-  const defs = [ {key:'league', label:'League Stats', fn: ()=>renderLeagueStatsPage()}, {key:'height', label:'Team Height', fn: ()=>renderTeamHeightPage()} ];
-  defs.forEach(d=>{
-    const btn = document.createElement('button');
-    btn.textContent = d.label;
-    const isActive = d.key===activeKey;
-    btn.style.cssText = `padding:8px 16px;border-radius:6px;border:1px solid ${isActive?'var(--navy2)':'var(--line)'};background:${isActive?'var(--navy2)':'var(--panel)'};color:${isActive?'#fff':'var(--ink)'};font-size:13px;font-weight:700;cursor:pointer;font-family:var(--sans);`;
-    btn.addEventListener('click', d.fn);
-    row.appendChild(btn);
-  });
-  return row;
-}
 // ============ Team height, broken out by position group ============
 // Same minutes-weighted idea as computeTeamWeightedHeight (and the same last-5-games basis), but
 // computed per position group and for every team at once, so a single team's group can be ranked
@@ -1355,7 +1341,7 @@ function computeTeamHeightByPosition(){
         minutes: Math.round(d.sumMinutes*10)/10,
         players: d.players.sort((x,y)=>y.avgMin-x.avgMin) };
     }).filter(Boolean);
-    rows.sort((x,y)=>y.heightIn-x.heightIn); // rank 1 = tallest, matching the league Team Height page
+    rows.sort((x,y)=>y.heightIn-x.heightIn); // rank 1 = tallest, matching the Team Height table on the League Stats page
     const of = rows.length;
     rows.forEach((r,i)=>{
       r.rank = i+1; r.of = of;
@@ -1412,35 +1398,13 @@ function buildTeamHeightSection(container, team){
 // average and the Rotation column, so the number and the list it sits next to describe the
 // same set of players.
 const TEAM_HEIGHT_ROTATION_SIZE = 7;
-// Shared by the standalone Team Height page and the copy on the League Stats page, so the two
-// can never describe the same number differently.
+// The Team Height definition, kept as a named constant so the heading and its tooltip stay in
+// one place. (There used to be a standalone Team Height page as well; it was removed once the
+// table moved onto League Stats, since two copies of one table is one too many.)
 const TEAM_HEIGHT_DEF = 'Minutes-weighted average height of the <b>top 7 players by playing time over this team\u2019s last five games</b> \u2014 each of those seven players\u2019 minutes per game multiplied by her height, summed, and divided by their combined minutes. Roughly "how tall is the average player on the court for this team right now." Seven is the real rotation: five on the floor plus the two who close games. Anchored to the team\u2019s games rather than each player\u2019s own last five appearances, so a traded or long-term-injured player drops out instead of lingering on her old team.';
 
-function renderTeamHeightPage(){
-  lastRender = () => renderTeamHeightPage();
-  main.innerHTML = '';
-  removeGameWindowStickyBar();
-  nav.innerHTML = ''; nav.style.display = 'none';
-  main.appendChild(statsPageSwitcher('height'));
 
-  const head = document.createElement('div'); head.className='pagehead';
-  head.innerHTML = `<h2>\ud83d\udccf Team Height (Last 5 Games) <span id="teamHeightInfoIcon"></span></h2>`;
-  main.appendChild(head);
-  appendDefIcon(head.querySelector('#teamHeightInfoIcon'), TEAM_HEIGHT_DEF);
-
-  const results = computeTeamWeightedHeight();
-  if(!results.length){
-    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;';
-    na.textContent = 'No height data available for any team yet.';
-    main.appendChild(na);
-    return;
-  }
-
-  buildTeamHeightTable(main, results);
-}
-
-// The Team Height table itself, so the standalone Team Height page and the copy embedded on the
-// League Stats page are literally the same table rather than two that can drift apart.
+// The Team Height table, built into whatever container is passed in.
 // ALWAYS last-5-games based: it is not affected by the League Stats page's Last 5/10/15/Full
 // Season selector, because "how tall is this team on the floor right now" is a current-rotation
 // question -- a full-season answer would average in players who have since been traded away.
@@ -1482,7 +1446,6 @@ function renderLeagueStatsPage(year, mode, windowMode){
   lastRender = () => renderLeagueStatsPage(year, mode, windowMode);
   main.innerHTML = '';
   nav.innerHTML = ''; nav.style.display = 'none';
-  main.appendChild(statsPageSwitcher('league'));
 
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const head = document.createElement('div'); head.className='pagehead';
@@ -3967,7 +3930,7 @@ async function initApp(){
    (the entries live in memory, not in the URL). Back/forward is the goal here, not shareable
    per-page URLs -- those would need a real serialize/parse layer for every page's arguments. */
 const HISTORY_PAGES = ['renderHomePage','renderOddsPage','renderLeagueStatsPage','renderTeamPage',
-  'renderTeamHeightPage','renderGamePage','renderPlayerPage','renderHeightTierDetailPage',
+  'renderGamePage','renderPlayerPage','renderHeightTierDetailPage',
   'renderLineHistoryPage','renderAppTrackerPage','renderBetTrackerPage','renderSettingsPage',
   'renderAdminPage'];
 // Deliberately NOT in the list: renderAccountSetupPage / renderResetPasswordPage /
