@@ -829,6 +829,14 @@ const PROP_STAT_KEYS = ['pts', 'reb', 'ast', 'tpm', 'pra', 'pr', 'pa', 'ra'];
 // and each one silently omitted the new combos when they were added.
 function propStatPairs(){ return PROP_STAT_KEYS.map(k=>[k, STAT_SHORT_LABEL[k]]); }
 function propStatPairsLong(){ return PROP_STAT_KEYS.map(k=>[k, STAT_KEY_LABEL[k]]); }
+// The plain over/under market each prop stat is priced under. fetchHerNextGameLines iterates
+// PROP_STAT_KEYS through this rather than listing the lines by hand -- the hand-written version
+// is how assists and PRA went missing once before, and how the three combos went missing again.
+const STAT_KEY_OU_MARKET = {
+  pts: 'player_points', reb: 'player_rebounds', ast: 'player_assists', tpm: 'player_threes',
+  pra: 'player_points_rebounds_assists', pr: 'player_points_rebounds',
+  pa: 'player_points_assists', ra: 'player_rebounds_assists',
+};
 // Sums a combo from a row of raw counting stats. Null if ANY component is missing, so a partial
 // row never reads as a genuine low total.
 function comboFrom(src, statKey){
@@ -2823,7 +2831,35 @@ function bettingLineCacheKey(playerName, team){ return `bettingline_${playerName
 // the multi-book lookup existed -- which have assists and PRA missing, because only DraftKings was
 // consulted -- would keep being served until each game completed, so the fix wouldn't show up for
 // a day. A mismatched version is treated as no cache at all and refetched.
-const BETTING_LINE_CACHE_VERSION = 2;
+const BETTING_LINE_CACHE_VERSION = 3;
+// How long a cached entry may be served before this refetches, PRE-TIPOFF only.
+//
+// This is the fix for a real, day-long staleness bug. The old code returned any cached entry
+// outright until the game was confirmed COMPLETE in DATA.games -- which only happens after the
+// next pipeline rebuild. So a lookup that ran in the morning, when the book had posted only
+// points and rebounds, was served for the rest of the day: assists, 3PM, PRA and the three
+// combos stayed blank on the tier page long after the book actually posted them, and no amount
+// of reloading helped. An entry that is still MISSING lines is retried much sooner than a
+// complete one, since it has something to gain by trying again.
+const BETTING_LINE_REFRESH_MS = 10 * 60 * 1000;
+const BETTING_LINE_INCOMPLETE_RETRY_MS = 90 * 1000;
+function cachedLinesComplete(entry){
+  return !!(entry && entry.lines) && PROP_STAT_KEYS.every(k =>
+    entry.lines[k] !== null && entry.lines[k] !== undefined);
+}
+function cachedLinesFresh(entry){
+  if(!entry || !entry.fetchedAt) return false;  // pre-v3 entries carry no timestamp: always refetch
+  return (Date.now() - entry.fetchedAt) <
+    (cachedLinesComplete(entry) ? BETTING_LINE_REFRESH_MS : BETTING_LINE_INCOMPLETE_RETRY_MS);
+}
+// Once the game is under way the cached pre-tipoff line is the CORRECT thing to keep showing --
+// books commonly pull player props at tipoff, so refetching would blank a line that was real.
+function cachedGameHasTipped(entry){
+  return !!(entry && entry.commenceTime) && Date.now() >= new Date(entry.commenceTime).getTime();
+}
+// One in-flight request per player: a page renders this section more than once (window changes,
+// tab switches, the async re-render), and without this each render would fire its own fetch.
+const _lineFetchInFlight = {};
 function getCachedBettingLine(playerName, team){
   try{
     const v = JSON.parse(localStorage.getItem(bettingLineCacheKey(playerName, team))||'null');
@@ -2853,8 +2889,21 @@ function isGameConfirmedComplete(team, opponent, date){
 // empty.
 async function fetchHerNextGameLines(playerName, team){
   const cached = getCachedBettingLine(playerName, team);
-  if(cached && !isGameConfirmedComplete(team, cached.opponent, cached.date)) return cached;
-
+  if(cached && !isGameConfirmedComplete(team, cached.opponent, cached.date)){
+    // Serve the cache without a network call only when there is nothing to gain by refetching:
+    // the game has already tipped (hold the pre-tip line deliberately), or the entry is recent
+    // enough. Otherwise fall through -- books post the thinner markets (assists, 3PM, and the
+    // four combined props) later in the day than points and rebounds.
+    if(cachedGameHasTipped(cached) || cachedLinesFresh(cached)) return cached;
+  }
+  const inflightKey = playerName + '|' + team;
+  if(_lineFetchInFlight[inflightKey]) return _lineFetchInFlight[inflightKey];
+  const promise = fetchHerNextGameLinesUncached(playerName, team, cached);
+  _lineFetchInFlight[inflightKey] = promise;
+  try { return await promise; }
+  finally { delete _lineFetchInFlight[inflightKey]; }
+}
+async function fetchHerNextGameLinesUncached(playerName, team, cached){
   try{
     const events = await fetchCachedOddsEvents();
     const fullName = FULL_TEAM_NAME[team];
@@ -2892,22 +2941,38 @@ async function fetchHerNextGameLines(playerName, team){
       if(o._bestBooks && o._bestBooks.length) lineBooks[statKey] = o._bestBooks[0];
       return o.point;
     }
-    const lines = {
-      pts: lineFor('pts', 'player_points'),
-      reb: lineFor('reb', 'player_rebounds'),
-      ast: lineFor('ast', 'player_assists'),
-      tpm: lineFor('tpm', 'player_threes'),
-      pra: lineFor('pra', 'player_points_rebounds_assists'),
-      pr: lineFor('pr', 'player_points_rebounds'),
-      pa: lineFor('pa', 'player_points_assists'),
-      ra: lineFor('ra', 'player_rebounds_assists'),
-    };
-    const result = { eventId: relevant.id, opponent: oppShort, date: dateStr, lines, lineBooks };
-    if(Object.values(lines).some(v=>v!==null)){
-      setCachedBettingLine(playerName, team, result);
-      return result;
+    // Driven off PROP_STAT_KEYS so a stat added to that list cannot be silently omitted here --
+    // which is exactly how assists and PRA, and later the three combos, ended up missing.
+    const lines = {};
+    PROP_STAT_KEYS.forEach(k=>{ lines[k] = lineFor(k, STAT_KEY_OU_MARKET[k]); });
+
+    // Carry forward any line the book has since PULLED, but only for the same game: a refetch
+    // that comes back thinner than the cache should never lose a line that was genuinely posted
+    // earlier. A different opponent/date means this is a new game and nothing carries over.
+    const sameGame = cached && cached.date === dateStr && cached.opponent === oppShort;
+    if(sameGame && cached.lines){
+      PROP_STAT_KEYS.forEach(k=>{
+        const fresh = lines[k];
+        const prior = cached.lines[k];
+        if((fresh === null || fresh === undefined) && prior !== null && prior !== undefined){
+          lines[k] = prior;
+          if(cached.lineBooks && cached.lineBooks[k]) lineBooks[k] = cached.lineBooks[k];
+        }
+      });
     }
-    return cached || result; // fetch found the right game but no real lines yet -- fall back to any prior cache rather than show all dashes if we had something before
+    const result = { eventId: relevant.id, opponent: oppShort, date: dateStr, lines, lineBooks,
+                     fetchedAt: Date.now(), commenceTime: relevant.commence_time };
+    const hasAnyLine = Object.values(lines).some(v=>v!==null && v!==undefined);
+    if(hasAnyLine || !cached){
+      setCachedBettingLine(playerName, team, result);
+      return hasAnyLine ? result : (cached || result);
+    }
+    // The fetch found the right game but no lines are posted yet, and we still hold a prior
+    // entry worth showing -- keep it rather than replacing it with all dashes. Its fetchedAt is
+    // re-stamped so this doesn't fire a fresh request on every single re-render; without that,
+    // an unpriced game would refetch continuously for as long as the page is open.
+    setCachedBettingLine(playerName, team, Object.assign({}, cached, {fetchedAt: Date.now()}));
+    return cached;
   }catch(e){
     return cached || null;
   }
@@ -3438,6 +3503,14 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     renderShareOfAllowedSection(shareWrap, playerName, team, result.opp, windowMode, heightTierData, result.groupTier);
     renderNextOpponentPositionSectionFromResult(nextOppWrap, playerName, team, heightTierData, result);
   });
+
+  // Minutes Trend -- last section on the Production tab. Synchronous: it reads only her own
+  // game log, so unlike the sections above it never waits on the odds feed.
+  const minutesTrendTitle = document.createElement('div'); minutesTrendTitle.className='section-title';
+  minutesTrendTitle.textContent = 'Minutes Trend';
+  prodTabContent.appendChild(minutesTrendTitle);
+  appendDefIcon(minutesTrendTitle, MINUTES_TREND_DEF);
+  renderMinutesTrendSection(prodTabContent, playerName, team, MINUTES_TREND_WINDOW);
 
   const windowLabelText = windowMode==='all' ? 'Full Season' : `Last ${windowMode}`;
   const monthLabelText = month==='full' ? 'Full Season' : (MONTH_NAMES[month]||month);
@@ -5448,8 +5521,9 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
           if(tone){ td.style.color = 'var(--' + tone + ')'; td.style.fontWeight = '700'; }
         }
         // Green when she cleared today's line for this stat that night, red when she didn't.
-        // Only the five stats a line actually exists for (PTS/REB/AST/3PM/PRA) are ever tinted;
-        // everything else is left alone rather than coloured against nothing.
+        // Driven purely by whether a line exists for that column, so all eight prop stats
+        // (PTS/REB/AST/3PM/PRA/P+R/P+A/R+A) tint; box-score columns with no line are left alone
+        // rather than coloured against nothing.
         const ln = lineFor(col.key);
         if(ln !== null && typeof v === 'number'){
           if(v > ln){ td.style.background = 'var(--greenbg)'; td.style.color = 'var(--green)'; td.style.fontWeight = '700'; }
@@ -5819,6 +5893,116 @@ function renderLineTrendChart(container, series){
 function statValue(g, statKey){
   if(COMBO_STAT_PARTS[statKey]) return comboFrom(g, statKey);
   return g[statKey];
+}
+
+// ==================== Minutes Trend ====================
+// Her average minutes over the last N games against the N games immediately before that -- a
+// role-change detector, not a production one.
+//
+// Two deliberate rules about DNPs, and they pull in opposite directions:
+//   * A NON-INJURY DNP (coach's decision, rest) counts as ZERO MINUTES and stays in the window.
+//     Dropping it would hide the exact thing this is meant to catch: a player benched for three
+//     of her last five games has genuinely lost her role, and averaging only the games she
+//     played would report her minutes as unchanged.
+//   * An INJURY DNP is removed from the sequence entirely, because a health absence is not a
+//     role change and would otherwise read as a collapse in playing time.
+// The dataset carries no DNP REASON today, so isInjuryDnp() returns false and every DNP is
+// treated as non-injury. That is the conservative direction (it can overstate a decrease for an
+// injured player, never understate a real benching). When a data pull backfills the reason,
+// this one function is the only thing that needs to change.
+const MINUTES_TREND_WINDOW = 5;
+const MINUTES_TREND_PCT_BAR = 0.20;   // 20% swing...
+const MINUTES_TREND_ABS_BAR = 5;      // ...AND at least 5 minutes, so a 4->5 min bench player
+                                      // (a 25% "jump") isn't flagged as a role change.
+function isInjuryDnp(g){
+  return !!(g && g.dnpReason && /injur|illness|health|concussion|soreness|strain|sprain/i.test(g.dnpReason));
+}
+function computeMinutesTrend(playerName, team, n){
+  n = n || MINUTES_TREND_WINDOW;
+  const rec = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!rec || !rec.log) return null;
+  // rec.log is oldest-first. Injury DNPs are dropped before windowing so the two windows are
+  // still N *comparable* games each, not N calendar slots.
+  const eligible = rec.log.filter(g => !(g.dnp && isInjuryDnp(g)));
+  const injuryExcluded = rec.log.length - eligible.length;
+  if(eligible.length < 2*n) return {n, insufficient:true, have:eligible.length, need:2*n, injuryExcluded};
+  const recent = eligible.slice(-n);
+  const prior  = eligible.slice(-2*n, -n);
+  const minOf = g => g.dnp ? 0 : (g.min || 0);     // non-injury DNP == 0 minutes, by design
+  const avg = arr => arr.reduce((a,g)=>a+minOf(g), 0) / arr.length;
+  const recentAvg = avg(recent), priorAvg = avg(prior);
+  const delta = recentAvg - priorAvg;
+  // A prior average of exactly 0 makes a percentage meaningless (division by zero), so the
+  // absolute bar alone decides in that case rather than reporting an infinite increase.
+  const pct = priorAvg > 0 ? delta / priorAvg : null;
+  const significant = Math.abs(delta) >= MINUTES_TREND_ABS_BAR
+    && (pct === null ? true : Math.abs(pct) > MINUTES_TREND_PCT_BAR);
+  return {n, insufficient:false, recentAvg, priorAvg, delta, pct, significant, injuryExcluded,
+          direction: delta > 0 ? 'up' : (delta < 0 ? 'down' : 'flat'),
+          recentGames: recent.map(g=>({date:g.date, min:minOf(g), dnp:!!g.dnp})),
+          priorGames:  prior.map(g=>({date:g.date, min:minOf(g), dnp:!!g.dnp}))};
+}
+const MINUTES_TREND_DEF = 'Compares each player\u2019s average minutes over her last N games to the N games right before that. Non-injury DNPs (coach\u2019s decision, rest, etc.) count as 0 minutes, so a genuine role change still shows up as a real decrease. Injury-related DNPs are excluded from the comparison entirely, since a health absence isn\u2019t a role change \u2014 note this depends on injury-reason data that isn\u2019t in the current dataset yet, so until a fresh data pull backfills it, all DNPs are treated as non-injury by default. Needs at least 2\u00d7N games of history to make a fair same-size comparison.';
+
+function renderMinutesTrendSection(container, playerName, team, n){
+  const t = computeMinutesTrend(playerName, team, n);
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
+  if(!t){
+    wrap.style.color = 'var(--sub)'; wrap.style.fontSize = '12.5px';
+    wrap.textContent = 'No game log on file for this player.';
+    container.appendChild(wrap); return;
+  }
+  if(t.insufficient){
+    wrap.style.color = 'var(--sub)'; wrap.style.fontSize = '12.5px';
+    wrap.textContent = `Needs ${t.need} games to compare two ${t.n}-game windows \u2014 she has ${t.have}`
+      + (t.injuryExcluded ? ` (${t.injuryExcluded} injury DNP(s) excluded)` : '') + '.';
+    container.appendChild(wrap); return;
+  }
+
+  const fmt = v => v.toFixed(1);
+  const sign = t.delta > 0 ? '+' : '';
+  const tone = !t.significant ? 'var(--sub)' : (t.direction === 'up' ? 'var(--green)' : 'var(--red)');
+
+  if(t.significant){
+    const flag = document.createElement('div');
+    flag.style.cssText = `font-weight:700;font-size:13.5px;margin-bottom:8px;padding:8px 10px;border-radius:6px;color:${tone};`
+      + `background:${t.direction === 'up' ? 'var(--greenbg)' : 'var(--redbg)'};`;
+    const pctText = t.pct === null ? 'from zero' : `${sign}${Math.round(t.pct*100)}%`;
+    flag.textContent = `\u26a0 Role change: minutes ${t.direction === 'up' ? 'UP' : 'DOWN'} `
+      + `${pctText} (${sign}${fmt(t.delta)} min/gm) over her last ${t.n} games.`;
+    wrap.appendChild(flag);
+  }
+
+  const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:22px;flex-wrap:wrap;';
+  const box = (label, value, color) => {
+    const d = document.createElement('div');
+    const l = document.createElement('div'); l.style.cssText = 'font-size:11px;color:var(--sub);'; l.textContent = label;
+    const v = document.createElement('div'); v.style.cssText = `font-weight:700;font-size:14px;${color?'color:'+color+';':''}`; v.textContent = value;
+    d.appendChild(l); d.appendChild(v); return d;
+  };
+  row.appendChild(box(`Last ${t.n} (min/gm)`, fmt(t.recentAvg)));
+  row.appendChild(box(`Prior ${t.n} (min/gm)`, fmt(t.priorAvg)));
+  row.appendChild(box('Change', `${sign}${fmt(t.delta)}`, tone));
+  row.appendChild(box('Change %', t.pct === null ? '\u2014' : `${sign}${Math.round(t.pct*100)}%`, tone));
+  wrap.appendChild(row);
+
+  const detail = document.createElement('div'); detail.style.cssText = 'font-size:11px;color:var(--sub);margin-top:8px;';
+  const listOf = games => games.map(g => g.dnp ? `${g.date}: DNP (0)` : `${g.date}: ${g.min}`).join('  \u00b7  ');
+  detail.innerHTML = `<b>Last ${t.n}:</b> ${listOf(t.recentGames)}<br><b>Prior ${t.n}:</b> ${listOf(t.priorGames)}`;
+  wrap.appendChild(detail);
+
+  if(!t.significant){
+    const note = document.createElement('div'); note.style.cssText = 'font-size:11px;color:var(--sub);margin-top:6px;';
+    note.textContent = `No role change flagged \u2014 that needs both a swing over ${Math.round(MINUTES_TREND_PCT_BAR*100)}% and a move of at least ${MINUTES_TREND_ABS_BAR} min/gm.`;
+    wrap.appendChild(note);
+  }
+  if(t.injuryExcluded){
+    const inj = document.createElement('div'); inj.style.cssText = 'font-size:11px;color:var(--sub);margin-top:4px;';
+    inj.textContent = `${t.injuryExcluded} injury DNP(s) excluded from both windows.`;
+    wrap.appendChild(inj);
+  }
+  container.appendChild(wrap);
 }
 
 // windowSize: 'all' | 15 | 10 | 5 — how many of the most recent games to look at
@@ -7381,6 +7565,50 @@ function computeTeamVsOpponentGames(leg){
   }).filter(Boolean).sort((a,b)=>a.date.localeCompare(b.date));
   return rows.length ? rows : null;
 }
+// Minutes Trend as a bet-table cell: the change in minutes per game over her last 5 games vs
+// the 5 before, with the percentage in parentheses -- "+18.0 (+150%)". Memoised per player,
+// because a matchup board renders ~70 rows and each would otherwise rescan her whole log.
+//
+// Only a shift that clears BOTH bars is coloured; anything smaller is shown in muted text so
+// the number is still there to read without implying a role change that isn't one.
+const _minutesTrendCache = {};
+function betMinutesTrend(bet){
+  if(!bet || !bet.player || !bet.team) return null;   // team-level bets have no player
+  const key = bet.player + '|' + bet.team;
+  if(!(key in _minutesTrendCache)) _minutesTrendCache[key] = computeMinutesTrend(bet.player, bet.team);
+  return _minutesTrendCache[key];
+}
+function minutesTrendText(t){
+  if(!t || t.insufficient) return '\u2014';
+  const sign = t.delta > 0 ? '+' : '';
+  const pct = t.pct === null ? 'n/a' : `${sign}${Math.round(t.pct*100)}%`;
+  return `${sign}${t.delta.toFixed(1)} (${pct})`;
+}
+function minutesTrendSortValue(bet){
+  const t = betMinutesTrend(bet);
+  return (t && !t.insufficient) ? t.delta : null;
+}
+function fillMinutesTrendCell(td, bet){
+  const t = betMinutesTrend(bet);
+  td.textContent = minutesTrendText(t);
+  if(!t || t.insufficient){ td.style.color = 'var(--sub)'; return; }
+  if(t.significant){
+    td.style.color = t.direction === 'up' ? 'var(--green)' : 'var(--red)';
+    td.style.fontWeight = '700';
+    td.title = `Role change: ${t.recentAvg.toFixed(1)} min/gm over her last ${t.n} games vs `
+      + `${t.priorAvg.toFixed(1)} over the ${t.n} before.`;
+  } else {
+    td.style.color = 'var(--sub)';
+    td.title = `${t.recentAvg.toFixed(1)} min/gm over her last ${t.n} vs ${t.priorAvg.toFixed(1)} `
+      + `over the ${t.n} before \u2014 below the role-change bars.`;
+  }
+}
+const MINUTES_TREND_COL_DEF = 'Change in her average minutes per game over her last '
+  + MINUTES_TREND_WINDOW + ' games versus the ' + MINUTES_TREND_WINDOW + ' games before that, with the percentage change in '
+  + 'parentheses. <b>Highlighted green or red only when the shift clears both bars: more than '
+  + Math.round(MINUTES_TREND_PCT_BAR*100) + '% AND at least ' + MINUTES_TREND_ABS_BAR + ' min/gm</b> \u2014 a real role change, '
+  + 'which is worth knowing before backing a bet built on her older usage. ' + MINUTES_TREND_DEF;
+
 function buildVsOpponentCell(leg){
   if(leg.betType==='player_prop' || leg.betType==='player_prop_alt'){
     const stats = vsOpponentStatsForLeg(leg);
@@ -7791,6 +8019,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th>Price</th><th class="th-overall">Overall %</th>'
     +'<th class="th-l5 compact-hide">L5%</th><th class="th-l10 compact-hide">L10%</th><th class="th-l15 compact-hide">L15%</th><th class="th-season compact-hide">Season%</th>'
+    +'<th class="th-mintrend compact-hide">Min Trend</th>'
     + (showTierCols ? '<th class="left th-group compact-hide">Matchup Group</th><th class="th-vstier compact-hide">Vs That Tier</th>' : '')
     +'<th class="th-l10ema compact-hide">L10 EMA</th>'
     +'<th class="defcol th-defallowed compact-hide">Allowed/Gm</th><th class="left compact-hide">Game</th><th class="left compact-hide">Vs Opponent This Season</th>'
@@ -7814,6 +8043,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   appendDefIcon(thead.querySelector('.th-l10'), 'Hit rate over her last 10 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-l15'), 'Hit rate over her last 15 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-season'), 'Hit rate over her full season, with the actual record (hits/games) in parentheses. Not part of the Overall % ranking calculation \u2014 shown for reference alongside L5/L10/L15.');
+  appendDefIcon(thead.querySelector('.th-mintrend'), MINUTES_TREND_COL_DEF);
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
   appendDefIcon(thead.querySelector('.th-defallowed'), STAT_DEFINITIONS.defAllowed);
@@ -7856,6 +8086,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     {value: bet => bet.rate10},                                                                 // L10%
     {value: bet => bet.rate15},                                                                 // L15%
     {value: bet => bet.rateAll},                                                                // Season%
+    {value: minutesTrendSortValue},                                                             // Min Trend
     ...(showTierCols ? [
       {value: bet => { const g = betGroupTierInfo(bet); return g ? g.weightedHeight : null; }, dir: 'asc'}, // Matchup Group (by height, so shortest->tallest)
       {value: bet => { const hr = betTierHitRate(bet); return (hr && hr.gp) ? hr.rate : null; }}, // Vs That Tier (gp 0 => null, so it sorts last like its em dash implies)
@@ -7941,7 +8172,9 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     const tdL10 = mkRate(bet.rate10, bet.gp10, isProp ? hitCountFor(bet,10) : null);
     const tdL15 = mkRate(bet.rate15, bet.gp15, isProp ? hitCountFor(bet,15) : null);
     const tdSeason = mkRate(bet.rateAll, bet.gpAll, isProp ? hitCountFor(bet,'all') : null);
-    [tdL5, tdL10, tdL15, tdSeason].forEach(td=>td.classList.add('compact-hide'));
+    const tdMinTrend = document.createElement('td'); tdMinTrend.style.cssText = cellStyle;
+    fillMinutesTrendCell(tdMinTrend, bet);
+    [tdL5, tdL10, tdL15, tdSeason, tdMinTrend].forEach(td=>td.classList.add('compact-hide'));
     // Opposing height tier + her season record against that tier. Both are memoised per player
     // (and per player+opponent), so the ~70 rows of a matchup board cost roughly one heavy
     // computeHeightTierData call per distinct player, not one per row.
@@ -8062,7 +8295,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar, tdRank, tdPos, tdLabel, tdPrice, tdOverall, tdL5, tdL10, tdL15, tdSeason]
+    [tdStar, tdRank, tdPos, tdLabel, tdPrice, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdMinTrend]
       .concat(showTierCols ? [tdGroupTier, tdVsTier] : [])
       .concat([tdL10Ema, tdAllowed, tdGame, tdVsOpp, tdDef, tdSimDef, tdDefL5, tdSimDefL5, tdDvpSeason, tdDvpL15, tdDvpL10, tdDvpL5col, tdSportsbook, tdTrack])
       .forEach(td=>tr.appendChild(td));
@@ -8161,6 +8394,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th class="left">Vs Opponent This Season</th><th>Price</th><th class="left">Sportsbook</th>'
     +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="left defcol th-defrankl5">Opp Def Rank L5</th><th class="defcol th-defallowed">Allowed/Gm</th>'
     +'<th class="th-l5">L5</th><th class="th-l10b">L10</th><th class="th-l15b">L15</th><th class="th-full">Season</th>'
+    +'<th class="th-mintrend">Min Trend</th>'
     +'<th class="th-agree">Agree</th><th class="th-dvp">DvP Idx</th><th class="left">Injury</th><th></th></tr>';
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
@@ -8169,6 +8403,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   appendDefIcon(thead.querySelector('.th-l10b'), 'EMA over her last 10 games played, plus how many of those 10 actually cleared this line on this side.');
   appendDefIcon(thead.querySelector('.th-l15b'), 'EMA over her last 15 games played, plus how many of those 15 actually cleared this line on this side.');
   appendDefIcon(thead.querySelector('.th-full'), 'EMA over her full season, plus how many games this season actually cleared this line on this side.');
+  appendDefIcon(thead.querySelector('.th-mintrend'), MINUTES_TREND_COL_DEF);
   appendDefIcon(thead.querySelector('.th-agree'), 'How many of the 4 EMA windows (L5/L10/L15/season) agree with the direction (Over/Under) the line implies. Only legs with 3/4 or 4/4 agreement are shown \u2014 anything less isn\u2019t a real signal.');
   appendDefIcon(thead.querySelector('.th-dvp'), STAT_DEFINITIONS.dvpPts.replace('Points', 'this stat'));
   table.appendChild(thead);
@@ -8207,6 +8442,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     {value: bet => bet.edge && bet.edge.l10},
     {value: bet => bet.edge && bet.edge.l15},
     {value: bet => bet.edge && bet.edge.full},
+    {value: minutesTrendSortValue},                              // Min Trend
     {value: bet => bet.edge && bet.edge.agreement},
     {value: bet => bet.edge && bet.edge.dvp},
     {value: bet => bet.injuryNote || null, dir: 'asc'},
@@ -8290,6 +8526,8 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     };
     const tdL5 = mk(bet.edge.l5, hitCountFor(bet,5)), tdL10 = mk(bet.edge.l10, hitCountFor(bet,10)),
           tdL15 = mk(bet.edge.l15, hitCountFor(bet,15)), tdFull = mk(bet.edge.full, hitCountFor(bet,'all'));
+    const tdMinTrend = document.createElement('td'); tdMinTrend.style.cssText = cellStyle;
+    fillMinutesTrendCell(tdMinTrend, bet);
     const tdAgree = document.createElement('td'); tdAgree.style.cssText = cellStyle + 'font-weight:700;';
     tdAgree.textContent = `${Math.round(bet.edge.agreement*4)}/4`;
     const tdDvp = document.createElement('td'); tdDvp.style.cssText = cellStyle;
@@ -8300,7 +8538,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     else tdInjury.textContent = '\u2014';
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar,tdRank,tdPos,tdLabel,tdGame,tdVsOpp,tdPrice,tdSportsbook,tdDef,tdDefL5,tdAllowed,tdL5,tdL10,tdL15,tdFull,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
+    [tdStar,tdRank,tdPos,tdLabel,tdGame,tdVsOpp,tdPrice,tdSportsbook,tdDef,tdDefL5,tdAllowed,tdL5,tdL10,tdL15,tdFull,tdMinTrend,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
     });
   }
@@ -8481,16 +8719,17 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   const table = document.createElement('table');
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
-    + '<th>L5</th><th>L10</th><th>L15</th><th>Season</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
+    + '<th>L5</th><th>L10</th><th>L15</th><th>Season</th><th class="th-sp-mintrend">Min Trend</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
     + '<th class="left">Vs That Team</th>'
     + '<th class="left defcol th-sp-defrank">Opp Def Rank</th><th class="left defcol th-sp-defrankl5">Opp Def Rank L5</th>'
     + '<th class="left">Sportsbook</th><th></th></tr>';
+  appendDefIcon(thead.querySelector('.th-sp-mintrend'), MINUTES_TREND_COL_DEF);
   appendDefIcon(thead.querySelector('.th-sp-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-sp-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   const TIER_TITLE = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
-  // Header order: Bet, Game, Price, L5, L10, L15, Season, Tonight's Group, Vs That Tier, Vs That Team,
+  // Header order: Bet, Game, Price, L5, L10, L15, Season, Min Trend, Tonight's Group, Vs That Tier, Vs That Team,
   // Opp Def Rank, Opp Def Rank L5, Sportsbook, Track. The hit-rate cells hold {found, rate, hits,
   // gp} objects, so each sorts on .rate -- and only when that window actually has games behind it.
   const hrRate = hr => (hr && hr.found && hr.gp) ? hr.rate : null;
@@ -8502,6 +8741,7 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
     {value: bet => hrRate(bet.hr10)},
     {value: bet => hrRate(bet.hr15)},
     {value: bet => hrRate(bet.hrAll)},
+    {value: minutesTrendSortValue},                          // Min Trend
     // Sorted by the group's actual weighted height, not the tier name -- that keeps
     // shortest -> middle -> tallest in a meaningful order instead of alphabetical.
     {value: bet => bet.groupHeightIn, dir: 'asc'},
@@ -8540,6 +8780,8 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
       // Full-season record for the same bet, same chip formatting as the three windows above.
       // Not one of the four qualifying bars -- context, like L5.
       const tdSeason = document.createElement('td'); tdSeason.appendChild(singleWindowChip('', bet.hrAll)); tr.appendChild(tdSeason);
+      const tdMinTrend = document.createElement('td');
+      fillMinutesTrendCell(tdMinTrend, bet); tr.appendChild(tdMinTrend);
       const tdGroup = document.createElement('td'); tdGroup.className='left';
       // Clicking the tier opens her full game-by-game record against opposing groups in that
       // height band -- across every team she's faced, not just tonight's opponent.
@@ -9246,13 +9488,20 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     filterBar.appendChild(expandAllGroup);
     container.appendChild(filterBar);
 
-    const marketTh = showMarketColumn ? '<th class="left" style="padding:4px 3px;border-bottom:2px solid var(--line);width:16%;">Mkt</th>' : '';
-    const nameWidth = showMarketColumn ? '26%' : '30%';
+    const th = (w, extra) => `<th class="${extra||''}" style="padding:4px 3px;border-bottom:2px solid var(--line);width:${w};">`;
+    const marketTh = showMarketColumn ? th('13%','left') + 'Mkt</th>' : '';
+    const nameWidth = showMarketColumn ? '22%' : '26%';
+    const ouWidth   = showMarketColumn ? '21%' : '24%';
+    const trendWidth= showMarketColumn ? '11%' : '12%';
+    const trackWidth= showMarketColumn ? '12%' : '14%';
     const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-bottom:20px;table-layout:fixed;font-size:11px;';
-    table.innerHTML = `<thead><tr><th class="left" style="padding:4px 3px;border-bottom:2px solid var(--line);width:${nameWidth};">Player</th>${marketTh}<th style="padding:4px 3px;border-bottom:2px solid var(--line);width:27%;">Over</th><th style="padding:4px 3px;border-bottom:2px solid var(--line);width:27%;">Under</th><th style="padding:4px 3px;border-bottom:2px solid var(--line);width:20%;">Track</th></tr></thead>`;
+    table.innerHTML = `<thead><tr>${th(nameWidth,'left')}Player</th>${marketTh}`
+      + `${th(ouWidth)}Over</th>${th(ouWidth)}Under</th>`
+      + `${th(trendWidth,'th-ll-mintrend')}Min Trend</th>${th(trackWidth)}Track</th></tr></thead>`;
+    appendDefIcon(table.querySelector('.th-ll-mintrend'), MINUTES_TREND_COL_DEF);
     const tbody = document.createElement('tbody'); table.appendChild(tbody);
     container.appendChild(table);
-    const colCount = showMarketColumn ? 5 : 4;
+    const colCount = showMarketColumn ? 6 : 5;
 
     const filterableRows = [];
     rows.forEach(r=>{
@@ -9283,6 +9532,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         tdUnder.appendChild(box);
       } else tdUnder.textContent = '\u2014';
 
+      const tdMinTrend = document.createElement('td'); tdMinTrend.style.cssText='padding:4px 3px;text-align:center;font-size:10.5px;';
+      fillMinutesTrendCell(tdMinTrend, {player:r.pname, team:r.team});
+
       const tdTrack = document.createElement('td'); tdTrack.style.cssText='padding:4px 2px;text-align:center;';
       tdTrack.addEventListener('click', e=>e.stopPropagation());
       const overThreshold = Number.isInteger(r.line) ? r.line+1 : Math.ceil(r.line);
@@ -9303,7 +9555,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         tdTrack.appendChild(btn);
       }
 
-      (showMarketColumn ? [tdName, tdMarket, tdOver, tdUnder, tdTrack] : [tdName, tdOver, tdUnder, tdTrack]).forEach(td=>tr.appendChild(td));
+      (showMarketColumn ? [tdName, tdMarket, tdOver, tdUnder, tdMinTrend, tdTrack]
+                        : [tdName, tdOver, tdUnder, tdMinTrend, tdTrack]).forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
 
       const detailTr = document.createElement('tr');
