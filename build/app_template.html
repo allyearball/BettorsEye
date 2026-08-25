@@ -3309,7 +3309,10 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
       sampleNote.textContent = `${imp.gamesWithout} game(s) without ${imp.teammate} vs ${imp.gamesWith} game(s) with her.`;
       impactWrap.appendChild(sampleNote);
       const statsRow = document.createElement('div'); statsRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;';
-      const STAT_LABELS = {pts:'PPG', reb:'RPG', ast:'APG', pra:'PRA'};
+      // Per-game labels, matching what the numbers actually are. 3PM/G is spelled out rather than
+      // the bare "3PM" used as a table column header elsewhere, because every other label in this
+      // widget carries its per-game unit.
+      const STAT_LABELS = {pts:'PPG', reb:'RPG', ast:'APG', tpm:'3PM/G', pra:'PRA'};
       imp.stats.forEach(s=>{
         const box = document.createElement('div');
         const lbl = document.createElement('div'); lbl.style.cssText = 'font-size:11px;color:var(--sub);'; lbl.textContent = STAT_LABELS[s.statKey];
@@ -4663,7 +4666,13 @@ const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', question
 // missed vs played -- for every teammate CURRENTLY listed as officially out. Cross-references
 // by date (both players are on the same team, so at most one game per date), not by any shared
 // game id, since player logs don't store one directly.
-const TEAMMATE_OUT_INSIGNIFICANT_THRESHOLD = {pts:1.0, reb:1.0, ast:1.0, pra:2.0}; // PRA gets double the bar since it's a sum of the other three -- the same-size swing in each individual stat would otherwise look artificially bigger once combined
+// The bar below which a change is called "Insignificant" rather than reported as a real shift.
+// PRA gets double the bar since it's a sum of the other three -- the same-size swing in each
+// individual stat would otherwise look artificially bigger once combined. 3PM gets a much SMALLER
+// bar than points/rebounds/assists: a typical rotation player makes 0.5-2 threes a game, so a full
+// made three per game is an enormous move, and a 1.0 bar would dismiss nearly every real change as
+// noise. Half a three a game is ~1.5 points -- a genuinely bettable shift.
+const TEAMMATE_OUT_INSIGNIFICANT_THRESHOLD = {pts:1.0, reb:1.0, ast:1.0, tpm:0.5, pra:2.0};
 // For a player, computes her per-game production against opposing same-position players,
 // bucketed into three tiers by that opponent group's minutes-weighted height. Tier boundaries
 // (terciles) are fixed from her FULL season, so "shortest/middle/tallest" means the same thing
@@ -5491,7 +5500,9 @@ function computeTeammateOutImpact(playerName, team){
       const vals = games.map(g => statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[statKey]||0));
       return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : null;
     }
-    const stats = ['pts','reb','ast','pra'].map(statKey=>{
+    // 3PM sits with the other individual stats, ahead of the PRA combination -- same order as
+    // STAT_KEY_LABEL and the Specials market labels use everywhere else.
+    const stats = ['pts','reb','ast','tpm','pra'].map(statKey=>{
       const withAvg = avgStat(gamesWith, statKey);
       const withoutAvg = avgStat(gamesWithout, statKey);
       return { statKey, withAvg, withoutAvg, delta: (withAvg!==null && withoutAvg!==null) ? withoutAvg-withAvg : null };
@@ -9560,7 +9571,11 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   // Player props, both sides, all four base markets
   const MIN_GP_10 = 6;  // 60% of a 10-game window
   const MIN_GP_15 = 9;  // 60% of a 15-game window
-  ['player_points','player_rebounds','player_assists','player_threes'].forEach(mkey=>{
+  // P+R+A included: everything downstream already understood the 'pra' stat key -- statValue(),
+  // hitRateFor(), multiWindowStats() for the EMA tiebreak, the DvP indices, defence ranks, live
+  // in-game scoring and grading all handle it. The ONLY reason the app never recommended a
+  // Pts+Reb+Ast bet was that this market list didn't ask the book for one.
+  ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists'].forEach(mkey=>{
     const market = detailMarkets[mkey]; if(!market) return;
     const statKey = PROP_MARKET_TO_STAT[mkey];
     const players = [...new Set(market.outcomes.map(o=>o.description))];
@@ -13488,7 +13503,11 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
       if(under) legs.push({label:`${side.full} Team Total Under ${under.point}`, price:under.price, betType:'team_total', team:side.short, opponent:side.opp, line:under.point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     });
   }
-  ['player_points','player_rebounds','player_assists','player_threes'].forEach(mkey=>{
+  // P+R+A included: everything downstream already understood the 'pra' stat key -- statValue(),
+  // hitRateFor(), multiWindowStats() for the EMA tiebreak, the DvP indices, defence ranks, live
+  // in-game scoring and grading all handle it. The ONLY reason the app never recommended a
+  // Pts+Reb+Ast bet was that this market list didn't ask the book for one.
+  ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists'].forEach(mkey=>{
     const market = markets[mkey]; if(!market) return;
     const statKey = PROP_MARKET_TO_STAT[mkey];
     const players = [...new Set(market.outcomes.map(o=>o.description))];
