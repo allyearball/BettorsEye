@@ -7613,6 +7613,126 @@ function fillMinutesTrendCell(td, bet){
       + `over the ${t.n} before \u2014 below the role-change bars.`;
   }
 }
+// ==================== "Potential outlier" flag ====================
+// A bet on a player whose role has just changed: minutes moved more than 20% AND by at least
+// 5 min/gm over her last 5 games versus the 5 before. Both bars are the same ones the Min Trend
+// column colours on -- betMinutesTrend().significant IS the definition, so the border and the
+// column can never disagree about what counts.
+//
+// Why flag it: every hit rate in these tables is built on games played under her OLD role. A
+// player who just jumped from 14 to 30 minutes has a season line priced for the old usage, and
+// a player who just lost 18 minutes has hit rates that are about to stop being true. The number
+// isn't wrong; the sample it came from no longer describes tonight.
+function betIsOutlier(bet){
+  const t = betMinutesTrend(bet);
+  return !!(t && !t.insufficient && t.significant);
+}
+// Solid 3px, drawn INSIDE the row via outline-offset so it doesn't shift any layout (the same
+// trick the height-tier table already uses for its highlighted row). A bright #F5C518 rather
+// than the muted #D4AF37 used by the confidence sidebar -- those two must not read as the same
+// signal, and the colour key spells out the difference.
+const OUTLIER_BORDER_COLOR = '#F5C518';
+function applyOutlierStyle(tr, bet){
+  const t = betMinutesTrend(bet);
+  tr.style.outline = `3px solid ${OUTLIER_BORDER_COLOR}`;
+  tr.style.outlineOffset = '-3px';
+  if(t){
+    const sign = t.delta > 0 ? '+' : '';
+    tr.title = `Potential outlier \u2014 minutes ${t.direction === 'up' ? 'up' : 'down'} `
+      + `${sign}${t.delta.toFixed(1)} min/gm (${t.pct===null?'n/a':sign+Math.round(t.pct*100)+'%'}) `
+      + `over her last ${t.n} games. Her hit rates below were built on the old role.`;
+  }
+}
+const OUTLIER_DEF = 'A bet on a player whose <b>minutes have moved more than '
+  + Math.round(MINUTES_TREND_PCT_BAR*100) + '% AND by at least ' + MINUTES_TREND_ABS_BAR + ' min/gm</b> over her last '
+  + MINUTES_TREND_WINDOW + ' games versus the ' + MINUTES_TREND_WINDOW + ' before. The hit rates in this row were '
+  + 'earned under her previous role, so treat them with care \u2014 the numbers are correct, but the sample they '
+  + 'came from may no longer describe tonight. Tick "Exclude outliers" to drop these rows from the table.';
+
+// A checkbox that removes flagged rows from a table. Returns a live getter rather than a value,
+// so the render function can read the CURRENT state each time it runs.
+function buildExcludeOutliersToggle(container, onChange){
+  const label = document.createElement('label');
+  label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;width:fit-content;';
+  const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = false;
+  const text = document.createElement('span'); text.textContent = 'Exclude outliers';
+  label.appendChild(cb); label.appendChild(text);
+  const icon = document.createElement('span'); label.appendChild(icon);
+  appendDefIcon(icon, OUTLIER_DEF);
+  cb.addEventListener('change', ()=>{ if(onChange) onChange(); });
+  container.appendChild(label);
+  return { excluded: () => cb.checked, input: cb };
+}
+
+// ==================== Colour key ====================
+// One legend, built from a list of keys so every table shows only the marks it actually uses --
+// a key that describes columns a table doesn't have is worse than no key.
+const COLOR_KEY_ITEMS = {
+  outlier: {swatch: {outline: OUTLIER_BORDER_COLOR}, label: 'Potential outlier',
+    note: 'her minutes just changed by >' + Math.round(MINUTES_TREND_PCT_BAR*100) + '% and \u2265' + MINUTES_TREND_ABS_BAR + ' min/gm \u2014 hit rates predate the new role'},
+  confidence: {swatch: {bar: '#D4AF37', fill: 'rgba(212,175,55,0.14)'}, label: 'High-confidence pick',
+    note: 'gold bar down the left edge; hover the \u24d8 beside its rank for the specific reason'},
+  star: {swatch: {text: '\u2605', color: '#D4AF37'}, label: 'Appears in both tables',
+    note: 'this bet is also in the other Top Bets list on this page'},
+  defTint: {swatch: {fill: 'rgba(220,53,69,0.07)', fill2: 'rgba(255,193,7,0.10)', fill3: 'rgba(40,167,69,0.07)'},
+    label: 'Row tint = opponent defence', note: 'red = a top-5 defence against her position for this stat, amber = middle, green = bottom third (easiest matchup)'},
+  rate: {swatch: {fill: 'var(--greenbg)', color: 'var(--green)', text: '60%'}, label: 'Hit-rate chips',
+    note: 'green at 60% or better, red at 40% or worse, grey in between'},
+  minTrend: {swatch: {color: 'var(--green)', text: '+8.0'}, label: 'Min Trend',
+    note: 'green when minutes rose enough to count as a role change, red when they fell, grey when the move is too small to mean anything'},
+  vsTeam: {swatch: {dot: 'var(--green)'}, label: 'Vs That Team',
+    note: 'a green dot marks a past meeting where this exact bet would have hit; a red \u2715 marks one where it would have missed'},
+  dvp: {swatch: {color: 'var(--green)', text: '1.12'}, label: 'DvP Index',
+    note: 'green when the matchup favours this side of the bet, red when it works against it'},
+  injury: {swatch: {color: 'var(--red)', text: 'Out'}, label: 'Injury',
+    note: 'colour-coded by severity \u2014 red Out, amber Day-To-Day'},
+};
+function buildColorKey(container, keys){
+  const wrap = document.createElement('details');
+  wrap.style.cssText = 'margin:6px 0 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);';
+  const summary = document.createElement('summary');
+  summary.style.cssText = 'cursor:pointer;padding:7px 10px;font-size:12.5px;font-weight:700;color:var(--navy2);list-style:revert;';
+  summary.textContent = 'Colour key';
+  wrap.appendChild(summary);
+  const body = document.createElement('div');
+  body.style.cssText = 'padding:4px 12px 12px;display:flex;flex-direction:column;gap:7px;';
+  keys.forEach(k=>{
+    const item = COLOR_KEY_ITEMS[k];
+    if(!item) return;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:flex-start;gap:9px;font-size:11.5px;line-height:1.4;';
+    const sw = document.createElement('span');
+    sw.style.cssText = 'flex-shrink:0;width:34px;height:17px;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:10.5px;font-weight:700;border:1px solid var(--line);';
+    const d = item.swatch;
+    if(d.outline){ sw.style.outline = `3px solid ${d.outline}`; sw.style.outlineOffset = '-3px'; sw.style.background = 'var(--panel)'; }
+    if(d.fill) sw.style.background = d.fill;
+    if(d.bar) sw.style.boxShadow = `inset 4px 0 0 0 ${d.bar}`;
+    if(d.color) sw.style.color = d.color;
+    if(d.text) sw.textContent = d.text;
+    if(d.dot){
+      const dot = document.createElement('span');
+      dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;background:${d.dot};`;
+      sw.appendChild(dot);
+    }
+    // The three-way defence tint needs three swatches to be legible as a scale.
+    if(d.fill2){
+      sw.style.width='auto'; sw.style.padding='0'; sw.style.border='none'; sw.style.background='none';
+      [d.fill, d.fill2, d.fill3].forEach(c=>{
+        const seg=document.createElement('span');
+        seg.style.cssText=`display:inline-block;width:14px;height:17px;background:${c};border:1px solid var(--line);`;
+        sw.appendChild(seg);
+      });
+    }
+    const txt = document.createElement('span');
+    txt.innerHTML = `<b>${item.label}</b> \u2014 ${item.note}`;
+    row.appendChild(sw); row.appendChild(txt);
+    body.appendChild(row);
+  });
+  wrap.appendChild(body);
+  container.appendChild(wrap);
+  return wrap;
+}
+
 const MINUTES_TREND_COL_DEF = 'Change in her average minutes per game over her last '
   + MINUTES_TREND_WINDOW + ' games versus the ' + MINUTES_TREND_WINDOW + ' games before that, with the percentage change in '
   + 'parentheses. <b>Highlighted green or red only when the shift clears both bars: more than '
@@ -8021,7 +8141,9 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   expandLabel.appendChild(expandCb);
   expandLabel.appendChild(document.createTextNode('Expand Table (show all Vs Similar Defenses games)'));
   toggleRow.appendChild(expandLabel);
+  const stdOutliers = buildExcludeOutliersToggle(toggleRow, ()=>renderStdTable());
   container.appendChild(toggleRow);
+  buildColorKey(container, ['outlier','confidence','star','defTint','rate','minTrend','vsTeam','dvp']);
 
   const wrap = document.createElement('div'); wrap.className='table-wrap compact-show-all'; // all details shown from the start, in both Full and Compact mode -- no toggle needed
   expandCb.addEventListener('change', ()=>{ wrap.classList.toggle('show-simdef-extra', expandCb.checked); });
@@ -8123,8 +8245,14 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     stdSort.updateArrows();
     const withOrigRank = topBets.map((bet, i) => ({bet, origRank: i+1}));
     let filtered = withOrigRank.filter(({bet}) => passesStdFilters(bet));
+    const hiddenOutliers = stdOutliers.excluded()
+      ? filtered.filter(({bet}) => betIsOutlier(bet)).length : 0;
+    if(stdOutliers.excluded()) filtered = filtered.filter(({bet}) => !betIsOutlier(bet));
     filtered = stdSort.apply(filtered, row => row.bet);
-    stdCountDiv.textContent = `${filtered.length} / ${topBets.length} rows shown`;
+    // The hidden count is spelled out rather than left implicit: a silently shorter list reads
+    // as "there were fewer bets today", which is a different and wrong conclusion.
+    stdCountDiv.textContent = `${filtered.length} / ${topBets.length} rows shown`
+      + (hiddenOutliers ? ` (${hiddenOutliers} outlier(s) excluded)` : '');
     filtered.forEach(({bet, origRank})=>{
     const idx = origRank - 1; // preserves the bet's ORIGINAL Top 30 rank even when filtered, rather than renumbering the filtered subset from 1
     const tr = document.createElement('tr');
@@ -8155,6 +8283,10 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     tdRank.textContent = idx+1;
     const stdConf = computeStdConfidence(bet);
     if(stdConf) applyConfidenceHighlight(tr, tdRank, stdConfidenceExplanation(bet, stdConf));
+    // Applied AFTER the confidence highlight, which sets backgroundColor and an inset box-shadow.
+    // The outline is a separate property, so a bet can legitimately be both a high-confidence
+    // pick and an outlier -- and seeing both at once is exactly the case worth noticing.
+    if(betIsOutlier(bet)) applyOutlierStyle(tr, bet);
     const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
     tdPos.textContent = isProp ? (getPlayerPosition(bet.player, bet.team) || '\u2014') : '\u2014';
 
@@ -8398,6 +8530,11 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   const advCountDiv = document.createElement('div'); advCountDiv.style.cssText='font-size:11.5px;color:var(--sub);margin:2px 0 6px;';
   container.appendChild(advCountDiv);
 
+  const advToggleRow = document.createElement('div'); advToggleRow.style.cssText = 'margin-bottom:8px;display:flex;gap:18px;flex-wrap:wrap;';
+  const advOutliers = buildExcludeOutliersToggle(advToggleRow, ()=>renderAdvTable());
+  container.appendChild(advToggleRow);
+  buildColorKey(container, ['outlier','confidence','star','defTint','rate','minTrend','vsTeam','dvp','injury']);
+
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table'); table.style.width='100%';
   const thead = document.createElement('thead');
@@ -8465,8 +8602,12 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     advSort.updateArrows();
     const withOrigRank = topBets.map((bet, i) => ({bet, origRank: i+1}));
     let filtered = withOrigRank.filter(({bet}) => passesAdvFilters(bet));
+    const hiddenOutliers = advOutliers.excluded()
+      ? filtered.filter(({bet}) => betIsOutlier(bet)).length : 0;
+    if(advOutliers.excluded()) filtered = filtered.filter(({bet}) => !betIsOutlier(bet));
     filtered = advSort.apply(filtered, row => row.bet);
-    advCountDiv.textContent = `${filtered.length} / ${topBets.length} rows shown`;
+    advCountDiv.textContent = `${filtered.length} / ${topBets.length} rows shown`
+      + (hiddenOutliers ? ` (${hiddenOutliers} outlier(s) excluded)` : '');
     filtered.forEach(({bet, origRank})=>{
     const idx = origRank - 1;
     const tr = document.createElement('tr');
@@ -8494,6 +8635,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     tdRank.textContent = idx+1;
     const advConf = computeAdvConfidence(bet);
     if(advConf) applyConfidenceHighlight(tr, tdRank, advConfidenceExplanation(bet, advConf));
+    if(betIsOutlier(bet)) applyOutlierStyle(tr, bet);
     const tdPos = document.createElement('td'); tdPos.className='left'; tdPos.style.cssText = cellStyle.replace('text-align:center;','');
     tdPos.textContent = getPlayerPosition(bet.player, bet.team) || '\u2014';
     const tdLabel = document.createElement('td'); tdLabel.className='left'; tdLabel.style.cssText = cellStyle.replace('text-align:center;','');
@@ -8722,8 +8864,14 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   }
 
   const countDiv = document.createElement('div'); countDiv.className='footnote'; countDiv.style.marginBottom='6px';
-  countDiv.textContent = `${bets.length} bet(s) qualify.`;
   container.appendChild(countDiv);
+
+  const spToggleRow = document.createElement('div'); spToggleRow.style.cssText = 'margin-bottom:8px;display:flex;gap:18px;flex-wrap:wrap;';
+  const spOutliers = buildExcludeOutliersToggle(spToggleRow, ()=>renderSpecialsRows());
+  container.appendChild(spToggleRow);
+  // No confidence sidebar, no star and no defence row-tint on this table -- listing them would
+  // describe marks that aren't here.
+  buildColorKey(container, ['outlier','rate','minTrend','vsTeam']);
 
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table');
@@ -8767,8 +8915,14 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook){
   function renderSpecialsRows(){
     tbody.innerHTML = '';
     specialsSort.updateArrows();
-    specialsSort.apply(bets).forEach(bet=>{
+    let shown = bets;
+    const hiddenOutliers = spOutliers.excluded() ? bets.filter(betIsOutlier).length : 0;
+    if(spOutliers.excluded()) shown = bets.filter(b=>!betIsOutlier(b));
+    countDiv.textContent = `${shown.length} bet(s) qualify.`
+      + (hiddenOutliers ? ` ${hiddenOutliers} outlier(s) excluded.` : '');
+    specialsSort.apply(shown).forEach(bet=>{
       const tr = document.createElement('tr');
+      if(betIsOutlier(bet)) applyOutlierStyle(tr, bet);
       const tdBet = document.createElement('td'); tdBet.className='left';
       tdBet.appendChild(buildLegLabelNode(bet));
       tr.appendChild(tdBet);
@@ -9496,7 +9650,13 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     expandAllRow.appendChild(expandAllCb); expandAllRow.appendChild(document.createTextNode('Expand all'));
     expandAllGroup.appendChild(expandAllLbl); expandAllGroup.appendChild(expandAllRow);
     filterBar.appendChild(expandAllGroup);
+    const outlierGroup = document.createElement('div'); outlierGroup.style.cssText = 'display:flex;flex-direction:column;gap:2px;';
+    const outlierLbl = document.createElement('div'); outlierLbl.style.cssText = 'font-size:10px;color:var(--sub);font-weight:700;text-transform:uppercase;letter-spacing:.03em;'; outlierLbl.textContent = 'Outliers';
+    outlierGroup.appendChild(outlierLbl);
+    const ouOutliers = buildExcludeOutliersToggle(outlierGroup, ()=>applyFilter());
+    filterBar.appendChild(outlierGroup);
     container.appendChild(filterBar);
+    buildColorKey(container, ['outlier','rate','minTrend']);
 
     const th = (w, extra) => `<th class="${extra||''}" style="padding:4px 3px;border-bottom:2px solid var(--line);width:${w};">`;
     const marketTh = showMarketColumn ? th('13%','left') + 'Mkt</th>' : '';
@@ -9522,6 +9682,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const underIsBetter = underRate!==null && underRate > overRate;
 
       const tr = document.createElement('tr'); tr.style.cssText = 'border-bottom:1px solid var(--line);cursor:pointer;';
+      const isOutlierRow = betIsOutlier({player:r.pname, team:r.team});
+      if(isOutlierRow) applyOutlierStyle(tr, {player:r.pname, team:r.team});
       const tdName = document.createElement('td'); tdName.className='left'; tdName.style.cssText='padding:4px 3px;font-size:11px;overflow-wrap:break-word;';
       const link = document.createElement('a'); link.href='javascript:void(0)'; link.className='player-link'; link.style.fontSize='11px'; link.textContent = r.pname;
       link.addEventListener('click', (e)=>{ e.stopPropagation(); goToPlayer(r.pname, r.team); });
@@ -9610,7 +9772,17 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     });
 
     function applyFilter(){
-      filterableRows.forEach(({tr, pname, r})=>{
+      filterableRows.forEach(({tr, pname, r, detailTr})=>{
+        // "Exclude outliers" HIDES the row outright rather than dimming it like the other
+        // filters do -- the point is to take the bet out of consideration, not to de-emphasise
+        // it. Its detail row goes with it, otherwise an orphaned expansion is left behind.
+        if(ouOutliers.excluded() && betIsOutlier({player: pname, team: r.team})){
+          tr.style.display = 'none';
+          if(detailTr) detailTr.style.display = 'none';
+          return;
+        }
+        tr.style.display = '';
+        if(detailTr) detailTr.style.display = expandAllCb.checked ? '' : 'none';
         const playerOk = !filterState.player || pname.toLowerCase().includes(filterState.player);
         const overPriceOk = matchesOverPrice(r.overO ? r.overO.price : null);
         const underPriceOk = matchesUnderPrice(r.underO ? r.underO.price : null);
