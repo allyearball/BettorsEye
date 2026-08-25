@@ -2772,11 +2772,20 @@ async function fetchNextOpponent(teamShort){
 }
 
 function bettingLineCacheKey(playerName, team){ return `bettingline_${playerName}|${team}`; }
+// Bumped whenever the SHAPE of a cached line entry changes. Without this, entries written before
+// the multi-book lookup existed -- which have assists and PRA missing, because only DraftKings was
+// consulted -- would keep being served until each game completed, so the fix wouldn't show up for
+// a day. A mismatched version is treated as no cache at all and refetched.
+const BETTING_LINE_CACHE_VERSION = 2;
 function getCachedBettingLine(playerName, team){
-  try{ return JSON.parse(localStorage.getItem(bettingLineCacheKey(playerName, team))||'null'); }catch(e){ return null; }
+  try{
+    const v = JSON.parse(localStorage.getItem(bettingLineCacheKey(playerName, team))||'null');
+    if(!v || v.v !== BETTING_LINE_CACHE_VERSION) return null;
+    return v;
+  }catch(e){ return null; }
 }
 function setCachedBettingLine(playerName, team, data){
-  try{ localStorage.setItem(bettingLineCacheKey(playerName, team), JSON.stringify(data)); }catch(e){}
+  try{ localStorage.setItem(bettingLineCacheKey(playerName, team), JSON.stringify(Object.assign({v: BETTING_LINE_CACHE_VERSION}, data))); }catch(e){}
 }
 // Whether a game between `team` and `opponent` on `date` is now in the completed-games archive
 // -- used to know when to stop showing a held-over line and look for the next game's instead.
@@ -2818,16 +2827,32 @@ async function fetchHerNextGameLines(playerName, team){
 
     let detail = null;
     try{ detail = await fetchCachedOddsDetail(relevant.id); }catch(e){}
-    const dk = detail ? getBookmakerData(detail, 'draftkings') : null;
+    // 'best' rather than 'draftkings'. This was hardcoded to DK, which meant any market DK didn't
+    // post came back as a dash even when another book had it -- and DK is patchy on assists and
+    // especially Pts+Reb+Ast, so those two lines were missing for most players and their columns
+    // never tinted. getBookmakerData's 'best' synthesiser merges every book's markets and walks
+    // them in book order, so DK still wins wherever it does post the market.
+    const dk = detail ? getBookmakerData(detail, 'best') : null;
     const markets = dk ? marketsByKey(dk) : {};
-    function lineFor(marketKey){
+    const lineBooks = {};
+    function lineFor(statKey, marketKey){
       const m = markets[marketKey];
       if(!m) return null;
       const o = dkPlayerOutcomes(m, playerName, 'Over') || dkPlayerOutcomes(m, playerName, 'Under');
-      return (o && o.point!==undefined) ? o.point : null;
+      if(!o || o.point===undefined) return null;
+      // _bestBooks is stamped by the synthesiser -- keep it so the row can say where a line came
+      // from rather than implying every number is DraftKings'.
+      if(o._bestBooks && o._bestBooks.length) lineBooks[statKey] = o._bestBooks[0];
+      return o.point;
     }
-    const lines = { pts: lineFor('player_points'), reb: lineFor('player_rebounds'), ast: lineFor('player_assists'), tpm: lineFor('player_threes'), pra: lineFor('player_points_rebounds_assists') };
-    const result = { eventId: relevant.id, opponent: oppShort, date: dateStr, lines };
+    const lines = {
+      pts: lineFor('pts', 'player_points'),
+      reb: lineFor('reb', 'player_rebounds'),
+      ast: lineFor('ast', 'player_assists'),
+      tpm: lineFor('tpm', 'player_threes'),
+      pra: lineFor('pra', 'player_points_rebounds_assists'),
+    };
+    const result = { eventId: relevant.id, opponent: oppShort, date: dateStr, lines, lineBooks };
     if(Object.values(lines).some(v=>v!==null)){
       setCachedBettingLine(playerName, team, result);
       return result;
@@ -5281,7 +5306,11 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
       tdLineLabel.textContent = 'Today’s line — none posted';
     } else {
       const oppFull = FULL_TEAM_NAME[currentLines.opponent] || currentLines.opponent || '';
-      tdLineLabel.textContent = `Today’s line vs ${oppFull}${currentLines.date ? ' (' + currentLines.date + ')' : ''}`;
+      // Lines can now come from different books (DK doesn't post PRA for everyone), so say which.
+      // lineBooks is absent on entries cached before this existed -- fall back to no attribution.
+      const booksUsed = [...new Set(Object.values(currentLines.lineBooks || {}))].filter(Boolean);
+      const bookNote = booksUsed.length ? ' \u2014 ' + booksUsed.map(k=>BOOK_LABELS[k]||k).join(', ') : '';
+      tdLineLabel.textContent = `Today’s line vs ${oppFull}${currentLines.date ? ' (' + currentLines.date + ')' : ''}${bookNote}`;
     }
     linesTr.appendChild(tdLineLabel);
     STAT_COLS.forEach(col=>{
