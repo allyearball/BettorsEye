@@ -1408,6 +1408,14 @@ function buildTeamHeightSection(container, team){
   makeTable(container, TEAM_HEIGHT_COLS, rows, {defaultSort:'heightIn', defaultDir:'desc', noHideDNP:true, showAllColumns:true});
 }
 
+// Seven: five on the floor plus the two who actually close games. Used for BOTH the weighted
+// average and the Rotation column, so the number and the list it sits next to describe the
+// same set of players.
+const TEAM_HEIGHT_ROTATION_SIZE = 7;
+// Shared by the standalone Team Height page and the copy on the League Stats page, so the two
+// can never describe the same number differently.
+const TEAM_HEIGHT_DEF = 'Minutes-weighted average height of the <b>top 7 players by playing time over this team\u2019s last five games</b> \u2014 each of those seven players\u2019 minutes per game multiplied by her height, summed, and divided by their combined minutes. Roughly "how tall is the average player on the court for this team right now." Seven is the real rotation: five on the floor plus the two who close games. Anchored to the team\u2019s games rather than each player\u2019s own last five appearances, so a traded or long-term-injured player drops out instead of lingering on her old team.';
+
 function renderTeamHeightPage(){
   lastRender = () => renderTeamHeightPage();
   main.innerHTML = '';
@@ -1418,7 +1426,7 @@ function renderTeamHeightPage(){
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83d\udccf Team Height (Last 5 Games) <span id="teamHeightInfoIcon"></span></h2>`;
   main.appendChild(head);
-  appendDefIcon(head.querySelector('#teamHeightInfoIcon'), `Minutes-weighted average height on the floor \u2014 each player's minutes per game across <b>this team's last five games</b>, multiplied by her height, summed across everyone who appeared in those games and divided by total minutes accounted for. Roughly "how tall is the average player on the court for this team right now." Anchored to the team's games rather than each player's own last five appearances, so a traded or long-term-injured player drops out of the rotation instead of lingering on her old team. Rotation lists the top 7 by minutes.`);
+  appendDefIcon(head.querySelector('#teamHeightInfoIcon'), TEAM_HEIGHT_DEF);
 
   const results = computeTeamWeightedHeight();
   if(!results.length){
@@ -1428,10 +1436,19 @@ function renderTeamHeightPage(){
     return;
   }
 
+  buildTeamHeightTable(main, results);
+}
+
+// The Team Height table itself, so the standalone Team Height page and the copy embedded on the
+// League Stats page are literally the same table rather than two that can drift apart.
+// ALWAYS last-5-games based: it is not affected by the League Stats page's Last 5/10/15/Full
+// Season selector, because "how tall is this team on the floor right now" is a current-rotation
+// question -- a full-season answer would average in players who have since been traded away.
+function buildTeamHeightTable(container, results){
   const wrap = document.createElement('div'); wrap.className = 'table-wrap';
   const table = document.createElement('table'); table.style.width = '100%';
   const thead = document.createElement('thead');
-  thead.innerHTML = '<tr><th>Rank</th><th class="left">Team</th><th>Avg Height</th><th>(inches)</th><th>Minutes Accounted For</th><th class="left">Rotation (L5 avg min)</th></tr>';
+  thead.innerHTML = '<tr><th>Rank</th><th class="left">Team</th><th>Avg Height</th><th>(inches)</th><th>Rotation Minutes</th><th class="left">Rotation (top 7 by L5 avg min)</th></tr>';
   const tbody = document.createElement('tbody');
   results.forEach(r=>{
     const tr = document.createElement('tr');
@@ -1443,16 +1460,18 @@ function renderTeamHeightPage(){
     const tdIn = document.createElement('td'); tdIn.style.cssText='padding:8px;text-align:center;color:var(--sub);'; tdIn.textContent = r.weightedHeightIn.toFixed(2);
     const tdMin = document.createElement('td'); tdMin.style.cssText='padding:8px;text-align:center;color:var(--sub);'; tdMin.textContent = r.totalMinutesAccountedFor;
     const tdRoster = document.createElement('td'); tdRoster.className='left'; tdRoster.style.cssText='padding:8px;font-size:11.5px;color:var(--sub);';
-    // Top 7 by minutes -- a rotation, not the whole roster. The weighted average above still
-    // uses everyone who played, since minutes-weighting already makes a 4-minute player almost
-    // irrelevant to it and truncating would distort the number.
-    tdRoster.textContent = r.players.slice(0,7).map(p=>`${p.player} (${inchesToHeightStr(p.heightIn)}, ${p.avgMin}m)`).join(', ') + (r.players.length>7 ? `, +${r.players.length-7} more` : '');
+    // These seven ARE the average now -- not a truncated display of a wider calculation -- so
+    // any players beyond them are reported as excluded rather than as "more".
+    const shown = r.players.slice(0, TEAM_HEIGHT_ROTATION_SIZE);
+    const extra = r.players.length - shown.length;
+    tdRoster.textContent = shown.map(p=>`${p.player} (${inchesToHeightStr(p.heightIn)}, ${p.avgMin}m)`).join(', ')
+      + (extra > 0 ? ` \u2014 ${extra} other player(s) excluded` : '');
     [tdRank, tdTeam, tdHeight, tdIn, tdMin, tdRoster].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
   });
   table.appendChild(thead); table.appendChild(tbody);
   wrap.appendChild(table);
-  main.appendChild(wrap);
+  container.appendChild(wrap);
 }
 
 function renderLeagueStatsPage(year, mode, windowMode){
@@ -1605,6 +1624,22 @@ function renderLeagueStatsPage(year, mode, windowMode){
     return computeLeagueDefenseRow(team, gameIds.length, summary.opponents, mode);
   });
   makeTable(main, LEAGUE_DEF_COLS, defRows, {defaultSort:'oppPts', defaultDir:'asc', noHideDNP:true});
+
+  // Team Height, directly beneath the defensive totals. Deliberately NOT labelled with
+  // windowLabelText like the tables around it: this one ignores the window selector entirely and
+  // is always the last five games, so the heading has to say so or it reads as a bug.
+  const tHeight = document.createElement('div'); tHeight.className='section-title';
+  tHeight.textContent = 'Team Height (Last 5 Games)';
+  main.appendChild(tHeight);
+  appendDefIcon(tHeight, TEAM_HEIGHT_DEF + ' <b>Always the last five games regardless of the Game Window selected above</b> \u2014 this is a current-rotation measure, and a full-season version would average in players who have since been traded away.');
+  const heightResults = computeTeamWeightedHeight();
+  if(heightResults.length){
+    buildTeamHeightTable(main, heightResults);
+  } else {
+    const na = document.createElement('div'); na.style.cssText='color:var(--sub);font-size:13px;margin-bottom:14px;';
+    na.textContent = 'No height data available for any team yet.';
+    main.appendChild(na);
+  }
 
   const t2 = document.createElement('div'); t2.className='section-title';
   t2.textContent = `Individual Player ${mode==='totals'?'Totals':'Averages'} \u2014 ${windowLabelText}`;
@@ -2607,14 +2642,27 @@ function computeTeamWeightedHeight(){
     teamData[team].players.push({player: playerName, avgMin: Math.round(avgMin*10)/10, heightIn: bio.heightIn, height: bio.height, gamesInWindow: inWindow.length});
   });
 
+  // TOP 7 BY MINUTES, not everyone who appeared. This changed on request: the earlier version
+  // weighted in every player who took the floor in those five games, which under minutes-
+  // weighting made a 3-minute garbage-time appearance nearly irrelevant but not quite zero.
+  // Seven is the real rotation -- five starters plus the two players who actually close games --
+  // and it makes the number match the Rotation column beside it, which has always shown 7. The
+  // running sums above are deliberately NOT used for the average any more; they would include
+  // the players this now excludes.
   const results = TEAM_NAMES.map(t=>{
     const d = teamData[t];
-    const weightedHeightIn = d.sumMinutes > 0 ? d.sumWeighted / d.sumMinutes : null;
+    const ranked = d.players.sort((a,b)=>b.avgMin-a.avgMin);
+    const rotation = ranked.slice(0, TEAM_HEIGHT_ROTATION_SIZE);
+    const rotMinutes = rotation.reduce((a,p)=>a+p.avgMin, 0);
+    const weightedHeightIn = rotMinutes > 0
+      ? rotation.reduce((a,p)=>a + p.avgMin*p.heightIn, 0) / rotMinutes
+      : null;
     return {
       team: t,
       weightedHeightIn: weightedHeightIn!==null ? Math.round(weightedHeightIn*100)/100 : null,
-      totalMinutesAccountedFor: Math.round(d.sumMinutes*10)/10,
-      players: d.players.sort((a,b)=>b.avgMin-a.avgMin),
+      totalMinutesAccountedFor: Math.round(rotMinutes*10)/10,
+      players: ranked,
+      rotationSize: rotation.length,
     };
   }).filter(r=>r.weightedHeightIn!==null);
   results.sort((a,b)=>b.weightedHeightIn-a.weightedHeightIn);
@@ -5906,18 +5954,17 @@ function statValue(g, statKey){
 //     played would report her minutes as unchanged.
 //   * An INJURY DNP is removed from the sequence entirely, because a health absence is not a
 //     role change and would otherwise read as a collapse in playing time.
-// The dataset carries no DNP REASON today, so isInjuryDnp() returns false and every DNP is
-// treated as non-injury. That is the conservative direction (it can overstate a decrease for an
-// injured player, never understate a real benching). When a data pull backfills the reason,
-// this one function is the only thing that needs to change.
+// Injury classification is shared with the league-wide Minutes Trend section on the League
+// Stats page -- see isInjuryDnp() above, which keyword-matches the pipeline's notPlayingReason
+// field. That field is empty across the current dataset, so today every DNP is treated as
+// non-injury. That is the conservative direction (it can overstate a decrease for an injured
+// player, never understate a real benching), and when a data pull backfills the reason both
+// features start honouring it at once.
 const MINUTES_TREND_WINDOW = 5;
 const MINUTES_TREND_PCT_BAR = 0.20;   // 20% swing...
 const MINUTES_TREND_ABS_BAR = 5;      // ...AND at least 5 minutes, so a 4->5 min bench player
                                       // (a 25% "jump") isn't flagged as a role change.
-function isInjuryDnp(g){
-  return !!(g && g.dnpReason && /injur|illness|health|concussion|soreness|strain|sprain/i.test(g.dnpReason));
-}
-function computeMinutesTrend(playerName, team, n){
+function computePlayerMinutesTrend(playerName, team, n){
   n = n || MINUTES_TREND_WINDOW;
   const rec = DATA.fullPlayerLogs[playerName+'|'+team];
   if(!rec || !rec.log) return null;
@@ -5945,7 +5992,7 @@ function computeMinutesTrend(playerName, team, n){
 const MINUTES_TREND_DEF = 'Compares each player\u2019s average minutes over her last N games to the N games right before that. Non-injury DNPs (coach\u2019s decision, rest, etc.) count as 0 minutes, so a genuine role change still shows up as a real decrease. Injury-related DNPs are excluded from the comparison entirely, since a health absence isn\u2019t a role change \u2014 note this depends on injury-reason data that isn\u2019t in the current dataset yet, so until a fresh data pull backfills it, all DNPs are treated as non-injury by default. Needs at least 2\u00d7N games of history to make a fair same-size comparison.';
 
 function renderMinutesTrendSection(container, playerName, team, n){
-  const t = computeMinutesTrend(playerName, team, n);
+  const t = computePlayerMinutesTrend(playerName, team, n);
   const wrap = document.createElement('div');
   wrap.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:16px;';
   if(!t){
@@ -7575,7 +7622,7 @@ const _minutesTrendCache = {};
 function betMinutesTrend(bet){
   if(!bet || !bet.player || !bet.team) return null;   // team-level bets have no player
   const key = bet.player + '|' + bet.team;
-  if(!(key in _minutesTrendCache)) _minutesTrendCache[key] = computeMinutesTrend(bet.player, bet.team);
+  if(!(key in _minutesTrendCache)) _minutesTrendCache[key] = computePlayerMinutesTrend(bet.player, bet.team);
   return _minutesTrendCache[key];
 }
 function minutesTrendText(t){
