@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bettor&#39;s Eye</title>
 <link rel="manifest" href="/manifest.json">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Bettor&#39;s Eye">
@@ -863,6 +862,31 @@ const TEAM_GAME_COLS = [
   {key:'to', label:'TO', compactHide:true}, {key:'pf', label:'PF', compactHide:true},
 ];
 
+/* ================= Sticky per-page UI state =================
+   Which tab was last open on each tabbed page, and which sportsbook the user picked. Held at
+   module scope so that ANY route back to a page -- browser Back, an in-app Back button, the nav
+   bar, or the Refresh button -- lands on what the user last chose instead of resetting to the
+   first tab / Best Odds.
+
+   Deliberately NOT threaded through the history entries. The ask is "whatever tab I had last
+   selected", which is a property of the session, not of a particular history position; making it
+   an argument to every render function would touch far more code to reach the same behaviour.
+
+   Player and team tabs are keyed by INDEX rather than label, since both tab bars are built from
+   an array and an index survives a label being reworded. */
+const LAST_TAB = { home: 'standard', player: 0, team: 0 };
+// Persisted so it also survives a reload, not just an in-session re-render.
+const TOP_BETS_BOOK_LS_KEY = 'wnba_top_bets_book';
+const TOP_BETS_BOOKS = ['draftkings','fanduel','betmgm','williamhill_us','betrivers','fanatics','best'];
+function loadTopBetsBook(){
+  try {
+    const v = localStorage.getItem(TOP_BETS_BOOK_LS_KEY);
+    if(v && TOP_BETS_BOOKS.indexOf(v) >= 0) return v;   // ignore anything not on the current list
+  } catch(e){ /* private mode / storage disabled */ }
+  return 'best';
+}
+function saveTopBetsBook(v){ try { localStorage.setItem(TOP_BETS_BOOK_LS_KEY, v); } catch(e){} }
+
 let TEAM_NAMES = [];
 const main = document.getElementById('main');
 const nav = document.getElementById('nav');
@@ -1249,9 +1273,15 @@ function computeTeamHeightByPosition(){
     if(!acc[team]) return;
     const bucket = positionBucket(getPlayerPosition(playerName, team));
     if(!bucket || !acc[team][bucket]) return;
-    const recentGames = DATA.fullPlayerLogs[key].log.filter(g=>!g.dnp).slice(-5);
+    // The TEAM's last 5 games, not the player's own last 5 appearances -- see the long note on
+    // computeTeamWeightedHeight. This one matters twice over: it also drives the position-group
+    // tier rankings behind the Matchup Group column and the Specials qualifier, so a traded
+    // player left in her old team's group was quietly skewing those too.
+    const window = teamHeightWindow(team);
+    if(!window.size) return;
+    const recentGames = DATA.fullPlayerLogs[key].log.filter(g=>!g.dnp && window.has(g.date));
     if(!recentGames.length) return;
-    const avgMin = recentGames.reduce((a,g)=>a+(g.min||0),0) / recentGames.length;
+    const avgMin = recentGames.reduce((a,g)=>a+(g.min||0),0) / window.size;
     if(avgMin <= 0) return;                                   // garbage-time-only, would dilute the average
     const bio = bioLookup(playerName, team);
     if(bio.heightIn===undefined || bio.heightIn===null) return; // no height on file -- skip rather than guess
@@ -1300,7 +1330,7 @@ const TEAM_HEIGHT_COLS = [
 function buildTeamHeightSection(container, team){
   const title = document.createElement('div'); title.className='section-title'; title.textContent = '📏 Height';
   container.appendChild(title);
-  appendDefIcon(title, `Each position group's minutes-weighted average height: every player's last-5-games average minutes multiplied by her height, summed within the group and divided by the group's total minutes — "how tall is the average guard/forward/center this team actually has on the floor." <b>League Rank</b> is this team's place among all ${TEAM_NAMES.length} teams for that position group specifically (1 = tallest), and <b>Tier</b> splits the league into thirds — so a team can genuinely be a Tallest front line and a Shortest backcourt at the same time. Always last-5-games, regardless of the Season/Game Window selected above: a league ranking only means something if every team is measured over the same span. Players with no height on file, or with no minutes in their last 5 games, are left out rather than guessed at.`);
+  appendDefIcon(title, `Each position group's minutes-weighted average height: every player's minutes per game across <b>this team's last five games</b> multiplied by her height, summed within the group and divided by the group's total minutes — "how tall is the average guard/forward/center this team actually has on the floor." <b>League Rank</b> is this team's place among all ${TEAM_NAMES.length} teams for that position group specifically (1 = tallest), and <b>Tier</b> splits the league into thirds — so a team can genuinely be a Tallest front line and a Shortest backcourt at the same time. Always the team's last 5 games, regardless of the Season/Game Window selected above: a league ranking only means something if every team is measured over the same span. Players with no height on file, and players who didn't appear in those five games (traded away, or out injured), are left out rather than guessed at.`);
 
   const byBucket = computeTeamHeightByPosition();
   const rows = [];
@@ -1336,7 +1366,7 @@ function renderTeamHeightPage(){
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83d\udccf Team Height (Last 5 Games) <span id="teamHeightInfoIcon"></span></h2>`;
   main.appendChild(head);
-  appendDefIcon(head.querySelector('#teamHeightInfoIcon'), `Minutes-weighted average height on the floor \u2014 each player's last-5-games average minutes played, multiplied by her height, summed across the roster and divided by total minutes accounted for. Roughly "how tall is the average player on the court for this team right now."`);
+  appendDefIcon(head.querySelector('#teamHeightInfoIcon'), `Minutes-weighted average height on the floor \u2014 each player's minutes per game across <b>this team's last five games</b>, multiplied by her height, summed across everyone who appeared in those games and divided by total minutes accounted for. Roughly "how tall is the average player on the court for this team right now." Anchored to the team's games rather than each player's own last five appearances, so a traded or long-term-injured player drops out of the rotation instead of lingering on her old team. Rotation lists the top 7 by minutes.`);
 
   const results = computeTeamWeightedHeight();
   if(!results.length){
@@ -1361,7 +1391,10 @@ function renderTeamHeightPage(){
     const tdIn = document.createElement('td'); tdIn.style.cssText='padding:8px;text-align:center;color:var(--sub);'; tdIn.textContent = r.weightedHeightIn.toFixed(2);
     const tdMin = document.createElement('td'); tdMin.style.cssText='padding:8px;text-align:center;color:var(--sub);'; tdMin.textContent = r.totalMinutesAccountedFor;
     const tdRoster = document.createElement('td'); tdRoster.className='left'; tdRoster.style.cssText='padding:8px;font-size:11.5px;color:var(--sub);';
-    tdRoster.textContent = r.players.slice(0,8).map(p=>`${p.player} (${inchesToHeightStr(p.heightIn)}, ${p.avgMin}m)`).join(', ') + (r.players.length>8 ? `, +${r.players.length-8} more` : '');
+    // Top 7 by minutes -- a rotation, not the whole roster. The weighted average above still
+    // uses everyone who played, since minutes-weighting already makes a 4-minute player almost
+    // irrelevant to it and truncating would distort the number.
+    tdRoster.textContent = r.players.slice(0,7).map(p=>`${p.player} (${inchesToHeightStr(p.heightIn)}, ${p.avgMin}m)`).join(', ') + (r.players.length>7 ? `, +${r.players.length-7} more` : '');
     [tdRank, tdTeam, tdHeight, tdIn, tdMin, tdRoster].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
   });
@@ -1689,11 +1722,12 @@ function renderTeamPage(team, year, month, windowMode){
     {label:'Team', content: teamTabContent},
     {label:'Box Scores', content: boxScoresTabContent},
   ];
-  const teamTabButtons = TEAM_TAB_DEFS.map(def=>{
+  const teamTabButtons = TEAM_TAB_DEFS.map((def, myIndex)=>{
     const btn = document.createElement('button');
     btn.textContent = def.label;
     btn.style.cssText = 'padding:9px 18px;border-radius:6px;border:1px solid var(--line);font-size:13.5px;cursor:pointer;font-family:var(--sans);font-weight:700;';
     btn.addEventListener('click', ()=>{
+      LAST_TAB.team = myIndex;
       TEAM_TAB_DEFS.forEach((d,i)=>{
         d.content.style.display = d===def ? '' : 'none';
         teamTabButtons[i].style.background = d===def ? 'var(--navy2)' : 'var(--panel)';
@@ -1706,11 +1740,14 @@ function renderTeamPage(team, year, month, windowMode){
   main.appendChild(tabBar);
   TEAM_TAB_DEFS.forEach(def=>main.appendChild(def.content));
   if(getLayoutMode()==='compact'){
-    teamTabContent.style.display = 'none';
-    boxScoresTabContent.style.display = 'none';
-    teamTabButtons[0].style.background = 'var(--navy2)'; teamTabButtons[0].style.color = '#fff';
-    teamTabButtons[1].style.background = 'var(--panel)'; teamTabButtons[1].style.color = 'var(--ink)';
-    teamTabButtons[2].style.background = 'var(--panel)'; teamTabButtons[2].style.color = 'var(--ink)';
+    // Same "reopen where you left" rule as the player page. Written as a loop so adding a tab
+    // can't leave one silently visible, which the hand-unrolled version above was one edit from.
+    const openTeamAt = Math.min(LAST_TAB.team, TEAM_TAB_DEFS.length - 1);
+    TEAM_TAB_DEFS.forEach((d,i)=>{
+      d.content.style.display = i===openTeamAt ? '' : 'none';
+      teamTabButtons[i].style.background = i===openTeamAt ? 'var(--navy2)' : 'var(--panel)';
+      teamTabButtons[i].style.color = i===openTeamAt ? '#fff' : 'var(--ink)';
+    });
   }
 
   if(teamInjuryList.length){
@@ -2455,15 +2492,45 @@ function isInjuryDnp(g){
   const s = String(g.notPlayingReason).toLowerCase();
   return s.includes('injur') || s.includes('illness') || s.includes('health') || s.includes('sick');
 }
-// Minutes-weighted average height, per team, over the last 5 games each player actually
-// played. This is a real basketball concept -- roughly "how tall is the average player on the
-// floor for this team at any given moment" -- computed as sum(avgMin_i * height_i) /
-// sum(avgMin_i) across every player who's gotten minutes recently. sum(avgMin_i) should land
-// close to 200 (5 players x 40 minutes) per team, though not exactly, since it's built from a
-// 5-game average per player rather than one single game (overtime, rotation changes, and
-// players who only picked up minutes partway through the window all nudge it slightly off 200
-// -- that's expected, not a bug, and is exactly why totalMinutesAccountedFor is surfaced
-// alongside the result rather than assumed to always be 200).
+// The set of dates in a team's last-5-games window, memoised -- both height computations walk
+// every player log and would otherwise rebuild it hundreds of times.
+let _teamHeightWindowCache = null;
+function teamHeightWindow(team){
+  if(!_teamHeightWindowCache){
+    _teamHeightWindowCache = {};
+    TEAM_NAMES.forEach(t=>{ _teamHeightWindowCache[t] = new Set(teamRecentGameDates(t, 5)); });
+  }
+  return _teamHeightWindowCache[team] || new Set();
+}
+
+// The dates of a team's last N completed games, newest last. The rotation window has to be the
+// TEAM's games, not each player's own last N appearances -- see computeTeamWeightedHeight.
+function teamRecentGameDates(team, n){
+  const rec = DATA.teams[team];
+  if(!rec || !rec.gameIdsFull) return [];
+  const dates = rec.gameIdsFull
+    .map(gid => (DATA.games[String(gid)] || {}).date)
+    .filter(Boolean)
+    .sort();
+  return dates.slice(-n);
+}
+
+// Minutes-weighted average height, per team, over that TEAM'S last 5 games -- roughly "how tall
+// is the average player on the floor for this team right now". sum(avgMin_i * height_i) /
+// sum(avgMin_i), where avgMin_i is a player's total minutes across those five games divided by
+// five. sum(avgMin_i) lands close to 200 (5 players x 40 minutes); overtime nudges it up.
+//
+// WHY THE WINDOW IS THE TEAM'S GAMES, NOT THE PLAYER'S: this used to take each player's own last
+// five games PLAYED (`log.filter(g=>!g.dnp).slice(-5)`), which silently kept traded players in
+// their old team's rotation forever -- their last five games for that team are still the newest
+// five rows in that log key, however long ago they happened. Kelsey Plum was still shown leading
+// the Sparks a month after being dealt to Phoenix. Anchoring to the team's own game dates means a
+// player who hasn't appeared in that window contributes nothing and drops off the list, which is
+// also the correct treatment for a long-term injury absence.
+//
+// Dividing by 5 rather than by games-she-played is deliberate too: it makes avgMin literally
+// "minutes per team game", so a player who missed two of the five is down-weighted against one
+// who played all five, and the column sums to something close to a real rotation's minutes.
 function computeTeamWeightedHeight(){
   const teamData = {};
   TEAM_NAMES.forEach(t=>{ teamData[t] = {sumWeighted:0, sumMinutes:0, players:[]}; });
@@ -2472,16 +2539,18 @@ function computeTeamWeightedHeight(){
     const sep = key.lastIndexOf('|');
     const playerName = key.slice(0, sep), team = key.slice(sep+1);
     if(!teamData[team]) return;
+    const window = teamHeightWindow(team);
+    if(!window.size) return;
     const log = DATA.fullPlayerLogs[key].log;
-    const recentGames = log.filter(g=>!g.dnp).slice(-5);
-    if(!recentGames.length) return;
-    const avgMin = recentGames.reduce((a,g)=>a+(g.min||0),0) / recentGames.length;
+    const inWindow = log.filter(g=>!g.dnp && window.has(g.date));
+    if(!inWindow.length) return;  // didn't appear for this team in its last 5 -- traded, injured, or waived
+    const avgMin = inWindow.reduce((a,g)=>a+(g.min||0),0) / window.size;
     if(avgMin <= 0) return; // no meaningful recent playing time -- skip rather than dilute with a garbage-time-only player
     const bio = bioLookup(playerName, team);
     if(bio.heightIn===undefined || bio.heightIn===null) return; // no height on file -- skip rather than guess
     teamData[team].sumWeighted += avgMin * bio.heightIn;
     teamData[team].sumMinutes += avgMin;
-    teamData[team].players.push({player: playerName, avgMin: Math.round(avgMin*10)/10, heightIn: bio.heightIn, height: bio.height});
+    teamData[team].players.push({player: playerName, avgMin: Math.round(avgMin*10)/10, heightIn: bio.heightIn, height: bio.height, gamesInWindow: inWindow.length});
   });
 
   const results = TEAM_NAMES.map(t=>{
@@ -3155,11 +3224,12 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     {label:'Vs. Opponent', content: vsOppTabContent},
     {label:'Season', content: seasonTabContent},
   ];
-  const tabButtons = TAB_DEFS.map(def=>{
+  const tabButtons = TAB_DEFS.map((def, myIndex)=>{
     const btn = document.createElement('button');
     btn.textContent = def.label;
     btn.style.cssText = 'padding:9px 18px;border-radius:6px;border:1px solid var(--line);font-size:13.5px;cursor:pointer;font-family:var(--sans);font-weight:700;';
     btn.addEventListener('click', ()=>{
+      LAST_TAB.player = myIndex;
       TAB_DEFS.forEach((d,i)=>{
         d.content.style.display = d===def ? '' : 'none';
         tabButtons[i].style.background = d===def ? 'var(--navy2)' : 'var(--panel)';
@@ -3177,10 +3247,14 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   if(getLayoutMode()==='compact'){
     // Everything except the first tab starts hidden -- written as a loop rather than one line
     // per tab so adding a tab (as the Season tab just did) can't leave one silently visible.
+    // Opens on whichever tab was last used, not always the first -- so Back from a box score
+    // or a tier page returns you to the tab you left. Clamped in case the remembered index is
+    // from a page with more tabs than this one.
+    const openAt = Math.min(LAST_TAB.player, TAB_DEFS.length - 1);
     TAB_DEFS.forEach((d,i)=>{
-      d.content.style.display = i===0 ? '' : 'none';
-      tabButtons[i].style.background = i===0 ? 'var(--navy2)' : 'var(--panel)';
-      tabButtons[i].style.color = i===0 ? '#fff' : 'var(--ink)';
+      d.content.style.display = i===openAt ? '' : 'none';
+      tabButtons[i].style.background = i===openAt ? 'var(--navy2)' : 'var(--panel)';
+      tabButtons[i].style.color = i===openAt ? '#fff' : 'var(--ink)';
     });
   }
 
@@ -3734,6 +3808,19 @@ function navRestoreActive(active){
   if(tabBtn) tabBtn.classList.add('active');
 }
 
+// Records a WITHIN-page view change as its own history entry -- a drill-down that swaps what the
+// page is showing without re-running its render function. Live Lines is the case: clicking a game
+// card and then Top Matchup Bets are two real navigations to the user, but neither re-renders the
+// page, so without this the browser Back button jumped straight out of Live Lines from three
+// levels deep. `restore` must put the page back into that state without re-fetching.
+function navPushSubView(restore){
+  if(navReplaying) return;
+  navEntries.length = navIdx + 1;
+  navEntries.push({name: null, thunk: restore, key: 'subview:' + navEntries.length, active: navCaptureActive()});
+  navIdx = navEntries.length - 1;
+  try { history.pushState({navIdx}, '', location.href); } catch(e){ /* Safari rate limit */ }
+}
+
 function navRecord(name, args){
   if(navReplaying) return;
   const key = navKey(name, args);
@@ -3795,14 +3882,20 @@ function installHistoryNav(){
     const entry = navEntries[idx];
     // After a hard reload the in-memory entries are gone while the browser's history isn't.
     // Nothing sensible to replay, so leave the page as-is rather than guessing.
-    if(!entry || !entry.name) return;
+    if(!entry || (!entry.name && !entry.thunk)) return;
     navIdx = idx;
     navReplaying = true;
     try {
       navRestoreActive(entry.active);
-      nav.innerHTML = ''; nav.style.display = 'none';
-      const fn = window[entry.name] && window[entry.name]._orig;
-      if(fn) fn.apply(null, entry.args);
+      if(entry.thunk){
+        // A within-page view (see navPushSubView) -- restores state on the page that's already
+        // rendered, so no nav reset and no re-render of the page around it.
+        entry.thunk();
+      } else {
+        nav.innerHTML = ''; nav.style.display = 'none';
+        const fn = window[entry.name] && window[entry.name]._orig;
+        if(fn) fn.apply(null, entry.args);
+      }
     } finally { navReplaying = false; }
   });
 }
@@ -6039,7 +6132,7 @@ async function renderHomePage(){
   lastRender = () => renderHomePage();
   main.innerHTML = '';
   removeGameWindowStickyBar();
-  let selectedBook = 'best';
+  let selectedBook = loadTopBetsBook();
   let recompute = null;
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>\ud83c\udfe0 Today\u2019s Top 30 Bets</h2>`;
@@ -6059,7 +6152,7 @@ async function renderHomePage(){
     if(val===selectedBook) opt.selected = true;
     bookSelect.appendChild(opt);
   });
-  bookSelect.addEventListener('change', ()=>{ selectedBook = bookSelect.value; if(recompute) recompute(); });
+  bookSelect.addEventListener('change', ()=>{ selectedBook = bookSelect.value; saveTopBetsBook(selectedBook); if(recompute) recompute(); });
   bookSelectorDiv.appendChild(bookLabel);
   bookSelectorDiv.appendChild(bookSelect);
 
@@ -6067,8 +6160,6 @@ async function renderHomePage(){
   refreshBtn.addEventListener('click', ()=>renderHomePage());
   bookSelectorDiv.appendChild(refreshBtn);
 
-  const screenshotBtn = document.createElement('button'); screenshotBtn.className='util-btn'; screenshotBtn.textContent = '\ud83d\udcf7 Screenshot';
-  bookSelectorDiv.appendChild(screenshotBtn);
   main.appendChild(bookSelectorDiv);
 
   const statusDiv = document.createElement('div'); statusDiv.className='footnote'; statusDiv.style.marginBottom='14px';
@@ -6078,10 +6169,10 @@ async function renderHomePage(){
   // Standard/Advanced tab switcher -- same sticky-bottom-bar pattern as the period selector
   // (Last 5/Last 10/Last 15/Full Season) used elsewhere, so only one table shows at a time
   // instead of both stacked on the page together.
-  let activeHomeTab = 'standard';
+  let activeHomeTab = LAST_TAB.home;
   const contentDiv = document.createElement('div');
-  // Separate container (not the one the screenshot buttons target) for the second, advanced-
-  // analytics-ranked table below the original hit-rate-ranked one.
+  // Separate container for the second, advanced-analytics-ranked table below the original
+  // hit-rate-ranked one.
   const contentDiv2 = document.createElement('div');
   contentDiv2.style.marginTop = '24px';
   // Third tab: the four-bar "Specials" shortlist (see computeSpecialsBets).
@@ -6095,56 +6186,12 @@ async function renderHomePage(){
   main.appendChild(renderStickyBottomBar(
     [{label:'Standard', value:'standard'}, {label:'Advanced', value:'advanced'}, {label:'Specials', value:'specials'}],
     activeHomeTab,
-    (val)=>{ activeHomeTab = val; paintHomeTabVisibility(); }
+    (val)=>{ activeHomeTab = val; LAST_TAB.home = val; paintHomeTabVisibility(); }
   ));
   main.appendChild(contentDiv);
   main.appendChild(contentDiv2);
   main.appendChild(contentDiv3);
   paintHomeTabVisibility();
-
-  // Captures the WHOLE table -- every row and every column, including ones off-screen or
-  // requiring horizontal scroll to see live -- not just what's currently visible in the
-  // viewport. Works by cloning the table off-screen at its natural full content width
-  // (width:max-content, overflow:visible -- overriding .table-wrap's own overflow-x:auto,
-  // which would otherwise clip the capture to whatever width happens to be on screen).
-  async function downloadFullTableScreenshot(container, filenamePrefix, btn){
-    if(typeof html2canvas === 'undefined'){ alert('Screenshot library didn\u2019t load \u2014 check your internet connection and try again.'); return; }
-    const wrap = container.querySelector('.table-wrap');
-    if(!wrap){ alert('Nothing to screenshot yet \u2014 wait for the table to load first.'); return; }
-    const origText = btn.textContent; btn.disabled = true;
-    try{
-      const clone = wrap.cloneNode(true);
-      clone.style.cssText = 'position:fixed;top:-99999px;left:0;background:var(--panel);padding:12px;width:max-content;max-width:none;overflow:visible;';
-      // html2canvas can't reliably render position:sticky (it doesn't do a full browser
-      // layout/scroll simulation) -- the header cells were coming out at the bottom of the
-      // capture instead of the top. Sticky-while-scrolling serves no purpose in a static
-      // screenshot anyway, so force every header cell in the CLONE ONLY to its normal
-      // top-of-table position before capturing.
-      clone.querySelectorAll('thead th').forEach(th=>{ th.style.position = 'static'; th.style.top = 'auto'; });
-      document.body.appendChild(clone);
-      const canvas = await html2canvas(clone, {backgroundColor:'#ffffff', scale:2});
-      document.body.removeChild(clone);
-      const link = document.createElement('a');
-      link.download = `wnba-${filenamePrefix}-bets-${toEasternDateStr(new Date().toISOString())}.png`;
-      link.href = canvas.toDataURL('image/png');
-      link.click();
-    }catch(e){
-      alert('Screenshot failed: ' + e.message);
-    }
-    btn.disabled = false; btn.textContent = origText;
-  }
-  // One button, two screenshots -- captures Standard then Advanced in sequence rather than
-  // needing two separate full-width buttons for what's fundamentally one action ("save today's
-  // bets").
-  screenshotBtn.addEventListener('click', async ()=>{
-    screenshotBtn.disabled = true;
-    screenshotBtn.textContent = 'Capturing Standard\u2026';
-    await downloadFullTableScreenshot(contentDiv, 'standard', screenshotBtn);
-    screenshotBtn.textContent = 'Capturing Advanced\u2026';
-    await downloadFullTableScreenshot(contentDiv2, 'advanced', screenshotBtn);
-    screenshotBtn.textContent = '\ud83d\udcf7 Screenshot';
-    screenshotBtn.disabled = false;
-  });
 
   const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
 
@@ -6338,6 +6385,7 @@ function renderOddsPage(){
         singleGameWindow = 'all';
         singleGameUiState = {collapsed: undefined, sections: {}}; // fresh tab state for the newly-selected game -- don't carry over e.g. "Points" being active from whatever game was viewed before
         renderResultsArea();
+        navPushSubView(()=>{ viewingSingleGame = {ev, detail}; viewingMatchupBets = false; renderResultsArea(); });
       });
 
       const timeStr = dt.toLocaleString(undefined, {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
@@ -6372,7 +6420,7 @@ function renderOddsPage(){
     if(viewingSingleGame){
       gameBoxesDiv.style.display = 'none';
       const backBtn = document.createElement('button'); backBtn.className='backbtn'; backBtn.textContent='\u2190 Back to all games';
-      backBtn.addEventListener('click', ()=>{ viewingSingleGame = null; viewingMatchupBets = false; renderResultsArea(); });
+      backBtn.addEventListener('click', ()=>navBack(()=>{ viewingSingleGame = null; viewingMatchupBets = false; renderResultsArea(); }));
       resultsDiv.appendChild(backBtn);
 
       const mEv = viewingSingleGame.ev, mDetail = viewingSingleGame.detail;
@@ -6387,7 +6435,7 @@ function renderOddsPage(){
         removeGameWindowStickyBar();
         const backToGame = document.createElement('button'); backToGame.className='backbtn';
         backToGame.textContent = '\u2190 Back to this matchup\u2019s lines';
-        backToGame.addEventListener('click', ()=>{ viewingMatchupBets = false; renderResultsArea(); });
+        backToGame.addEventListener('click', ()=>navBack(()=>{ viewingMatchupBets = false; renderResultsArea(); }));
         resultsDiv.appendChild(backToGame);
         const holder = document.createElement('div');
         resultsDiv.appendChild(holder);
@@ -6411,7 +6459,11 @@ function renderOddsPage(){
       matchupBetsLink.style.cssText = 'display:inline-block;padding:8px 14px;border-radius:6px;border:1px solid var(--navy2);background:var(--navy2);color:#fff;font-size:13px;font-weight:700;text-decoration:none;cursor:pointer;font-family:var(--sans);';
       matchupBetsLink.textContent = '\u2b50 Top Matchup Bets \u2192';
       matchupBetsLink.title = 'Every bet offered on this matchup, ranked by probability';
-      matchupBetsLink.addEventListener('click', ()=>{ viewingMatchupBets = true; renderResultsArea(); });
+      matchupBetsLink.addEventListener('click', ()=>{
+        viewingMatchupBets = true;
+        renderResultsArea();
+        navPushSubView(()=>{ viewingMatchupBets = true; renderResultsArea(); });
+      });
       matchupBetsRow.appendChild(matchupBetsLink);
       resultsDiv.appendChild(matchupBetsRow);
 
