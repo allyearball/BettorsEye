@@ -7178,7 +7178,12 @@ function vsOpponentStatsForLeg(leg){
   const games = rec.log.filter(g => !g.dnp && (g.opp===leg.opponent || g.opp===oppFull));
   if(!games.length) return null;
   const bucket = positionBucket(getPlayerPosition(leg.player, leg.team));
-  const values = games.map(g => leg.statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[leg.statKey]||0));
+  // statValue(), not g[key]: these are RAW game-log rows straight off DATA.fullPlayerLogs,
+  // which store only the base stats. Every combined stat (pra/pr/pa/ra) has to be derived
+  // here. The old code special-cased 'pra' by hand and fell through to g[key] for anything
+  // else, so the three two-stat combos silently read undefined -> 0, which also poisoned
+  // the hit/miss dot, the Avg and the Var on those rows.
+  const values = games.map(g => statValue(g, leg.statKey) || 0);
   const avg = Math.round((values.reduce((a,b)=>a+b,0)/values.length)*10)/10;
   const variance = computeVariance(values);
   return { n: games.length, avg, variance, games: games.map((g,i)=>{
@@ -7279,7 +7284,12 @@ function similarDefenseStatsForLeg(leg, useL5){
   const games = rec.log.filter(g => !g.dnp && (similarTeams.includes(g.opp) || similarTeamsFull.includes(g.opp)));
   if(!games.length) return {oppRank, lo, hi, n:0, avg:null, variance:null, games:[]};
 
-  const values = games.map(g => leg.statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[leg.statKey]||0));
+  // statValue(), not g[key]: these are RAW game-log rows straight off DATA.fullPlayerLogs,
+  // which store only the base stats. Every combined stat (pra/pr/pa/ra) has to be derived
+  // here. The old code special-cased 'pra' by hand and fell through to g[key] for anything
+  // else, so the three two-stat combos silently read undefined -> 0, which also poisoned
+  // the hit/miss dot, the Avg and the Var on those rows.
+  const values = games.map(g => statValue(g, leg.statKey) || 0);
   const avg = Math.round((values.reduce((a,b)=>a+b,0)/values.length)*10)/10;
   const variance = computeVariance(values);
   const gamesOut = games.map((g,i)=>{
@@ -8713,8 +8723,11 @@ async function applyLiveAmounts(wrap, ev){
     wrap.querySelectorAll('[data-live-player]').forEach(el=>{
       const pname = el.getAttribute('data-live-player'), statKey = el.getAttribute('data-live-stat');
       const row = live.players.find(p => p.player.toLowerCase() === pname.toLowerCase());
-      if(row && row[statKey] !== undefined){
-        el.textContent = `Now: ${row[statKey]}`;
+      // Same derivation problem as above: a live box-score row has pts/reb/ast/tpm, never a
+      // precomputed combo, so a P+R chip would have shown nothing at all here.
+      const v = row ? statValue(row, statKey) : undefined;
+      if(v !== undefined && v !== null){
+        el.textContent = `Now: ${v}`;
       }
     });
   }
@@ -13214,7 +13227,7 @@ async function renderBetTrackerPage(){
         side = sideSel.value; label = `${team} Team Total ${side==='over'?'Over':'Under'} ${line}`;
       } else {
         side = sideSel.value; player = playerSel.value; statKey = statSel.value;
-        const marketLabel = {pts:'Points',reb:'Rebounds',ast:'Assists',tpm:'Threes',pra:'Pts+Reb+Ast'}[statKey];
+        const marketLabel = STAT_KEY_LABEL[statKey] || statKey;
         label = `${player} ${side==='over'?'Over':'Under'} ${line} ${marketLabel}`;
         thresholdToHit = Number.isInteger(line) ? line+1 : Math.ceil(line);
       }
