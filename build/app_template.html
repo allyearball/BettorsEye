@@ -824,6 +824,11 @@ const COMBO_STAT_PARTS = {
   ra:  ['reb', 'ast'],
 };
 const PROP_STAT_KEYS = ['pts', 'reb', 'ast', 'tpm', 'pra', 'pr', 'pa', 'ra'];
+// [key, shortLabel] for every prop stat, in display order. Anything that used to hardcode
+// [['pts','PTS'],...,['pra','PRA']] reads this instead -- that literal existed in four places
+// and each one silently omitted the new combos when they were added.
+function propStatPairs(){ return PROP_STAT_KEYS.map(k=>[k, STAT_SHORT_LABEL[k]]); }
+function propStatPairsLong(){ return PROP_STAT_KEYS.map(k=>[k, STAT_KEY_LABEL[k]]); }
 // Sums a combo from a row of raw counting stats. Null if ANY component is missing, so a partial
 // row never reads as a genuine low total.
 function comboFrom(src, statKey){
@@ -5029,7 +5034,7 @@ function renderNextOpponentPositionSectionFromResult(container, playerName, team
 // than one whose share collapses.
 function buildShareByTierTable(container, playerName, team, opp, windowMode, heightTierData, highlightTier, mode){
   const TIERS = [{key:'shortest', label:'Shortest'}, {key:'middle', label:'Middle'}, {key:'tallest', label:'Tallest'}];
-  const STATS = [['pts','PTS'],['reb','REB'],['ast','AST'],['tpm','3PM'],['pra','PRA']];
+  const STATS = propStatPairs();
   const rec = DATA.fullPlayerLogs[playerName+'|'+team];
   if(!heightTierData || !heightTierData.allGames || !rec) return false;
 
@@ -5096,7 +5101,7 @@ function renderShareOfAllowedSection(container, playerName, team, opp, windowMod
   container.appendChild(shareTitle);
   appendDefIcon(shareTitle, `Allowed/Gm above is for her ENTIRE position group (every player at her position on her team combined) \u2014 this estimates what fraction of that number might reasonably belong to her specifically, using her share of the group's total minutes played (over the same window selected at the top of the page) as a proxy for her share of the group's production. This is an OPPORTUNITY-share proxy, not a measured production share \u2014 a player more (or less) productive per minute than her position-mates would have a real share above (or below) this estimate. See the "by Production" version below for the more accurate alternative. Still more specific than the flat, undifferentiated team-wide number on its own.`);
   const shareRow = document.createElement('div'); shareRow.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;';
-  [['pts','PTS'],['reb','REB'],['ast','AST'],['tpm','3PM'],['pra','PRA']].forEach(([statKey,label])=>{
+  propStatPairs().forEach(([statKey,label])=>{
     const node = buildHerShareNode(playerName, team, opp, statKey, windowMode);
     const item = document.createElement('div'); item.style.cssText = 'font-size:12.5px;';
     const lbl = document.createElement('b'); lbl.textContent = label+': ';
@@ -5112,7 +5117,7 @@ function renderShareOfAllowedSection(container, playerName, team, opp, windowMod
   container.appendChild(prodShareTitle);
   appendDefIcon(prodShareTitle, `The more accurate version of the "by Minutes" estimate above \u2014 instead of assuming her share of the group's production matches her share of the group's minutes, this measures her ACTUAL share of the group's own points/rebounds/assists/3PM/PRA (over the same window selected at the top of the page) and applies that real share to ${oppFull}'s Allowed/Gm for her position. A player who scores or rebounds at a higher rate than her position-mates will show a higher share here than in the minutes-based version above \u2014 and a lower-usage, high-minutes role player will show the opposite. This is still her OWN team's recent production, not a measurement of how ${oppFull} specifically will defend her \u2014 no app has play-by-play tracking of who actually guarded whom.`);
   const prodShareRow = document.createElement('div'); prodShareRow.style.cssText = 'display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;';
-  [['pts','PTS'],['reb','REB'],['ast','AST'],['tpm','3PM'],['pra','PRA']].forEach(([statKey,label])=>{
+  propStatPairs().forEach(([statKey,label])=>{
     const node = buildHerProductionShareNode(playerName, team, opp, statKey, windowMode);
     const item = document.createElement('div'); item.style.cssText = 'font-size:12.5px;';
     const lbl = document.createElement('b'); lbl.textContent = label+': ';
@@ -8361,7 +8366,7 @@ function tierHitRateForLeg(leg, tier, heightTierData){
   const games = heightTierData.allGames.filter(g=>g.tier===tier);
   if(!games.length) return {gp:0, hits:0, rate:0, found:true, tier};
   const threshold = Number.isInteger(leg.line) ? leg.line+1 : Math.ceil(leg.line);
-  const vals = games.map(g => leg.statKey==='pra' ? g.pra : g[leg.statKey]).filter(v=>v!==null && v!==undefined);
+  const vals = games.map(g => statValue(g, leg.statKey)).filter(v=>v!==null && v!==undefined);
   if(!vals.length) return {gp:0, hits:0, rate:0, found:true, tier};
   const hits = vals.filter(v => leg.side==='under' ? v < threshold : v >= threshold).length;
   return {gp: vals.length, hits, rate: hits/vals.length, found:true, tier};
@@ -13087,7 +13092,7 @@ async function renderBetTrackerPage(){
     const teamSel = document.createElement('select'); teamSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;';
     const playerSel = document.createElement('select'); playerSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;min-width:180px;';
     const statSel = document.createElement('select'); statSel.style.cssText='padding:6px;border:1px solid var(--line);border-radius:5px;font-size:12.5px;';
-    [['pts','Points'],['reb','Rebounds'],['ast','Assists'],['tpm','Threes'],['pra','Pts+Reb+Ast']].forEach(([v,l])=>{
+    propStatPairsLong().forEach(([v,l])=>{
       const op=document.createElement('option'); op.value=v; op.textContent=l; statSel.appendChild(op);
     });
     const teamWrap = labeled('Team', teamSel);
