@@ -811,7 +811,45 @@ function makeTable(container, columns, rows, opts){
   render();
 }
 
+/* ================= Combination prop stats =================
+   A combo stat key is the sum of other stat keys. Everything downstream is driven off these two
+   constants -- statValue(), the hit rates, the Defense-vs-Position tables, the EMA tiebreak, the
+   summary footer maths and every column list -- so adding a new combination here is nearly all it
+   takes to make it work across the whole app.
+   Order matters: PROP_STAT_KEYS is the display order every "for each prop stat" loop follows. */
+const COMBO_STAT_PARTS = {
+  pra: ['pts', 'reb', 'ast'],
+  pr:  ['pts', 'reb'],
+  pa:  ['pts', 'ast'],
+  ra:  ['reb', 'ast'],
+};
+const PROP_STAT_KEYS = ['pts', 'reb', 'ast', 'tpm', 'pra', 'pr', 'pa', 'ra'];
+// Sums a combo from a row of raw counting stats. Null if ANY component is missing, so a partial
+// row never reads as a genuine low total.
+function comboFrom(src, statKey){
+  const parts = COMBO_STAT_PARTS[statKey];
+  if(!parts) return undefined;
+  let total = 0;
+  for(const p of parts){
+    const v = src ? src[p] : null;
+    if(v === null || v === undefined) return null;
+    total += v;
+  }
+  return total;
+}
+
 const PRA_COL_DEF = 'Points + rebounds + assists for that game — the combined line most books price as a single prop. Blank for a game she didn’t play rather than shown as 0.';
+const PR_COL_DEF = 'Points + rebounds for that game — the combined line books price as a single prop. Blank for a game she didn’t play rather than shown as 0.';
+const PA_COL_DEF = 'Points + assists for that game — the combined line books price as a single prop. Blank for a game she didn’t play rather than shown as 0.';
+const RA_COL_DEF = 'Rebounds + assists for that game — the combined line books price as a single prop. Blank for a game she didn’t play rather than shown as 0.';
+// One place that defines the three two-stat combo columns, so gamelogs / vs-opponent / box
+// scores all pick them up identically. keyStat is deliberately off: they are derived, and
+// bolding four combined columns as well as PTS/REB/AST/3PM makes the row unreadable.
+const COMBO2_COLS = [
+  {key:'pr', label:'P+R', def:PR_COL_DEF},
+  {key:'pa', label:'P+A', def:PA_COL_DEF},
+  {key:'ra', label:'R+A', def:RA_COL_DEF},
+];
 const GAME_COLS = [
   {key:'team', label:'Team', left:true, teamLink:true}, {key:'player', label:'Player', left:true},
   {key:'jersey', label:'#'}, {key:'pos', label:'Pos', left:true}, {key:'starter', label:'Start', bool:true},
@@ -823,6 +861,7 @@ const GAME_COLS = [
   {key:'ast', label:'AST', keyStat:true}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
   {key:'to', label:'TO'}, {key:'pf', label:'PF'},
   {key:'pra', label:'P+R+A', keyStat:true, def:PRA_COL_DEF},
+  ...COMBO2_COLS,
   {key:'plusMinus', label:'+/-'},
   {key:'height', label:'Height', left:true}, {key:'weight', label:'Wt (lb)'}, {key:'age', label:'Age'}, {key:'dob', label:'DOB', left:true},
 ];
@@ -2015,8 +2054,10 @@ function statValues(log, key){ return log.filter(g=>!g.dnp).map(g=>g[key]).filte
 // never reads as a genuine zero.
 function attachPra(rows){
   (rows || []).forEach(r=>{
-    const missing = v => v===null || v===undefined;
-    r.pra = (missing(r.pts) || missing(r.reb) || missing(r.ast)) ? null : r.pts + r.reb + r.ast;
+    Object.keys(COMBO_STAT_PARTS).forEach(k=>{
+      const v = comboFrom(r, k);
+      r[k] = (v === undefined) ? null : v;
+    });
   });
   return rows;
 }
@@ -2089,7 +2130,7 @@ function computeDvpBaseline(){
   const baseline = {};
   ['G','F','C'].forEach(b=>{
     baseline[b] = {};
-    ['pts','reb','ast','tpm','pra'].forEach(k=>{
+    PROP_STAT_KEYS.forEach(k=>{
       const vals = TEAM_NAMES.map(t => ranks[t] && ranks[t][b] && ranks[t][b][k] ? ranks[t][b][k].perGame : null).filter(v=>v!==null);
       baseline[b][k] = vals.length ? vals.reduce((a,b2)=>a+b2,0)/vals.length : null;
     });
@@ -2117,7 +2158,7 @@ function computeDvpBaselineWindow(windowSize){
   const baseline = {};
   ['G','F','C'].forEach(b=>{
     baseline[b] = {};
-    ['pts','reb','ast','tpm','pra'].forEach(k=>{
+    PROP_STAT_KEYS.forEach(k=>{
       const vals = TEAM_NAMES.map(t => ranks[t] && ranks[t][b] && ranks[t][b][k] ? ranks[t][b][k].perGame : null).filter(v=>v!==null);
       baseline[b][k] = vals.length ? vals.reduce((a,b2)=>a+b2,0)/vals.length : null;
     });
@@ -2344,7 +2385,7 @@ const TEAM_DEF_BY_POS_COLS = [
 function computeTeamDefenseByPosition(team){
   return ['G','F','C'].map(bucket=>{
     const row = {position: POSITION_LABEL[bucket]};
-    ['pts','reb','ast','tpm','pra'].forEach(statKey=>{
+    PROP_STAT_KEYS.forEach(statKey=>{
       const r = getDefenseRank(team, statKey, bucket);
       row[statKey+'Allowed'] = r ? r.perGame : null;
       row[statKey+'Dvp'] = dvpIndex(team, statKey, bucket);
@@ -2360,7 +2401,7 @@ function computeTeamDefenseTotalRow(team){
   const posRows = computeTeamDefenseByPosition(team);
   const baseline = computeDvpBaseline();
   const row = {position: 'TEAM TOTAL (all positions)'};
-  ['pts','reb','ast','tpm','pra'].forEach(statKey=>{
+  PROP_STAT_KEYS.forEach(statKey=>{
     const allowedSum = posRows.reduce((a,r)=> a + (r[statKey+'Allowed']||0), 0);
     row[statKey+'Allowed'] = Math.round(allowedSum*10)/10;
     const baseSum = ['G','F','C'].reduce((a,b)=> a + ((baseline[b] && baseline[b][statKey]) || 0), 0);
@@ -2691,10 +2732,11 @@ const PLAYER_LOG_COLS = [
   {key:'ast', label:'AST', keyStat:true}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
   {key:'to', label:'TO'}, {key:'pf', label:'PF'},
   {key:'pra', label:'P+R+A', keyStat:true, def:PRA_COL_DEF},
+  ...COMBO2_COLS,
   {key:'plusMinus', label:'+/-'},
 ];
 const STAT_KEYS_FOR_SUMMARY = ['min','pts','fgm','fga','fgPct','tpm','tpa','tpPct','ftm','fta','ftPct',
-  'oreb','dreb','reb','ast','stl','blk','to','pf','pra','plusMinus'];
+  'oreb','dreb','reb','ast','stl','blk','to','pf','pra','pr','pa','ra','plusMinus'];
 
 // Same box score columns as the main log, plus point-in-time DvP for the specific opponent
 // every row in this table is against (see dvpIndexAsOf above).
@@ -2851,6 +2893,9 @@ async function fetchHerNextGameLines(playerName, team){
       ast: lineFor('ast', 'player_assists'),
       tpm: lineFor('tpm', 'player_threes'),
       pra: lineFor('pra', 'player_points_rebounds_assists'),
+      pr: lineFor('pr', 'player_points_rebounds'),
+      pa: lineFor('pa', 'player_points_assists'),
+      ra: lineFor('ra', 'player_rebounds_assists'),
     };
     const result = { eventId: relevant.id, opponent: oppShort, date: dateStr, lines, lineBooks };
     if(Object.values(lines).some(v=>v!==null)){
@@ -2957,12 +3002,20 @@ function seasonDerivedRow(sums, label, team){
 
   const stdTotals = Object.assign({}, base);
   STD.forEach(k=>{ stdTotals[k] = Math.round(sums[k]*100)/100; });
+  // The four combined prop lines, summed from the season's component totals rather than re-
+  // derived per game, so they stay consistent with the PTS/REB/AST cells sitting beside them.
+  Object.keys(COMBO_STAT_PARTS).forEach(k=>{
+    stdTotals[k] = Math.round(COMBO_STAT_PARTS[k].reduce((a,p)=>a+(sums[p]||0),0)*100)/100;
+  });
   stdTotals.fgPct = sums.fga ? Math.round((sums.fgm/sums.fga)*10000)/10000 : null;
   stdTotals.tpPct = sums.tpa ? Math.round((sums.tpm/sums.tpa)*10000)/10000 : null;
   stdTotals.ftPct = sums.fta ? Math.round((sums.ftm/sums.fta)*10000)/10000 : null;
 
   const stdAverages = Object.assign({}, base);
   STD.forEach(k=>{ stdAverages[k] = per(sums[k]); });
+  Object.keys(COMBO_STAT_PARTS).forEach(k=>{
+    stdAverages[k] = per(COMBO_STAT_PARTS[k].reduce((a,p)=>a+(sums[p]||0),0));
+  });
   // Shooting percentages are recomputed from combined makes/attempts, NOT divided by games --
   // a per-game FG% is meaningless.
   stdAverages.fgPct = stdTotals.fgPct; stdAverages.tpPct = stdTotals.tpPct; stdAverages.ftPct = stdTotals.ftPct;
@@ -2979,6 +3032,9 @@ function seasonDerivedRow(sums, label, team){
   const advTotals = Object.assign({}, base, rates, {
     min: Math.round(sums.min*100)/100,
     pra: Math.round((sums.pts + sums.reb + sums.ast)*100)/100,
+    pr: Math.round((sums.pts + sums.reb)*100)/100,
+    pa: Math.round((sums.pts + sums.ast)*100)/100,
+    ra: Math.round((sums.reb + sums.ast)*100)/100,
     tsa: Math.round(tsa*100)/100,
     fgMiss: sums.fga - sums.fgm,
     ftMiss: sums.fta - sums.ftm,
@@ -2988,6 +3044,7 @@ function seasonDerivedRow(sums, label, team){
   const advAverages = Object.assign({}, base, rates, {
     min: per(sums.min),
     pra: per(sums.pts + sums.reb + sums.ast),
+    pr: per(sums.pts + sums.reb), pa: per(sums.pts + sums.ast), ra: per(sums.reb + sums.ast),
     pts36: per36(sums.pts), reb36: per36(sums.reb), ast36: per36(sums.ast),
     ptsStd: stdDevOf(sums.ptsArr), ptsIqr: iqrOf(sums.ptsArr),
     rebStd: stdDevOf(sums.rebArr), rebIqr: iqrOf(sums.rebArr),
@@ -3041,12 +3098,15 @@ const SEASON_STD_TOTALS_COLS = [
   {key:'ftm', label:'FTM', compactHide:true}, {key:'fta', label:'FTA', compactHide:true}, {key:'ftPct', label:'FT%', pct:true, compactHide:true},
   {key:'oreb', label:'OREB', compactHide:true}, {key:'dreb', label:'DREB', compactHide:true}, {key:'reb', label:'REB'},
   {key:'ast', label:'AST'}, {key:'stl', label:'STL', compactHide:true}, {key:'blk', label:'BLK', compactHide:true},
-  {key:'to', label:'TO', compactHide:true}, {key:'pf', label:'PF', compactHide:true}, {key:'plusMinus', label:'+/-', compactHide:true},
+  {key:'to', label:'TO', compactHide:true}, {key:'pf', label:'PF', compactHide:true},
+  {key:'pra', label:'P+R+A', def:PRA_COL_DEF}, {key:'pr', label:'P+R', def:PR_COL_DEF},
+  {key:'pa', label:'P+A', def:PA_COL_DEF}, {key:'ra', label:'R+A', def:RA_COL_DEF},
+  {key:'plusMinus', label:'+/-', compactHide:true},
 ];
 // Same columns, but every counting stat rendered to one decimal as a per-game figure. GP/GS
 // stay whole numbers -- they're the denominator, not something that gets divided.
 const SEASON_STD_AVG_COLS = SEASON_STD_TOTALS_COLS.map(c=>(
-  ['min','pts','fgm','fga','tpm','tpa','ftm','fta','oreb','dreb','reb','ast','stl','blk','to','pf','plusMinus'].includes(c.key)
+  ['min','pts','fgm','fga','tpm','tpa','ftm','fta','oreb','dreb','reb','ast','stl','blk','to','pf','plusMinus'].concat(PROP_STAT_KEYS).includes(c.key)
     ? Object.assign({}, c, {round1:true}) : c
 ));
 
@@ -3054,7 +3114,7 @@ const SEASON_ADV_TOTALS_COLS = [
   {key:'season', label:'Season', left:true, numeric:false},
   {key:'team', label:'Team', left:true, teamLink:true},
   {key:'gp', label:'GP'}, {key:'gs', label:'GS'}, {key:'min', label:'MIN'},
-  {key:'pra', label:'PRA'},
+  {key:'pra', label:'PRA'}, {key:'pr', label:'P+R'}, {key:'pa', label:'P+A'}, {key:'ra', label:'R+A'},
   {key:'dd', label:'Dbl-Dbl'}, {key:'td', label:'Trp-Dbl'},
   {key:'tsa', label:'TSA', round1:true, compactHide:true},
   {key:'fgMiss', label:'FG Missed', compactHide:true}, {key:'ftMiss', label:'FT Missed', compactHide:true},
@@ -3067,7 +3127,7 @@ const SEASON_ADV_AVG_COLS = [
   {key:'season', label:'Season', left:true, numeric:false},
   {key:'team', label:'Team', left:true, teamLink:true},
   {key:'gp', label:'GP'}, {key:'min', label:'MIN', round1:true},
-  {key:'pra', label:'PRA', round1:true},
+  {key:'pra', label:'PRA', round1:true}, {key:'pr', label:'P+R', round1:true}, {key:'pa', label:'P+A', round1:true}, {key:'ra', label:'R+A', round1:true},
   {key:'pts36', label:'PTS/36', round1:true}, {key:'reb36', label:'REB/36', round1:true, compactHide:true}, {key:'ast36', label:'AST/36', round1:true, compactHide:true},
   {key:'tsPct', label:'TS%', pct:true}, {key:'efgPct', label:'eFG%', pct:true, compactHide:true},
   {key:'usgPct', label:'USG%', round1:true},
@@ -3312,7 +3372,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
       // Per-game labels, matching what the numbers actually are. 3PM/G is spelled out rather than
       // the bare "3PM" used as a table column header elsewhere, because every other label in this
       // widget carries its per-game unit.
-      const STAT_LABELS = {pts:'PPG', reb:'RPG', ast:'APG', tpm:'3PM/G', pra:'PRA'};
+      const STAT_LABELS = Object.assign({}, STAT_SHORT_LABEL, {pts:'PPG', reb:'RPG', ast:'APG', tpm:'3PM/G'});
       imp.stats.forEach(s=>{
         const box = document.createElement('div');
         const lbl = document.createElement('div'); lbl.style.cssText = 'font-size:11px;color:var(--sub);'; lbl.textContent = STAT_LABELS[s.statKey];
@@ -4006,11 +4066,17 @@ const PROP_MARKET_TO_STAT = {
   player_points: 'pts', player_rebounds: 'reb', player_assists: 'ast', player_threes: 'tpm',
   player_points_alternate: 'pts', player_rebounds_alternate: 'reb', player_assists_alternate: 'ast', player_threes_alternate: 'tpm',
   player_points_rebounds_assists: 'pra', player_points_rebounds_assists_alternate: 'pra',
+  player_points_rebounds: 'pr', player_points_rebounds_alternate: 'pr',
+  player_points_assists: 'pa', player_points_assists_alternate: 'pa',
+  player_rebounds_assists: 'ra', player_rebounds_assists_alternate: 'ra',
 };
 const PROP_MARKET_LABEL = {
   player_points: 'Points', player_rebounds: 'Rebounds', player_assists: 'Assists', player_threes: 'Threes',
   player_points_alternate: 'Points', player_rebounds_alternate: 'Rebounds', player_assists_alternate: 'Assists', player_threes_alternate: 'Threes',
   player_points_rebounds_assists: 'Pts+Reb+Ast', player_points_rebounds_assists_alternate: 'Pts+Reb+Ast',
+  player_points_rebounds: 'Pts+Reb', player_points_rebounds_alternate: 'Pts+Reb',
+  player_points_assists: 'Pts+Ast', player_points_assists_alternate: 'Pts+Ast',
+  player_rebounds_assists: 'Reb+Ast', player_rebounds_assists_alternate: 'Reb+Ast',
 };
 // Display names for the bet-type / stat-key values carried on tracked bets. Hoisted to module
 // scope because the Bet Tracker's analysis breakdowns and the App Tracker's now use the same
@@ -4019,7 +4085,8 @@ const BET_TYPE_LABELS = {
   moneyline:'Moneyline', spread:'Spread', total:'Game Total', team_total:'Team Total',
   player_prop:'Player Prop', player_prop_alt:'Player Prop (Alt Line)',
 };
-const STAT_KEY_LABEL = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'Threes', pra:'Pts+Reb+Ast'};
+const STAT_KEY_LABEL = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'Threes',
+  pra:'Pts+Reb+Ast', pr:'Pts+Reb', pa:'Pts+Ast', ra:'Reb+Ast'};
 
 // ================= Defense vs. Position rankings (Points/Rebounds/Assists/Threes/PRA, by G/F/C) =================
 // Entirely derived from box scores already loaded client-side \u2014 no extra data source needed.
@@ -4066,12 +4133,12 @@ function getPlayerPosition(playerName, team){
 let _defenseVsPositionCache = null;
 function computeDefenseVsPosition(){
   if(_defenseVsPositionCache) return _defenseVsPositionCache;
-  const STAT_KEYS = ['pts','reb','ast','tpm','pra'];
+  const STAT_KEYS = PROP_STAT_KEYS;
   const BUCKETS = ['G','F','C'];
   const allowed = {};
   TEAM_NAMES.forEach(team=>{
     allowed[team] = {};
-    BUCKETS.forEach(b=>{ allowed[team][b] = {pts:0,reb:0,ast:0,tpm:0,pra:0}; });
+    BUCKETS.forEach(b=>{ allowed[team][b] = (()=>{ const z={}; PROP_STAT_KEYS.forEach(k=>{z[k]=0;}); return z; })(); });
   });
   Object.values(DATA.games).forEach(g=>{
     g.rows.forEach(r=>{
@@ -4081,8 +4148,9 @@ function computeDefenseVsPosition(){
       const defTeam = r.team===g.home ? g.away : g.home;
       if(!allowed[defTeam]) return;
       const acc = allowed[defTeam][bucket];
-      acc.pts += r.pts||0; acc.reb += r.reb||0; acc.ast += r.ast||0; acc.tpm += r.tpm||0;
-      acc.pra += (r.pts||0)+(r.reb||0)+(r.ast||0);
+      // Combos are summed from the same row, so adding a combination to COMBO_STAT_PARTS needs
+      // no change here.
+      PROP_STAT_KEYS.forEach(k=>{ acc[k] += (COMBO_STAT_PARTS[k] ? (comboFrom(r, k) || 0) : (r[k] || 0)); });
     });
   });
 
@@ -4126,7 +4194,7 @@ const _defenseVsPositionWindowCache = {};
 function computeDefenseVsPositionWindow(windowSize, cutoffDate){
   const cacheKey = `${windowSize}|${cutoffDate || '__current__'}`;
   if(_defenseVsPositionWindowCache[cacheKey]) return _defenseVsPositionWindowCache[cacheKey];
-  const STAT_KEYS = ['pts','reb','ast','tpm','pra'];
+  const STAT_KEYS = PROP_STAT_KEYS;
   const BUCKETS = ['G','F','C'];
 
   const teamGames = {};
@@ -4142,7 +4210,7 @@ function computeDefenseVsPositionWindow(windowSize, cutoffDate){
   const gpUsed = {};
   TEAM_NAMES.forEach(team=>{
     allowed[team] = {};
-    BUCKETS.forEach(b=>{ allowed[team][b] = {pts:0,reb:0,ast:0,tpm:0,pra:0}; });
+    BUCKETS.forEach(b=>{ allowed[team][b] = (()=>{ const z={}; PROP_STAT_KEYS.forEach(k=>{z[k]=0;}); return z; })(); });
     const lastN = teamGames[team].slice(0,windowSize);
     gpUsed[team] = lastN.length;
     lastN.forEach(g=>{
@@ -4153,8 +4221,9 @@ function computeDefenseVsPositionWindow(windowSize, cutoffDate){
         const defTeam = r.team===g.home ? g.away : g.home;
         if(defTeam !== team) return; // only stats scored AGAINST this team, in this team's own last-N window
         const acc = allowed[team][bucket];
-        acc.pts += r.pts||0; acc.reb += r.reb||0; acc.ast += r.ast||0; acc.tpm += r.tpm||0;
-        acc.pra += (r.pts||0)+(r.reb||0)+(r.ast||0);
+        // Combos are summed from the same row, so adding a combination to COMBO_STAT_PARTS needs
+        // no change here.
+        PROP_STAT_KEYS.forEach(k=>{ acc[k] += (COMBO_STAT_PARTS[k] ? (comboFrom(r, k) || 0) : (r[k] || 0)); });
       });
     });
   });
@@ -4202,11 +4271,11 @@ const POSITION_LABEL = {G:'Guards', F:'Forwards', C:'Centers'};
 const _dvpAsOfCache = {};
 function computeDefenseVsPositionAsOf(cutoffDate){
   if(_dvpAsOfCache[cutoffDate]) return _dvpAsOfCache[cutoffDate];
-  const STAT_KEYS = ['pts','reb','ast','tpm','pra'];
+  const STAT_KEYS = PROP_STAT_KEYS;
   const BUCKETS = ['G','F','C'];
   const allowed = {}; const gamesPlayed = {};
   TEAM_NAMES.forEach(team=>{
-    allowed[team] = {}; BUCKETS.forEach(b=>{ allowed[team][b] = {pts:0,reb:0,ast:0,tpm:0,pra:0}; });
+    allowed[team] = {}; BUCKETS.forEach(b=>{ allowed[team][b] = (()=>{ const z={}; PROP_STAT_KEYS.forEach(k=>{z[k]=0;}); return z; })(); });
     gamesPlayed[team] = 0;
   });
   Object.values(DATA.games).forEach(g=>{
@@ -4220,8 +4289,9 @@ function computeDefenseVsPositionAsOf(cutoffDate){
       const defTeam = r.team===g.home ? g.away : g.home;
       if(!allowed[defTeam]) return;
       const acc = allowed[defTeam][bucket];
-      acc.pts += r.pts||0; acc.reb += r.reb||0; acc.ast += r.ast||0; acc.tpm += r.tpm||0;
-      acc.pra += (r.pts||0)+(r.reb||0)+(r.ast||0);
+      // Combos are summed from the same row, so adding a combination to COMBO_STAT_PARTS needs
+      // no change here.
+      PROP_STAT_KEYS.forEach(k=>{ acc[k] += (COMBO_STAT_PARTS[k] ? (comboFrom(r, k) || 0) : (r[k] || 0)); });
     });
   });
   const perGame = {};
@@ -4254,7 +4324,7 @@ function computeDvpBaselineAsOf(cutoffDate){
   const baseline = {};
   ['G','F','C'].forEach(b=>{
     baseline[b] = {};
-    ['pts','reb','ast','tpm','pra'].forEach(k=>{
+    PROP_STAT_KEYS.forEach(k=>{
       const vals = TEAM_NAMES.map(t=> ranks[t] && ranks[t][b] && ranks[t][b][k] ? ranks[t][b][k].perGame : null).filter(v=>v!==null);
       baseline[b][k] = vals.length ? vals.reduce((a,b2)=>a+b2,0)/vals.length : null;
     });
@@ -4604,7 +4674,7 @@ function computePositionProductionShare(playerName, team, statKey, windowSize, g
   if(!rec) return null;
   const herGames = gamesOverride || windowSlice(rec.log.filter(g=>!g.dnp), windowSize);
   if(!herGames.length) return null;
-  function statVal(g){ return statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[statKey]||0); }
+  function statVal(g){ return statValue(g, statKey) || 0; }
   let herStat = 0, groupStat = 0;
   herGames.forEach(g=>{
     herStat += statVal(g);
@@ -4672,7 +4742,9 @@ const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', question
 // bar than points/rebounds/assists: a typical rotation player makes 0.5-2 threes a game, so a full
 // made three per game is an enormous move, and a 1.0 bar would dismiss nearly every real change as
 // noise. Half a three a game is ~1.5 points -- a genuinely bettable shift.
-const TEAMMATE_OUT_INSIGNIFICANT_THRESHOLD = {pts:1.0, reb:1.0, ast:1.0, tpm:0.5, pra:2.0};
+// A two-stat combination gets 1.5 -- above the 1.0 a single stat gets, below the 2.0 PRA gets for
+// summing three.
+const TEAMMATE_OUT_INSIGNIFICANT_THRESHOLD = {pts:1.0, reb:1.0, ast:1.0, tpm:0.5, pra:2.0, pr:1.5, pa:1.5, ra:1.5};
 // For a player, computes her per-game production against opposing same-position players,
 // bucketed into three tiers by that opponent group's minutes-weighted height. Tier boundaries
 // (terciles) are fixed from her FULL season, so "shortest/middle/tallest" means the same thing
@@ -4773,6 +4845,7 @@ function computeHeightTierData(playerName, team, season){
       ast: g.ast||0, stl: g.stl||0, blk: g.blk||0,
       to: g.to||0, pf: g.pf||0, plusMinus: g.plusMinus,
       pra: (g.pts||0)+(g.reb||0)+(g.ast||0),
+      pr: (g.pts||0)+(g.reb||0), pa: (g.pts||0)+(g.ast||0), ra: (g.reb||0)+(g.ast||0),
     };
   }).filter(Boolean);
 
@@ -4796,7 +4869,7 @@ function heightTierStatsForWindow(heightData, windowSize){
   const games = windowSize ? heightData.allGames.slice(-windowSize) : heightData.allGames;
   const byTier = {shortest:[], middle:[], tallest:[]};
   games.forEach(g=>byTier[g.tier].push(g));
-  const STAT_KEYS = ['pts','reb','ast','tpm','pra'];
+  const STAT_KEYS = PROP_STAT_KEYS;
   const result = {};
   ['shortest','middle','tallest'].forEach(tierName=>{
     const tGames = byTier[tierName];
@@ -5072,10 +5145,10 @@ function buildHeightTierSection(container, playerName, team, pageWindowMode, tit
   function renderTierTables(){
     tableHolder.innerHTML = '';
     const stats = heightTierStatsForWindow(heightData, activeSize);
-    const STAT_LABELS = {pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'3-Pointers Made', pra:'PRA'};
+    const STAT_LABELS = Object.assign({}, STAT_KEY_LABEL, {tpm:'3-Pointers Made', pra:'PRA'});
     const tiersToShow = [['shortest','Shortest'], ['middle','Middle'], ['tallest','Tallest']];
     const grid = document.createElement('div'); grid.style.cssText = 'display:flex;gap:16px;flex-wrap:wrap;';
-    ['pts','reb','ast','tpm','pra'].forEach(statKey=>{
+    PROP_STAT_KEYS.forEach(statKey=>{
       const box = document.createElement('div'); box.style.cssText = 'flex:1;min-width:260px;';
       const title = document.createElement('div'); title.style.cssText = 'font-weight:700;font-size:12.5px;margin-bottom:4px;';
       let lineText;
@@ -5246,7 +5319,7 @@ function renderHeightTierDetailPage(playerName, team, initialTier, initialWindow
     {key:'oreb', label:'OREB'}, {key:'dreb', label:'DREB'}, {key:'reb', label:'REB'},
     {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
     {key:'to', label:'TO'}, {key:'pf', label:'PF'}, {key:'plusMinus', label:'+/-'},
-    {key:'pra', label:'PRA'},
+    {key:'pra', label:'PRA'}, {key:'pr', label:'P+R'}, {key:'pa', label:'P+A'}, {key:'ra', label:'R+A'},
   ].map(c=>Object.assign({type:'number'}, c));
   const SORT_COLS = LEAD_COLS.concat(STAT_COLS);
 
@@ -5497,12 +5570,12 @@ function computeTeammateOutImpact(playerName, team){
       return;
     }
     function avgStat(games, statKey){
-      const vals = games.map(g => statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[statKey]||0));
+      const vals = games.map(g => statValue(g, statKey) || 0);
       return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : null;
     }
     // 3PM sits with the other individual stats, ahead of the PRA combination -- same order as
     // STAT_KEY_LABEL and the Specials market labels use everywhere else.
-    const stats = ['pts','reb','ast','tpm','pra'].map(statKey=>{
+    const stats = PROP_STAT_KEYS.map(statKey=>{
       const withAvg = avgStat(gamesWith, statKey);
       const withoutAvg = avgStat(gamesWithout, statKey);
       return { statKey, withAvg, withoutAvg, delta: (withAvg!==null && withoutAvg!==null) ? withoutAvg-withAvg : null };
@@ -5597,6 +5670,9 @@ const LINE_TREND_MARKETS = [
   {mkey:'player_assists', statKey:'ast', label:'Assists', color:'#b3261e'},
   {mkey:'player_threes', statKey:'tpm', label:'Threes', color:'#a5760a'},
   {mkey:'player_points_rebounds_assists', statKey:'pra', label:'Pts+Reb+Ast', color:'#6a3fa0'},
+  {mkey:'player_points_rebounds', statKey:'pr', label:'Pts+Reb', color:'#0f7b7b'},
+  {mkey:'player_points_assists', statKey:'pa', label:'Pts+Ast', color:'#a1367a'},
+  {mkey:'player_rebounds_assists', statKey:'ra', label:'Reb+Ast', color:'#7a5230'},
 ];
 
 let _oddsHistoryCache = null;
@@ -5736,10 +5812,7 @@ function renderLineTrendChart(container, series){
 
 // 'pra' isn't a stored field on a game-log entry — it's derived on the fly from pts+reb+ast.
 function statValue(g, statKey){
-  if(statKey==='pra'){
-    if(g.pts===null||g.pts===undefined||g.reb===null||g.reb===undefined||g.ast===null||g.ast===undefined) return null;
-    return g.pts + g.reb + g.ast;
-  }
+  if(COMBO_STAT_PARTS[statKey]) return comboFrom(g, statKey);
   return g[statKey];
 }
 
@@ -6671,7 +6744,7 @@ function isEligibleForTopBets(ev, now){
 function multiWindowStats(playerName, team, statKey){
   const rec = DATA.fullPlayerLogs[playerName+'|'+team];
   if(!rec) return null;
-  const played = rec.log.filter(g=>!g.dnp).map(g => statKey==='pra' ? (g.pts||0)+(g.reb||0)+(g.ast||0) : (g[statKey]||0));
+  const played = rec.log.filter(g=>!g.dnp).map(g => statValue(g, statKey) || 0);
   if(played.length===0) return null;
   function windowStat(n){
     const arr = n==='full' ? played : played.slice(-n);
@@ -8236,7 +8309,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
 // modal's title. The Standard/Advanced pools get it as bet.market from gatherCandidateLegs;
 // gatherAllCapturedLegs doesn't set it, so it's mapped from statKey here using the same wording
 // PROP_MARKET_LABEL uses.
-const SPECIALS_MARKET_LABEL = STAT_KEY_LABEL; // same five keys; kept as a name for readability at the call sites
+const SPECIALS_MARKET_LABEL = STAT_KEY_LABEL; // same prop-stat keys; kept as a name for readability at the call sites
 const SPECIALS_MIN_PRICE = -135;
 const SPECIALS_RECENT_BAR = 0.50;   // qualifiers 1 and 2
 const SPECIALS_TIER_BAR = 0.80;     // qualifier 3
@@ -9055,7 +9128,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     {key:'all', label:'All'},
     {key:'gameLines', label:'Game Lines'}, {key:'half1', label:'1st Half'}, {key:'half2', label:'2nd Half'},
     {key:'points', label:'Points'}, {key:'rebounds', label:'Rebounds'}, {key:'assists', label:'Assists'},
-    {key:'threes', label:'3PM'}, {key:'pra', label:'P+R+A'}, {key:'parlays', label:'Parlay Recommendations'},
+    {key:'threes', label:'3PM'}, {key:'pra', label:'P+R+A'}, {key:'pr', label:'P+R'}, {key:'pa', label:'P+A'}, {key:'ra', label:'R+A'}, {key:'parlays', label:'Parlay Recommendations'},
   ];
   const savedTab = TAB_DEFS.some(t=>t.key===uiState.activeTab) ? uiState.activeTab : 'gameLines';
   const tabBar = document.createElement('div');
@@ -9387,6 +9460,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     assists: {ou:'player_assists', alt:'player_assists_alternate'},
     threes: {ou:'player_threes', alt:'player_threes_alternate'},
     pra: {ou:'player_points_rebounds_assists', alt:'player_points_rebounds_assists_alternate'},
+    pr: {ou:'player_points_rebounds', alt:'player_points_rebounds_alternate'},
+    pa: {ou:'player_points_assists', alt:'player_points_assists_alternate'},
+    ra: {ou:'player_rebounds_assists', alt:'player_rebounds_assists_alternate'},
   };
   const allOuRows = [];
   const allAltPlayers = {};
@@ -9575,7 +9651,7 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   // hitRateFor(), multiWindowStats() for the EMA tiebreak, the DvP indices, defence ranks, live
   // in-game scoring and grading all handle it. The ONLY reason the app never recommended a
   // Pts+Reb+Ast bet was that this market list didn't ask the book for one.
-  ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists'].forEach(mkey=>{
+  ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists','player_points_rebounds','player_points_assists','player_rebounds_assists'].forEach(mkey=>{
     const market = detailMarkets[mkey]; if(!market) return;
     const statKey = PROP_MARKET_TO_STAT[mkey];
     const players = [...new Set(market.outcomes.map(o=>o.description))];
@@ -10666,7 +10742,7 @@ function shortPlayerName(fullName){
   if(parts.length<2) return fullName;
   return `${parts[0][0]}. ${parts.slice(1).join(' ')}`;
 }
-const STAT_SHORT_LABEL = {pts:'PTS', reb:'REB', ast:'AST', tpm:'3PM', pra:'PRA'};
+const STAT_SHORT_LABEL = {pts:'PTS', reb:'REB', ast:'AST', tpm:'3PM', pra:'PRA', pr:'P+R', pa:'P+A', ra:'R+A'};
 // Synchronous part \u2014 matchup (@ ) and start time (ET), always shown, no live fetch needed.
 function buildBetSubLineBase(bet){
   const gameTeams = (bet.game||'').split(' @ ');
@@ -10690,9 +10766,11 @@ async function enhanceBetSubLineIfLive(bet, liveGames, subLineEl){
     const rows = await fetchLiveBoxscoreCached(live.espnEventId);
     const row = rows.find(r => r.athlete_display_name===bet.player);
     if(row){
-      const val = bet.statKey==='pra' ? (row.points||0)+(row.rebounds||0)+(row.assists||0)
-        : bet.statKey==='pts' ? row.points : bet.statKey==='reb' ? row.rebounds : bet.statKey==='ast' ? row.assists
-        : bet.statKey==='tpm' ? row.three_point_field_goals_made : null;
+      // ESPN's live box score uses long field names; map them onto our stat keys first, then let
+      // comboFrom build any combination out of the mapped row.
+      const mapped = {pts: row.points, reb: row.rebounds, ast: row.assists, tpm: row.three_point_field_goals_made};
+      const val = COMBO_STAT_PARTS[bet.statKey] ? comboFrom(mapped, bet.statKey)
+        : (mapped[bet.statKey] !== undefined ? mapped[bet.statKey] : null);
       if(val!==null && val!==undefined){
         extra += ` | ${val} ${STAT_SHORT_LABEL[bet.statKey]||bet.statKey.toUpperCase()} ${shortPlayerName(bet.player)}`;
       }
@@ -13507,7 +13585,7 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
   // hitRateFor(), multiWindowStats() for the EMA tiebreak, the DvP indices, defence ranks, live
   // in-game scoring and grading all handle it. The ONLY reason the app never recommended a
   // Pts+Reb+Ast bet was that this market list didn't ask the book for one.
-  ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists'].forEach(mkey=>{
+  ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists','player_points_rebounds','player_points_assists','player_rebounds_assists'].forEach(mkey=>{
     const market = markets[mkey]; if(!market) return;
     const statKey = PROP_MARKET_TO_STAT[mkey];
     const players = [...new Set(market.outcomes.map(o=>o.description))];
