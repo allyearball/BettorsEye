@@ -5370,6 +5370,195 @@ function agreementVerdict(agreement, gp10, gp15){
   return (decisive && thin) ? 'veto' : 'demote';
 }
 function betIsDemoted(bet){ return !!(bet && bet.agreementVerdict === 'demote'); }
+
+// ==================== Retrospective replay (Stage 4) ====================
+// "Re-run the test on old picks using the closing line you recorded, with the projected stats and
+// edges as they were at the time."
+//
+// Picks captured from now on carry `minutesProj` and `projEdge` and need none of this. Everything
+// the App Tracker snapshotted BEFORE those fields existed carries only the line, the side and the
+// price -- which is the hard part (the line) and none of the projection. This rebuilds the
+// projection for those, as of the pick's own game date.
+//
+// WHAT IS HONEST HERE, AND WHAT IS NOT. Two inputs are needed and they have very different
+// standing:
+//   * HER RECENT FORM. Taken strictly from games BEFORE the pick's game date. No lookahead, and
+//     identical to what the app would have computed that morning.
+//   * WHO WAS OUT. There is no archive of past injury reports -- `DATA.injuries` is a live
+//     snapshot of today and nothing more. So absence is read from the box score of the game
+//     itself: a rotation regular who does not appear in it did not play. That is LOOKAHEAD. It is
+//     a good approximation, because a starter's absence is almost always on the injury report
+//     hours before tip, but it is knowledge the app did not strictly have, and a replay built on
+//     it is a mild upper bound rather than a faithful re-run. Every reconstructed row is labelled
+//     as such, and `reconstructed:true` is on the object, so this can never be mistaken for a
+//     stored projection.
+// These functions deliberately DUPLICATE the shape of rosterDisruption / projectMinutesForTeam /
+// usageResidualForTeam rather than parameterising them by date. Those three are on the live path
+// for every bet on every page; threading an as-of date through them to serve a historical view is
+// a large blast radius for no gain. The shared arithmetic (distributeMinutes, the elasticities,
+// projectedStatValue) IS reused, so the replay and the live projection cannot drift apart on the
+// part that matters.
+function historicalGameFor(team, gameDate){
+  if(!team || !gameDate || !DATA.games) return null;
+  return Object.values(DATA.games).find(g => g.date === gameDate && (g.home === team || g.away === team)) || null;
+}
+// Minutes per team game over the five team games BEFORE gameDate -- the same "minutes per team
+// game, not per game played" denominator rosterDisruption uses, so a player who missed two of the
+// five is correctly worth less than one who played all five.
+function historicalTeamBaselines(team, gameDate){
+  const rec = DATA.teams[team];
+  if(!rec || !rec.gameIdsFull) return null;
+  const dates = rec.gameIdsFull.map(gid => (DATA.games[String(gid)] || {}).date)
+    .filter(d => d && d < gameDate).sort().slice(-ROSTER_DISRUPTION_WINDOW);
+  if(!dates.length) return null;
+  const window = new Set(dates);
+  const perPlayer = {};
+  let teamMinutes = 0;
+  Object.keys(DATA.fullPlayerLogs).forEach(key=>{
+    const sep = key.lastIndexOf('|');
+    if(key.slice(sep+1) !== team) return;
+    const pname = key.slice(0, sep);
+    const played = (DATA.fullPlayerLogs[key].log || []).filter(g=>!g.dnp && window.has(g.date));
+    if(!played.length) return;
+    const avgMin = played.reduce((a,g)=>a+(g.min||0), 0) / window.size;
+    if(avgMin <= 0) return;
+    perPlayer[pname] = avgMin;
+    teamMinutes += avgMin;
+  });
+  return {perPlayer, teamMinutes, windowSize: window.size};
+}
+// Who was missing, read from the box score of the game itself. See the lookahead caveat above.
+function historicalRosterOut(team, gameDate){
+  const base = historicalTeamBaselines(team, gameDate);
+  const g = historicalGameFor(team, gameDate);
+  if(!base || !g) return null;
+  const appeared = new Set(g.rows.filter(r=>r.team===team && !r.dnp).map(r=>r.player));
+  const out = Object.keys(base.perPlayer)
+    .filter(n => !appeared.has(n))
+    .map(n => ({player:n, avgMin: Math.round(base.perPlayer[n]*10)/10, inRotation: true}))
+    .sort((a,b)=>b.avgMin-a.avgMin);
+  const outMinutes = out.reduce((a,o)=>a+base.perPlayer[o.player], 0);
+  return Object.assign({}, base, {team, gameDate, out, outMinutes,
+    regularsOut: out.filter(o => base.perPlayer[o.player] >= USAGE_REGULAR_MIN).length,
+    share: base.teamMinutes > 0 ? outMinutes/base.teamMinutes : 0});
+}
+// Same position-first redistribution and the same cap and reliability rule as the live version.
+function historicalMinutesProjection(team, gameDate){
+  const d = historicalRosterOut(team, gameDate);
+  if(!d) return null;
+  const outNames = new Set(d.out.map(o=>o.player));
+  const available = Object.keys(d.perPlayer).filter(n => !outNames.has(n));
+  const proj = {};
+  available.forEach(n=>{ proj[n] = d.perPlayer[n]; });
+  let unplaced = 0;
+  if(d.outMinutes > 0 && available.length){
+    const freedByBucket = {};
+    d.out.forEach(o=>{
+      const b = positionBucket(getPlayerPosition(o.player, team)) || 'ANY';
+      freedByBucket[b] = (freedByBucket[b] || 0) + (d.perPlayer[o.player] || 0);
+    });
+    Object.keys(freedByBucket).forEach(bucket=>{
+      const sameBucket = available.filter(n => (positionBucket(getPlayerPosition(n, team)) || 'ANY') === bucket);
+      let left = freedByBucket[bucket];
+      if(sameBucket.length) left = distributeMinutes(left, sameBucket, proj, MINUTES_PROJECTION_CAP);
+      if(left > 0.01) left = distributeMinutes(left, available, proj, MINUTES_PROJECTION_CAP);
+      unplaced += Math.max(0, left);
+    });
+  }
+  const players = {};
+  available.forEach(n=>{
+    const b = d.perPlayer[n], pm = proj[n];
+    players[n] = {baseMin: Math.round(b*10)/10, projMin: Math.round(pm*10)/10,
+                  delta: Math.round((pm-b)*10)/10, ratio: b > 0 ? pm/b : 1};
+  });
+  const reliable = d.outMinutes <= 0 || (unplaced / d.outMinutes) <= MINUTES_PROJECTION_MAX_UNPLACED;
+  return {team, gameDate, players, freed: d.outMinutes, unplaced, reliable,
+          regularsOut: d.regularsOut, out: d.out,
+          usgRatio: USAGE_RESIDUAL_BY_OUT[Math.min(3, d.regularsOut)]};
+}
+// Her last PROJECTION_WINDOW games strictly before gameDate, replayed at that night's projected
+// minutes and usage. Same projectedStatValue as the live path.
+function historicalProjectedStat(playerName, team, statKey, gameDate, projMin, usgRatio){
+  const pl = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!pl) return null;
+  const before = (pl.log || []).filter(g => !g.dnp && g.date < gameDate);
+  if(!before.length) return null;
+  const window = before.slice(-PROJECTION_WINDOW);
+  const vals = window.map(g=>projectedStatValue(g, statKey, projMin, usgRatio)).filter(v=>v!==null && v!==undefined);
+  if(!vals.length) return null;
+  return {projected: vals.reduce((a,b)=>a+b,0)/vals.length, gp: vals.length};
+}
+
+// The whole replay for one tracked pick. Returns null for anything that isn't a player prop with
+// a line -- team bets have no projection to reconstruct and no minutes to compare.
+//
+// `stored` beats `reconstructed` wherever both exist: a pick captured after Stage 4 carries the
+// projection the app ACTUALLY made, which is the real record. Recomputing it would replace the
+// evidence with a re-derivation of the evidence.
+function replayTrackedPick(bet){
+  if(!bet) return null;
+  if(bet.betType !== 'player_prop' && bet.betType !== 'player_prop_alt') return null;
+  if(!bet.player || !bet.team || bet.line === undefined || bet.line === null) return null;
+  const gameDate = bet.commenceTime ? toEasternDateStr(bet.commenceTime) : bet.gameDate;
+  if(!gameDate) return null;
+
+  let projMin = null, baseMin = null, usgRatio = 1, projected = null, reconstructed = false, regularsOut = null;
+  if(bet.minutesProj && bet.minutesProj.projMin != null){
+    projMin = bet.minutesProj.projMin; baseMin = bet.minutesProj.baseMin;
+    usgRatio = bet.minutesProj.usgRatio != null ? bet.minutesProj.usgRatio : 1;
+    regularsOut = bet.minutesProj.regularsOut != null ? bet.minutesProj.regularsOut : null;
+  }
+  if(bet.projEdge && bet.projEdge.projected != null) projected = bet.projEdge.projected;
+
+  if(projMin === null || projected === null){
+    reconstructed = true;
+    const proj = historicalMinutesProjection(bet.team, gameDate);
+    if(proj && proj.players[bet.player]){
+      const p = proj.players[bet.player];
+      if(projMin === null){ projMin = p.projMin; baseMin = p.baseMin; }
+      usgRatio = proj.usgRatio;
+      if(regularsOut === null) regularsOut = proj.regularsOut;
+    }
+    if(projected === null && projMin !== null){
+      const r = historicalProjectedStat(bet.player, bet.team, bet.statKey, gameDate, projMin, usgRatio);
+      if(r) projected = Math.round(r.projected*10)/10;
+    }
+  }
+
+  // What actually happened. Straight from the box score -- no grading logic re-implemented here,
+  // just the raw minutes and the raw stat.
+  const g = historicalGameFor(bet.team, gameDate);
+  const row = g ? g.rows.find(r=>r.player===bet.player && r.team===bet.team) : null;
+  const played = !!(row && !row.dnp);
+  const actualMin = played ? (row.min || 0) : (row ? 0 : null);
+  const actual = played ? statValue(row, bet.statKey) : null;
+
+  // Edge is signed toward the bet, exactly as the live column is, so the two are comparable. A
+  // stored edge wins over a recomputed one for the same reason a stored projection does -- it is
+  // what the app actually said. The two agree by construction anyway (both come from one
+  // projectionEdge call), so this only matters if a stored line and the bet's line ever diverge.
+  const storedEdge = (bet.projEdge && typeof bet.projEdge.edge === 'number') ? bet.projEdge.edge : null;
+  const edge = storedEdge !== null ? storedEdge
+    : (projected === null ? null
+      : Math.round((bet.side === 'under' ? (bet.line - projected) : (projected - bet.line))*10)/10);
+  // Did the projection call the right side? Separate from whether the BET won -- a bet can win
+  // while the projection argued against it, and that difference is the thing being measured.
+  //
+  // NOTE this is a property of the LINE, not of the side taken: both sides of the same line get
+  // the same verdict. Backing the Under when the projection said Under and the Over hit is the
+  // projection being wrong, and so is backing the Over against that same projection and winning.
+  // Either way the model misread the game; only the bettor's luck differed.
+  const projectionRight = (edge === null || actual === null) ? null
+    : ((bet.side === 'under' ? (actual < bet.line) : (actual > bet.line)) === (edge > 0));
+
+  return {
+    reconstructed, gameDate, line: bet.line, side: bet.side, statKey: bet.statKey,
+    baseMin, projMin, actualMin, started: row ? !!row.starter : null, dnp: !!(row && row.dnp),
+    minError: (projMin !== null && actualMin !== null) ? Math.round((actualMin - projMin)*10)/10 : null,
+    projected, actual, edge, projectionRight, usgRatio, regularsOut,
+    totalError: (projected !== null && actual !== null) ? Math.round((actual - projected)*10)/10 : null,
+  };
+}
 const AGREEMENT_DEF = 'Her <b>projected</b> total for tonight \u2014 her last ' + PROJECTION_WINDOW
   + ' games replayed at her projected minutes and tonight\u2019s projected usage \u2014 next to the line, with the '
   + 'gap between them. <b>Edge is signed toward the bet</b>: positive means the projection supports the side shown, '
@@ -12355,8 +12544,105 @@ let _snapshotAttemptedThisSession = false;
 // The App Tracker's snapshot sources, in the order they appear in its filter and stat cards.
 // Kept as one list so adding a source means adding it here, not hunting down every place that
 // spelled out 'standard' and 'advanced' by hand.
-const APP_TRACKER_SOURCES = ['standard', 'advanced', 'specials'];
-const APP_TRACKER_SOURCE_LABEL = {standard: 'Standard', advanced: 'Advanced', specials: 'Specials'};
+// 'rolechange' is the fourth board: bets the 75% bar REJECTED, kept because the projection backs
+// them on a night the player's role changed. It is tracked here for exactly one reason -- it is an
+// unproven idea, and the only way it stops being unproven is if its picks are graded alongside the
+// three established lists rather than admired in the abstract.
+// ---- the three replay columns ----
+// A reconstructed row is marked with a dagger everywhere it appears, and the dagger's tooltip
+// says what was reconstructed and what the lookahead is. Without that mark a re-derived number
+// sitting next to a recorded one looks like the same kind of evidence, and it isn't.
+const REPLAY_RECONSTRUCTED_MARK = '†';
+const REPLAY_RECONSTRUCTED_NOTE = ' † Reconstructed after the fact: this pick was captured before the '
+  + 'app stored its projection, so the projection has been rebuilt from her games BEFORE this date. Who was out '
+  + 'is read from this game’s own box score, since no archive of past injury reports exists — that is '
+  + 'information the app did not strictly have pre-game, so treat a reconstructed row as a mild upper bound.';
+function replayMark(td, r){
+  if(!r || !r.reconstructed) return;
+  const s = document.createElement('sup');
+  s.textContent = REPLAY_RECONSTRUCTED_MARK;
+  s.style.cssText = 'color:var(--sub);font-weight:400;';
+  td.appendChild(s);
+}
+function fillReplayMinutesCell(td, r){
+  if(!r || r.projMin === null || r.actualMin === null){ td.textContent = '—'; td.style.color = 'var(--sub)'; return; }
+  const main = document.createElement('span');
+  main.style.fontWeight = '700';
+  main.textContent = `${r.projMin} → ${r.actualMin}`;
+  // Green when the projection landed within 3 minutes, amber to 6, red beyond -- this column is
+  // the honest scoreboard for the minutes model, so it should be uncomfortable when it is wrong.
+  const err = Math.abs(r.minError);
+  main.style.color = err <= 3 ? 'var(--green)' : (err <= 6 ? '#B7791F' : 'var(--red)');
+  td.appendChild(main);
+  const sub = document.createElement('div');
+  sub.style.cssText = 'font-size:10px;color:var(--sub);white-space:nowrap;';
+  sub.textContent = `${r.minError > 0 ? '+' : ''}${r.minError}`
+    + (r.dnp ? ' (DNP)' : (r.started === false ? ' (bench)' : (r.started ? ' (started)' : '')));
+  td.appendChild(sub);
+  replayMark(td, r);
+  td.title = `Projected ${r.projMin} minutes, actually played ${r.actualMin}`
+    + ` (${r.minError > 0 ? '+' : ''}${r.minError}).`
+    + (r.baseMin != null ? ` Her baseline going in was ${r.baseMin}.` : '')
+    + (r.regularsOut ? ` ${r.regularsOut} rotation regular(s) out that night.` : '')
+    + (r.dnp ? ' She did not play at all.' : (r.started ? ' She started.' : ' She came off the bench.'))
+    + (r.reconstructed ? REPLAY_RECONSTRUCTED_NOTE : '');
+}
+function fillReplayTotalCell(td, bet, r){
+  if(!r || r.actual === null){ td.textContent = '—'; td.style.color = 'var(--sub)'; return; }
+  const label = STAT_SHORT_LABEL[bet.statKey] || String(bet.statKey || '').toUpperCase();
+  const line = document.createElement('div');
+  line.style.cssText = 'white-space:nowrap;';
+  const seg = (text, color, bold) => {
+    const s = document.createElement('span');
+    s.textContent = text;
+    s.style.cssText = (color ? `color:${color};` : '') + (bold ? 'font-weight:700;' : '');
+    return s;
+  };
+  line.appendChild(seg(String(r.line), 'var(--sub)'));
+  line.appendChild(seg(' | ', 'var(--sub)'));
+  line.appendChild(seg(r.projected === null ? '—' : String(r.projected), 'var(--sub)'));
+  line.appendChild(seg(' | ', 'var(--sub)'));
+  // The actual is colored by whether the BET won, not by whether the projection was close --
+  // those are different questions and the next column answers the other one.
+  const won = bet.side === 'under' ? (r.actual < r.line) : (r.actual > r.line);
+  line.appendChild(seg(`${r.actual} ${label}`, won ? 'var(--green)' : 'var(--red)', true));
+  td.appendChild(line);
+  if(r.totalError !== null){
+    const sub = document.createElement('div');
+    sub.style.cssText = 'font-size:10px;color:var(--sub);';
+    sub.textContent = `projection off by ${r.totalError > 0 ? '+' : ''}${r.totalError}`;
+    td.appendChild(sub);
+  }
+  replayMark(td, r);
+  td.title = `Line ${r.line} · projected ${r.projected === null ? 'n/a' : r.projected} · actual ${r.actual} ${label}.`
+    + (r.totalError !== null ? ` The projection was off by ${r.totalError > 0 ? '+' : ''}${r.totalError}.` : '')
+    + (r.reconstructed ? REPLAY_RECONSTRUCTED_NOTE : '');
+}
+function fillReplayEdgeCell(td, bet, r){
+  if(!r || r.projectionRight === null){ td.textContent = '—'; td.style.color = 'var(--sub)'; return; }
+  const main = document.createElement('span');
+  main.style.fontWeight = '700';
+  main.textContent = r.projectionRight ? '✓' : '✕';
+  main.style.color = r.projectionRight ? 'var(--green)' : 'var(--red)';
+  td.appendChild(main);
+  const sub = document.createElement('div');
+  sub.style.cssText = 'font-size:10px;color:var(--sub);white-space:nowrap;';
+  sub.textContent = `${r.edge > 0 ? '+' : ''}${r.edge}`;
+  td.appendChild(sub);
+  replayMark(td, r);
+  td.title = `The projected edge on this bet was ${r.edge > 0 ? '+' : ''}${r.edge}, i.e. the projection `
+    + `${r.edge > 0 ? 'backed' : 'argued against'} the ${r.side}. It ${r.projectionRight ? 'called the right side' : 'called the wrong side'}.`
+    + ' This is a separate question from whether the bet won: a bet can win on a side the projection disliked, '
+    + 'and knowing how often that happens is the point of the column.'
+    + (r.reconstructed ? REPLAY_RECONSTRUCTED_NOTE : '');
+}
+
+// 'rolechange' is the fourth board: bets the 75% bar REJECTED, kept because the projection backs
+// them on a night the player's role changed. It is tracked here for exactly one reason -- it is an
+// unproven idea, and the only way it stops being unproven is if its picks are graded alongside the
+// three established lists rather than admired in the abstract.
+const APP_TRACKER_SOURCES = ['standard', 'advanced', 'specials', 'rolechange'];
+const APP_TRACKER_SOURCE_LABEL = {standard: 'Standard', advanced: 'Advanced', specials: 'Specials', rolechange: 'Role Change'};
 
 async function maybeSnapshotTodaysTopBets(cachedForToday){
   if(_snapshotAttemptedThisSession) return; // at most once per page session; avoids duplicate racing on fast repeated calls
@@ -12373,7 +12659,8 @@ async function maybeSnapshotTodaysTopBets(cachedForToday){
     const haveStandardToday = existing.some(b => b.snapshotDate === et.dateStr && b.snapshotSource === 'standard');
     const haveAdvancedToday = existing.some(b => b.snapshotDate === et.dateStr && b.snapshotSource === 'advanced');
     const haveSpecialsToday = existing.some(b => b.snapshotDate === et.dateStr && b.snapshotSource === 'specials');
-    if(haveStandardToday && haveAdvancedToday && haveSpecialsToday) return; // all three already captured today
+    const haveRoleChangeToday = existing.some(b => b.snapshotDate === et.dateStr && b.snapshotSource === 'rolechange');
+    if(haveStandardToday && haveAdvancedToday && haveSpecialsToday && haveRoleChangeToday) return; // all four already captured today
 
     const snapshotTime = new Date().toISOString();
     const toSnapshot = [];
@@ -12408,6 +12695,19 @@ async function maybeSnapshotTodaysTopBets(cachedForToday){
       specials.forEach((bet, i)=>{
         toSnapshot.push(Object.assign({}, bet, {
           snapshotDate: et.dateStr, snapshotSource: 'specials', snapshotRank: i+1, snapshotAt: snapshotTime,
+          result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
+        }));
+      });
+    }
+
+    if(!haveRoleChangeToday){
+      // Excludes anything already on the Standard list, the same way the rendered board does --
+      // a bet cannot be on both, and tracking it twice would double-count it in every stat card.
+      // An empty result is a legitimate outcome and the common one: most nights nobody is out.
+      const stdKeys = new Set(computeStandardTopBets(cachedForToday, 30).topBets.map(betIdentityKey).filter(Boolean));
+      computeRoleChangeBets(cachedForToday, undefined, stdKeys).forEach((bet, i)=>{
+        toSnapshot.push(Object.assign({}, bet, {
+          snapshotDate: et.dateStr, snapshotSource: 'rolechange', snapshotRank: i+1, snapshotAt: snapshotTime,
           result: 'pending', stake: 10, isParlay: false, trackedFrom: 'app-tracker-snapshot',
         }));
       });
@@ -12912,7 +13212,7 @@ function buildAppTrackerChart(container, bets){
     cb.style.cssText = 'cursor:pointer;width:15px;height:15px;';
     cb.addEventListener('change', ()=>{
       if(cb.checked) selectedSources.add(src); else selectedSources.delete(src);
-      // Never let all three go dark -- an empty chart reads as broken rather than as a filter.
+      // Never let every source go dark -- an empty chart reads as broken rather than as a filter.
       if(!selectedSources.size){ selectedSources.add(src); cb.checked = true; return; }
       draw();
     });
@@ -13280,6 +13580,11 @@ async function renderAppTrackerPage(){
       // specials row is dropped from the combined view only when that exact bet is already
       // listed under standard or advanced -- a specials-ONLY pick is never hidden.
       rows = rows.filter(b => !(b.snapshotSource==='specials' && (findMatch(b,'standard') || findMatch(b,'advanced'))));
+      // Role Change is disjoint from Standard by construction (computeRoleChangeBets excludes the
+      // Top 30's keys), but it can still land on the same bet as Advanced or Specials. Same rule
+      // as Specials: dropped from the combined view only when already listed elsewhere, never
+      // when it is the only board carrying it -- which is the normal case and the interesting one.
+      rows = rows.filter(b => !(b.snapshotSource==='rolechange' && (findMatch(b,'standard') || findMatch(b,'advanced') || findMatch(b,'specials'))));
     } else if(APP_TRACKER_SOURCES.includes(filterVal)){
       rows = rows.filter(b=>b.snapshotSource===filterVal);
     }
@@ -13710,6 +14015,84 @@ async function renderAppTrackerPage(){
       return;
     }
 
+    // The replay, attached once per row so the three new columns and their sort keys all read the
+    // same object. Memoised on the row, because the reconstruction path walks a team's whole log
+    // and re-doing it per column per re-sort would be visibly slow on a long history.
+    displayRows.forEach(b=>{
+      if(b._replay === undefined) b._replay = replayTrackedPick(b);
+      const r = b._replay;
+      b._minError   = r && r.minError   !== null ? Math.abs(r.minError)   : null;
+      b._totalError = r && r.totalError !== null ? Math.abs(r.totalError) : null;
+      b._edge       = r && r.projectionRight !== null ? (r.projectionRight ? 1 : 0) : null;
+    });
+
+    // One line of scoreboard for the model itself, over whatever is currently filtered in. The
+    // per-row columns show individual cases; this is the only place that answers "is the
+    // projection any good", which is the question the whole replay exists to make answerable.
+    // Only graded rows count -- a pending pick has no actual to compare against.
+    (function buildReplaySummary(){
+      const rs = displayRows.map(b=>b._replay).filter(r=>r && r.actual !== null);
+      if(!rs.length) return;
+      const withMin = rs.filter(r=>r.minError !== null);
+      const withTot = rs.filter(r=>r.totalError !== null);
+      const called  = rs.filter(r=>r.projectionRight !== null);
+      const mean = a => a.reduce((x,y)=>x+y,0)/a.length;
+      const box = document.createElement('div');
+      box.style.cssText = 'margin:2px 0 10px;padding:8px 11px;border:1px solid var(--line);border-radius:6px;'
+        + 'background:var(--panel);font-size:12px;display:flex;gap:20px;flex-wrap:wrap;align-items:baseline;';
+      const stat = (label, value, tone) => {
+        const d = document.createElement('div');
+        const v = document.createElement('span');
+        v.style.cssText = 'font-weight:800;font-size:13.5px;' + (tone ? `color:${tone};` : '');
+        v.textContent = value;
+        const l = document.createElement('span');
+        l.style.cssText = 'color:var(--sub);margin-left:5px;';
+        l.textContent = label;
+        d.appendChild(v); d.appendChild(l);
+        return d;
+      };
+      const head = document.createElement('div');
+      head.style.cssText = 'font-weight:700;color:var(--navy2);text-transform:uppercase;font-size:10.5px;letter-spacing:.03em;';
+      head.textContent = 'Projection scorecard';
+      box.appendChild(head);
+      if(withMin.length){
+        const mae = mean(withMin.map(r=>Math.abs(r.minError)));
+        box.appendChild(stat('avg minutes miss', mae.toFixed(1), mae <= 3 ? 'var(--green)' : (mae <= 6 ? '#B7791F' : 'var(--red)')));
+      }
+      if(withTot.length){
+        box.appendChild(stat('avg total miss', mean(withTot.map(r=>Math.abs(r.totalError))).toFixed(1)));
+        // Signed as well as absolute: a model that is off by 4 in both directions is noisy, one
+        // that is off by 4 in the SAME direction every time is biased, and only the signed number
+        // tells them apart. Bias is fixable; noise mostly isn't.
+        const bias = mean(withTot.map(r=>r.totalError));
+        box.appendChild(stat('bias (actual − projected)', `${bias>0?'+':''}${bias.toFixed(1)}`,
+          Math.abs(bias) < 1 ? 'var(--green)' : '#B7791F'));
+      }
+      if(called.length){
+        const right = called.filter(r=>r.projectionRight).length;
+        const pct = right/called.length;
+        box.appendChild(stat(`right side (${right}/${called.length})`, Math.round(pct*100)+'%',
+          pct >= 0.55 ? 'var(--green)' : (pct >= 0.45 ? '#B7791F' : 'var(--red)')));
+      }
+      const recon = rs.filter(r=>r.reconstructed).length;
+      if(recon){
+        const n = document.createElement('div');
+        n.style.cssText = 'color:var(--sub);font-size:11px;';
+        n.textContent = `${recon} of ${rs.length} reconstructed †`;
+        n.title = REPLAY_RECONSTRUCTED_NOTE.trim();
+        box.appendChild(n);
+      }
+      const icon = document.createElement('span'); box.appendChild(icon);
+      appendDefIcon(icon, 'How the <b>projection</b> has actually done over the picks currently in view — a separate '
+        + 'question from whether the bets won. <b>Avg minutes miss</b> and <b>avg total miss</b> are mean absolute errors. '
+        + '<b>Bias</b> is the signed average: near zero means the model is noisy but even-handed, a persistent '
+        + '+ or − means it is systematically low or high and that is a fixable fault rather than bad luck. '
+        + '<b>Right side</b> is how often the projection landed on the side of the line the game actually did — '
+        + '50% is a coin flip and means the projection is adding nothing. Graded picks only. Rows marked † had '
+        + 'their projection rebuilt after the fact; see the dagger note.');
+      tableDiv.appendChild(box);
+    })();
+
     function fmtRateCell(rate, gp){
       if(rate===null || rate===undefined || gp===null || gp===undefined || gp===0) return '\u2014';
       const hits = Math.round(rate*gp);
@@ -13735,6 +14118,9 @@ async function renderAppTrackerPage(){
       {key:'price', label:'Price'},
       {key:'result', label:'Result'},
       {key:'final', label:'Final', left:true, sortable:false},
+      {key:'_minError', label:'Proj Min \u2192 Actual'},
+      {key:'_totalError', label:'Line | Proj | Actual', left:true},
+      {key:'_edge', label:'Edge Called It'},
       {key:'actions', label:'', sortable:false},
     ];
 
@@ -13817,12 +14203,18 @@ async function renderAppTrackerPage(){
       } else {
         tdFinal.textContent = '\u2014';
       }
+      const tdMinErr = document.createElement('td'); tdMinErr.style.cssText=cellStyle+'text-align:center;';
+      fillReplayMinutesCell(tdMinErr, bet._replay);
+      const tdTotErr = document.createElement('td'); tdTotErr.className='left'; tdTotErr.style.cssText=cellStyle;
+      fillReplayTotalCell(tdTotErr, bet, bet._replay);
+      const tdEdgeCall = document.createElement('td'); tdEdgeCall.style.cssText=cellStyle+'text-align:center;';
+      fillReplayEdgeCell(tdEdgeCall, bet, bet._replay);
       const tdActions = document.createElement('td'); tdActions.style.cssText=cellStyle+'text-align:center;white-space:nowrap;';
       const delBtn = document.createElement('button'); delBtn.textContent='Delete';
       delBtn.style.cssText='padding:3px 8px;border-radius:4px;border:1px solid var(--red);background:var(--panel);color:var(--red);font-size:11px;cursor:pointer;font-family:var(--sans);';
       delBtn.addEventListener('click', async ()=>{ if(!confirm('Delete this snapshot pick?')) return; await appTrackerDelete(bet.id); await refresh(); });
       tdActions.appendChild(delBtn);
-      [tdDate,tdSource,tdBoth,tdRank,tdBet,tdR5,tdR10,tdR15,tdRAll,tdGame,tdTime,tdPrice,tdResult,tdFinal,tdActions].forEach(td=>tr.appendChild(td));
+      [tdDate,tdSource,tdBoth,tdRank,tdBet,tdR5,tdR10,tdR15,tdRAll,tdGame,tdTime,tdPrice,tdResult,tdFinal,tdMinErr,tdTotErr,tdEdgeCall,tdActions].forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
     });
     wrap.appendChild(table);
