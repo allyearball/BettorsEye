@@ -5559,6 +5559,143 @@ function replayTrackedPick(bet){
     totalError: (projected !== null && actual !== null) ? Math.round((actual - projected)*10)/10 : null,
   };
 }
+// ==================== The Advanced win-probability model (Stage 5) ====================
+//
+// WHAT WAS WRONG WITH RANKING BY HIT RATE. Every list in this app ranked by "this bet landed in 8
+// of her last 10". That is a description of the past, and it is systematically optimistic, because
+// the book chose the number AFTER seeing the same ten games. A 90% L10 record is mostly evidence
+// that the line moved, not that the bet is 90% to land.
+//
+// This is a calibrated probability instead: P(she goes over this line tonight), fitted by logistic
+// regression on 142,208 (player, game, stat, line) rows from the real season, split by DATE at
+// 2026-07-31 so the test set is strictly in the future of the training set (a random split lets
+// the model see a player's later games while predicting her earlier ones -- lookahead in
+// disguise). See bt/fitadvanced.js.
+//
+// HOW THE LINES WERE BUILT, AND WHY THAT IS FAIR. There is no archive of historical prop lines, so
+// the sample places lines around each player's trailing-10 mean. That is not a guess: bt/linecheck.js
+// measured 37 real book lines against exactly that quantity and found the median difference to be
+// 0.00 (mean -0.10, and 0.03 in units of her own game-to-game spread). Books post her recent
+// expectation. The sample spans offsets of -2..+2 around it because real lines scatter with about
+// 1.6 points of spread.
+//
+// WHAT IT ACTUALLY BUYS, OUT OF SAMPLE. Measured against the old hit-rate ranking on identical
+// rows, at offset 0 -- lines sitting where real lines sit, the hardest case:
+//
+//     top 10% of the board:   hit-rate ranking 64.4%   ->   this model 68.9%
+//     the whole board:        hit-rate ranking 55.6%   ->   this model 58.0%
+//
+// and across all offsets the top decile goes 86.1% -> 88.3%. The RELATIVE comparison is the solid
+// part: both methods face the same rows, so the improvement is not an artefact of how the lines
+// were built. The absolute figures depend on that construction and should be read as indicative
+// until the same test can be run against the real lines now being archived.
+//
+// EVERY FEATURE COMES OFF THE PLAYER'S OWN GAME LOG. Usage, rest, starter rate and opponent defence
+// were all fitted and then dropped -- the first three fitted to near-zero weight, and opponent
+// defence because the fitter's version is team-level while this app's is position-bucketed. Those
+// are different quantities, and feeding one into a weight fitted on the other would look like
+// opponent strength was priced in when it was not.
+const ADVANCED_MODEL = {
+  fittedThrough: '2026-08-23', trainRows: 96377, testRows: 45831, cutDate: '2026-07-31',
+  features: ['zMean','zMed','skew','cv','rate10','rate5','rate15','trend','minMean','minSd','minTrend','perMinZ','home','gp'],
+  bias: -0.360033,
+  w:  [0.303783, 0.249580, 0.123982, 0.031156, -0.066920, -0.049247, 0.370842, 0.068019, 0.106714, 0.009371, 0.065472, 0.231902, 0.040528, 0.044442],
+  mu: {zMean:-0.181988, zMed:-0.296780, skew:0.114792, cv:0.682733, rate10:0.431730, rate5:0.431310,
+       rate15:0.429236, trend:0.000289, minMean:21.872903, minSd:5.005153, minTrend:0.014039,
+       perMinZ:-0.201985, home:0.499943, gp:15.244457},
+  sg: {zMean:0.841628, zMed:0.908171, skew:0.233991, cv:0.405347, rate10:0.213515, rate5:0.266406,
+       rate15:0.210948, trend:0.335050, minMean:8.005312, minSd:1.650687, minTrend:4.241404,
+       perMinZ:0.844126, home:0.500003, gp:4.239948},
+};
+const ADV_MIN_PRIOR_GAMES = 8;   // the model was fitted with at least this much history behind it
+function _advMean(a){ return a.length ? a.reduce((x,y)=>x+y, 0)/a.length : 0; }
+function _advMed(a){
+  if(!a.length) return 0;
+  const s = a.slice().sort((x,y)=>x-y);
+  return s.length % 2 ? s[(s.length-1)/2] : (s[s.length/2-1] + s[s.length/2])/2;
+}
+function _advSd(a){
+  if(a.length < 2) return 0;
+  const m = _advMean(a);
+  // Sample standard deviation (n-1), matching the fitter exactly. Using the population form here
+  // would shift every z-score by a few percent against weights that were not fitted for it.
+  return Math.sqrt(a.reduce((x,y)=>x + (y-m)*(y-m), 0)/(a.length-1));
+}
+// The 14 features, computed the same way the fitter computed them: from her games strictly before
+// tonight, oldest-first, DNPs excluded. `asOfDate` is supplied by the retrospective replay; live
+// callers omit it and get her whole log.
+function advancedModelFeatures(playerName, team, statKey, line, isHome, asOfDate){
+  if(line === undefined || line === null) return null;
+  const pl = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!pl || !pl.log) return null;
+  let prior = pl.log.filter(g => !g.dnp);
+  if(asOfDate) prior = prior.filter(g => g.date < asOfDate);
+  if(prior.length < ADV_MIN_PRIOR_GAMES) return null;
+  const p5 = prior.slice(-5), p10 = prior.slice(-10), p15 = prior.slice(-15);
+  const v5 = p5.map(g=>statValue(g, statKey)), v10 = p10.map(g=>statValue(g, statKey)),
+        v15 = p15.map(g=>statValue(g, statKey));
+  if(v10.some(v => v === null || v === undefined)) return null;
+  const m10 = _advMean(v10), s10 = _advSd(v10), md10 = _advMed(v10);
+  if(!(m10 > 0)) return null;                       // she does not produce this stat at all
+  const mins = p10.map(g=>g.min || 0);
+  const minsPrior5 = prior.slice(-10, -5).map(g=>g.min || 0);
+  const perMin = _advMean(p10.map(g => g.min ? statValue(g, statKey)/g.min : 0));
+  const over = v => v > line ? 1 : 0;
+  return {
+    zMean:    s10 > 0 ? (m10 - line)/s10 : 0,
+    zMed:     s10 > 0 ? (md10 - line)/s10 : 0,
+    skew:     s10 > 0 ? (m10 - md10)/s10 : 0,
+    cv:       m10 > 0 ? s10/m10 : 0,
+    rate10:   _advMean(v10.map(over)),
+    rate5:    _advMean(v5.map(over)),
+    rate15:   _advMean(v15.map(over)),
+    trend:    s10 > 0 ? (_advMean(v5) - m10)/s10 : 0,
+    minMean:  _advMean(mins),
+    minSd:    _advSd(mins),
+    minTrend: minsPrior5.length ? (_advMean(mins.slice(-5)) - _advMean(minsPrior5)) : 0,
+    perMinZ:  (perMin > 0 && s10 > 0) ? (perMin*_advMean(mins) - line)/s10 : 0,
+    home:     isHome ? 1 : 0,
+    gp:       Math.min(20, prior.length),
+  };
+}
+// P(over). Returns null rather than a default whenever the features cannot be built -- a bet with
+// no usable history must fall to the bottom of the board, not sit in the middle on a made-up 0.5.
+function advancedProbOver(playerName, team, statKey, line, isHome, asOfDate){
+  const f = advancedModelFeatures(playerName, team, statKey, line, isHome, asOfDate);
+  if(!f) return null;
+  let z = ADVANCED_MODEL.bias;
+  ADVANCED_MODEL.features.forEach((name, i)=>{
+    z += ADVANCED_MODEL.w[i] * ((f[name] - ADVANCED_MODEL.mu[name]) / ADVANCED_MODEL.sg[name]);
+  });
+  z = Math.max(-30, Math.min(30, z));
+  return 1/(1 + Math.exp(-z));
+}
+// The probability that THIS bet's side lands, plus the model's own preferred side. Ranking uses
+// winProb; `agrees` says whether the recommended side is the one the model would have picked.
+function advancedWinProbability(leg, asOfDate){
+  if(!leg || !leg.player || !leg.team || !leg.statKey) return null;
+  const isHome = leg.homeTeam ? leg.homeTeam === leg.team
+    : (leg.gameLabel || leg.game || '').indexOf('@ ') >= 0
+      ? (leg.gameLabel || leg.game || '').split('@ ')[1] === (FULL_TEAM_NAME[leg.team] || leg.team)
+      : false;
+  const pOver = advancedProbOver(leg.player, leg.team, leg.statKey, leg.line, isHome, asOfDate);
+  if(pOver === null) return null;
+  const winProb = leg.side === 'under' ? 1 - pOver : pOver;
+  return {pOver: Math.round(pOver*1000)/1000, winProb: Math.round(winProb*1000)/1000,
+          modelSide: pOver >= 0.5 ? 'over' : 'under', agrees: (pOver >= 0.5 ? 'over' : 'under') === leg.side};
+}
+const ADVANCED_WINPROB_DEF = 'The model\u2019s <b>probability that this exact bet lands tonight</b> \u2014 not a record '
+  + 'of how often it landed before. Fitted by logistic regression on ' + ADVANCED_MODEL.trainRows.toLocaleString()
+  + ' player-game-line rows from this season and tested on ' + ADVANCED_MODEL.testRows.toLocaleString()
+  + ' later ones, split by date so the test set is strictly in the future of what it learned from. '
+  + 'It reads her level, her spread, the skew of her distribution, where the line sits inside it in units of her own '
+  + 'game-to-game variation, her minutes and how they are moving, her per-minute rate, and home/away. '
+  + '<b>Why this replaced hit-rate ranking:</b> a hit rate says how often a bet landed at a line the book set '
+  + '<i>after</i> watching the same games, which flatters it. Out of sample, ranking by this probability lifted the '
+  + 'top tenth of the board from 64.4% to 68.9% at lines sitting where real lines sit. Those figures come from a '
+  + 'reconstruction \u2014 lines placed at each player\u2019s trailing mean, which is where books were measured to put '
+  + 'them \u2014 so treat the improvement as solid and the absolute number as indicative.';
+
 const AGREEMENT_DEF = 'Her <b>projected</b> total for tonight \u2014 her last ' + PROJECTION_WINDOW
   + ' games replayed at her projected minutes and tonight\u2019s projected usage \u2014 next to the line, with the '
   + 'gap between them. <b>Edge is signed toward the bet</b>: positive means the projection supports the side shown, '
@@ -8786,6 +8923,40 @@ function fillEdgeCell(td, bet){
         ? ' The projection contradicts this bet, so it has been DEMOTED in the ranking rather than removed.'
         : '');
 }
+// The model's probability that this bet lands, with the price-implied probability beneath it so
+// the two can be compared at a glance -- that difference is the only thing that separates "likely"
+// from "worth backing", and a probability shown without its price is only half the picture.
+function fillWinProbCell(td, bet){
+  const wp = bet && bet.winProb;
+  if(!wp){ td.textContent = '\u2014'; td.style.color = 'var(--sub)'; return; }
+  const main = document.createElement('div');
+  main.style.cssText = 'font-weight:800;';
+  main.textContent = Math.round(wp.winProb*100) + '%';
+  main.style.color = wp.winProb >= 0.62 ? 'var(--green)' : (wp.winProb >= 0.55 ? 'var(--ink)' : 'var(--sub)');
+  td.appendChild(main);
+  const imp = impliedProbFromAmerican(bet.price);
+  if(imp !== null){
+    const sub = document.createElement('div');
+    sub.style.cssText = 'font-size:10px;font-weight:400;white-space:nowrap;';
+    const diff = wp.winProb - imp;
+    sub.textContent = `mkt ${Math.round(imp*100)}% (${diff>=0?'+':''}${Math.round(diff*100)})`;
+    sub.style.color = diff >= 0 ? 'var(--green)' : 'var(--sub)';
+    td.appendChild(sub);
+  }
+  td.title = `The model puts this bet at ${Math.round(wp.winProb*100)}% to land.`
+    + (imp !== null ? ` The price of ${fmtAmerican(bet.price)} implies ${Math.round(imp*100)}% before the book's margin`
+        + `, so the model is ${wp.winProb >= imp ? 'more' : 'less'} optimistic than the market by `
+        + `${Math.abs(Math.round((wp.winProb-imp)*100))} points.` : '')
+    + (wp.agrees ? '' : ' Note: the model’s own preferred side here is the ' + wp.modelSide + '.');
+}
+// American odds to the probability they imply. This INCLUDES the book's margin, so it overstates
+// the true chance by roughly 2-3 points on a typical two-sided prop; the tooltip says so rather
+// than presenting it as a fair probability.
+function impliedProbFromAmerican(price){
+  if(price === null || price === undefined || isNaN(price)) return null;
+  return price < 0 ? (-price)/((-price) + 100) : 100/(price + 100);
+}
+
 function edgeSortValue(bet){
   return (bet && bet.projEdge) ? bet.projEdge.edge : null;
 }
@@ -8901,10 +9072,22 @@ function buildAdvancedEdgeCandidates(todaysGames, selectedBook){
       if(inj && (injuryStatusSeverity(inj.status)==='out' || injuryStatusSeverity(inj.status)==='doubtful')) return;
       const edge = computeAdvancedEdgeForLeg(leg);
       if(!edge) return;
-      let finalScore = edge.score;
+      // THE RANKING KEY IS NOW THE FITTED WIN PROBABILITY, not the EMA-agreement score. The old
+      // score ranked by how many of four moving averages sat on the right side of the line, which
+      // is four correlated views of the same recent form and says nothing about how likely tonight
+      // is. A bet the model cannot build features for (too little history, a stat she does not
+      // produce) is DROPPED rather than defaulted to 0.5 -- a made-up middling probability would
+      // park it in the middle of the board, which is exactly where an unknown does the most damage.
+      const wp = advancedWinProbability(Object.assign({}, leg, {homeTeam: homeShort === leg.team ? leg.team : null}));
+      if(!wp) return;
+      let finalScore = wp.winProb;
+      // The two situational adjustments are kept, applied to the probability rather than to the
+      // old score: a Questionable tag is a real risk the model cannot see (it reads box scores,
+      // not injury reports), and a key teammate being out genuinely moves her role.
       if(inj) finalScore *= 0.8; // Questionable/Day-to-Day: keep, but discount and flag rather than hide
       finalScore *= teammateKeyInjuryBoost(leg.player, leg.team, leg.side==='over');
-      pool.push(Object.assign({}, leg, {game: gameLabel, edge, finalScore, injuryNote: inj ? inj.status : null}));
+      pool.push(Object.assign({}, leg, {game: gameLabel, edge, finalScore, winProb: wp,
+        injuryNote: inj ? inj.status : null}));
     });
   });
   pool.sort((a,b)=> b.finalScore - a.finalScore);
@@ -9727,6 +9910,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="left defcol th-defrankl5">Opp Def Rank L5</th><th class="defcol th-defallowed">Allowed/Gm</th>'
     +'<th class="th-l5">L5</th><th class="th-l10b">L10</th><th class="th-l15b">L15</th><th class="th-full">Season</th>'
     +'<th class="th-mintrend">Min Trend</th>'
+    +'<th class="th-adv-winprob">Win Prob</th>'
     +'<th class="th-adv-edge">Edge</th>'
     +'<th class="th-agree">Agree</th><th class="th-dvp">DvP Idx</th><th class="left">Injury</th><th></th></tr>';
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
@@ -9737,6 +9921,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   appendDefIcon(thead.querySelector('.th-l15b'), 'EMA over her last 15 games played, plus how many of those 15 actually cleared this line on this side.');
   appendDefIcon(thead.querySelector('.th-full'), 'EMA over her full season, plus how many games this season actually cleared this line on this side.');
   appendDefIcon(thead.querySelector('.th-mintrend'), MINUTES_TREND_COL_DEF);
+  appendDefIcon(thead.querySelector('.th-adv-winprob'), ADVANCED_WINPROB_DEF);
   appendDefIcon(thead.querySelector('.th-adv-edge'), EDGE_COL_DEF);
   appendDefIcon(thead.querySelector('.th-agree'), 'How many of the 4 EMA windows (L5/L10/L15/season) agree with the direction (Over/Under) the line implies. Only legs with 3/4 or 4/4 agreement are shown \u2014 anything less isn\u2019t a real signal.');
   appendDefIcon(thead.querySelector('.th-dvp'), STAT_DEFINITIONS.dvpPts.replace('Points', 'this stat'));
@@ -9777,6 +9962,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     {value: bet => bet.edge && bet.edge.l15},
     {value: bet => bet.edge && bet.edge.full},
     {value: minutesTrendSortValue},                              // Min Trend
+    {value: bet => bet.winProb ? bet.winProb.winProb : null},    // Win Prob (the ranking key)
     {value: edgeSortValue},                                      // Edge (projection vs line)
     {value: bet => bet.edge && bet.edge.agreement},
     {value: bet => bet.edge && bet.edge.dvp},
@@ -9878,9 +10064,11 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     else tdInjury.textContent = '\u2014';
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
+    const tdWinProb = document.createElement('td'); tdWinProb.style.cssText = cellStyle;
+    fillWinProbCell(tdWinProb, bet);
     const tdAdvEdge = document.createElement('td'); tdAdvEdge.style.cssText = cellStyle;
     fillEdgeCell(tdAdvEdge, bet);
-    [tdStar,tdRank,tdPos,tdLabel,tdGame,tdVsOpp,tdPrice,tdSportsbook,tdDef,tdDefL5,tdAllowed,tdL5,tdL10,tdL15,tdFull,tdMinTrend,tdAdvEdge,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
+    [tdStar,tdRank,tdPos,tdLabel,tdGame,tdVsOpp,tdPrice,tdSportsbook,tdDef,tdDefL5,tdAllowed,tdL5,tdL10,tdL15,tdFull,tdMinTrend,tdWinProb,tdAdvEdge,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
     });
   }
