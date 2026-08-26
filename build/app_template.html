@@ -3897,6 +3897,11 @@ async function initApp(){
   }
   document.getElementById('asOf').textContent = DATA.generatedThrough;
   TEAM_NAMES = Object.keys(DATA.teams).sort();
+  // Fire-and-forget: the page must not wait on the injury feed to render, and a failure must not
+  // block anything -- teamInjuries() falls back to the baked-in snapshot until (and unless) this
+  // lands. Pages that render before it resolves will show build-time injuries; the freshness
+  // label on those pages says which they are looking at.
+  loadLiveInjuries();
   buildTopLinks();
   nav.style.display = 'none';
 
@@ -4806,8 +4811,61 @@ function isKeyPlayer(playerName, team){
   return !!(row && row.min!==null && row.min!==undefined && row.min>=23);
 }
 
+// Live injury report, fetched from the Worker at page load and preferred over the baked-in
+// DATA.injuries whenever it arrives.
+//
+// WHY THIS EXISTS: DATA.injuries is frozen into the HTML when the pipeline runs, so it is only
+// as fresh as the last build -- potentially 24 hours old. WNBA scratches are routinely announced
+// 60-90 minutes before tip, which is exactly the window that decides whether a bet on a depleted
+// roster is smart or nonsense. Every consumer of injury data goes through teamInjuries(), so
+// overriding here reaches all of them at once rather than needing a change per call site.
+let LIVE_INJURIES = null;         // {data, cachedAt} once loaded; null until then
+let LIVE_INJURIES_ERROR = null;   // a string when the fetch failed, so the UI can say so
 function teamInjuries(team){
-  return (DATA.injuries && DATA.injuries[team]) || [];
+  const src = (LIVE_INJURIES && LIVE_INJURIES.data) || DATA.injuries;
+  return (src && src[team]) || [];
+}
+// Whether what we're showing is live, and how old. The distinction matters enough to surface:
+// "nobody is out" and "we couldn't reach the injury feed" look identical on screen otherwise.
+function injuryFreshness(){
+  if(LIVE_INJURIES) return {live:true, at: LIVE_INJURIES.cachedAt, error:null};
+  return {live:false, at:(DATA.generatedThrough||null), error: LIVE_INJURIES_ERROR};
+}
+function injuryFreshnessLabel(){
+  const f = injuryFreshness();
+  if(f.live){
+    const mins = Math.max(0, Math.round((Date.now() - f.at)/60000));
+    return `Injury report live \u2014 updated ${mins === 0 ? 'just now' : mins + ' min ago'}.`;
+  }
+  return `Injury report from the last data build${f.error ? ' (live feed unavailable)' : ''}`
+    + `${DATA.generatedThrough ? ', ' + DATA.generatedThrough : ''} \u2014 late scratches may be missing.`;
+}
+async function loadLiveInjuries(){
+  try{
+    const workerBase = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    if(!workerBase) return;
+    const resp = await fetchJson(`${workerBase}/injuries`);
+    if(!resp || resp.error) throw new Error((resp && resp.error) || 'no response');
+    if(!resp.data || typeof resp.data !== 'object') throw new Error('unexpected shape');
+    LIVE_INJURIES = {data: resp.data, cachedAt: resp.cachedAt || Date.now()};
+    LIVE_INJURIES_ERROR = null;
+    // Injury-derived results are memoised all over the app; a fresher report invalidates them.
+    invalidateInjuryDerivedCaches();
+  }catch(e){
+    // Deliberately NOT fatal and deliberately not a fallback to empty: the baked-in snapshot is
+    // stale but real, and an empty report would read as "everyone is available", which is the
+    // most dangerous possible wrong answer here.
+    LIVE_INJURIES_ERROR = String(e.message || e);
+    console.warn('Live injury report unavailable, using the baked-in snapshot:', LIVE_INJURIES_ERROR);
+  }
+}
+function invalidateInjuryDerivedCaches(){
+  // Only one memo actually depends on the injury report: the opposing position group's tier,
+  // which excludes players who are Out. The minutes-trend and team-height caches are built from
+  // game logs and dates, so clearing them here would be churn with no correctness benefit.
+  // These are `const` objects, so the keys are cleared rather than the binding reassigned.
+  Object.keys(_specialsGroupTierCache).forEach(k=>{ delete _specialsGroupTierCache[k]; });
+  _rosterDisruptionCache = null;
 }
 
 // Buckets ESPN's free-text status into a rough severity so the UI can color-code it. Checks
@@ -4821,6 +4879,88 @@ function injuryStatusSeverity(status){
   return 'other';
 }
 const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', questionable:'var(--ink)', other:'var(--sub)', unknown:'var(--sub)'};
+
+// ==================== Roster disruption ====================
+// How much of a team's actual rotation is unavailable tonight, measured in MINUTES rather than
+// headcount. Three players out matters very differently depending on whether they average 32
+// minutes or 6, and a headcount can't tell those apart.
+//
+// The denominator is the team's own recent minutes (last 5 games, the same window the Team
+// Height rotation uses), so a team whose stars have been resting already isn't double-counted as
+// disrupted. Only OUT counts -- Day-To-Day players usually play, and treating them as absent
+// would flag half the league on any given night.
+const ROSTER_DISRUPTION_WINDOW = 5;
+const ROSTER_DISRUPTION_MINOR = 0.15;   // 15% of rotation minutes out -- worth a note
+const ROSTER_DISRUPTION_MAJOR = 0.25;   // 25%+ -- the projections behind every hit rate are stale
+let _rosterDisruptionCache = null;
+function rosterDisruption(team){
+  if(!_rosterDisruptionCache) _rosterDisruptionCache = {};
+  if(team in _rosterDisruptionCache) return _rosterDisruptionCache[team];
+
+  const dates = teamHeightWindow(team);   // the team's last 5 game dates, memoised
+  const perPlayer = {};
+  let teamMinutes = 0;
+  Object.keys(DATA.fullPlayerLogs).forEach(key=>{
+    const sep = key.lastIndexOf('|');
+    if(key.slice(sep+1) !== team) return;
+    const pname = key.slice(0, sep);
+    const log = DATA.fullPlayerLogs[key].log || [];
+    const played = log.filter(g=>!g.dnp && dates.has(g.date));
+    if(!played.length) return;
+    // Divided by the window size, not by games played -- "minutes per team game", so a player who
+    // missed two of the five is correctly worth less than one who played all five.
+    const avgMin = played.reduce((a,g)=>a+(g.min||0),0) / (dates.size || 1);
+    if(avgMin <= 0) return;
+    perPlayer[pname] = avgMin;
+    teamMinutes += avgMin;
+  });
+
+  const outList = teamInjuries(team).filter(inj => injuryStatusSeverity(inj.status)==='out');
+  const out = [];
+  let outMinutes = 0;
+  outList.forEach(inj=>{
+    // A player with no recent minutes contributes nothing to the share -- she was already not
+    // part of the rotation, so her absence changes nothing about tonight.
+    const mins = perPlayer[inj.player] || 0;
+    out.push({player: inj.player, status: inj.status, detail: inj.detail, avgMin: Math.round(mins*10)/10,
+              inRotation: mins > 0});
+    outMinutes += mins;
+  });
+  out.sort((a,b)=>b.avgMin-a.avgMin);
+
+  const share = teamMinutes > 0 ? outMinutes / teamMinutes : 0;
+  const rotationOut = out.filter(o=>o.inRotation).length;
+  const level = share >= ROSTER_DISRUPTION_MAJOR ? 'major'
+              : share >= ROSTER_DISRUPTION_MINOR ? 'minor' : 'none';
+  const result = {team, out, rotationOut, outMinutes: Math.round(outMinutes*10)/10,
+                  teamMinutes: Math.round(teamMinutes*10)/10, share, level};
+  _rosterDisruptionCache[team] = result;
+  return result;
+}
+function disruptionLabel(d){
+  if(!d || d.level==='none') return null;
+  const names = d.out.filter(o=>o.inRotation).map(o=>`${o.player} (${o.avgMin}m)`).join(', ');
+  return `${d.rotationOut} rotation player(s) out \u2014 ${Math.round(d.share*100)}% of recent minutes: ${names}`;
+}
+const ROSTER_DISRUPTION_DEF = 'The share of this team\u2019s recent rotation minutes (last '
+  + ROSTER_DISRUPTION_WINDOW + ' games) belonging to players ruled <b>Out</b> tonight. '
+  + '<b>Why it matters:</b> every hit rate in these tables was earned in games those players were available for. '
+  + 'When a large share of the rotation is missing, the remaining players absorb their minutes and usage, so '
+  + 'historical Unders in particular stop describing tonight. At '
+  + Math.round(ROSTER_DISRUPTION_MAJOR*100) + '%+ this is flagged as MAJOR; at '
+  + Math.round(ROSTER_DISRUPTION_MINOR*100) + '%+ as minor. Players who weren\u2019t in the recent rotation anyway '
+  + 'count toward neither \u2014 their absence changes nothing about tonight.';
+
+// Is this specific player ruled out (or doubtful) for tonight? Recommending a bet on someone who
+// will not take the floor is the most basic error a bet list can make, and until now only the
+// Advanced table checked.
+function betPlayerIsUnavailable(leg){
+  if(!leg || !leg.player || !leg.team) return false;
+  const inj = playerInjuryStatus(leg.player, leg.team);
+  if(!inj) return false;
+  const sev = injuryStatusSeverity(inj.status);
+  return sev === 'out' || sev === 'doubtful';
+}
 
 // How this player's per-game production has differed, historically, in games her teammate
 // missed vs played -- for every teammate CURRENTLY listed as officially out. Cross-references
@@ -6535,10 +6675,17 @@ async function renderHomePage(){
     // Recomputes and re-renders both tables for whichever book is currently selected, using
     // the SAME cached fetch (which already has all 6 books in it) -- no new API call needed
     // just to switch books, only for the Refresh button.
+    // Above the tables, rebuilt on every recompute so a book switch or a Refresh keeps it in sync.
+    const disruptionHolder = document.createElement('div');
+    contentDiv.parentNode.insertBefore(disruptionHolder, contentDiv);
     recompute = function(){
       const todayStrForStars = new Date().toDateString();
       const nowForStars = new Date();
       const todaysGamesForStars = cachedForToday.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStrForStars && isEligibleForTopBets(ev, nowForStars));
+      disruptionHolder.innerHTML = '';
+      buildDisruptionBanner(disruptionHolder, todaysGamesForStars.flatMap(({ev}) => [
+        SHORT_TEAM_NAME[ev.home_team] || ev.home_team,
+        SHORT_TEAM_NAME[ev.away_team] || ev.away_team]));
       const stdKeysSet = new Set(computeStandardTopBets(cachedForToday, 30, selectedBook).topBets.map(betIdentityKey).filter(Boolean));
       const advKeysSet = new Set(buildAdvancedEdgeCandidates(todaysGamesForStars, selectedBook).slice(0, 30).map(betIdentityKey).filter(Boolean));
       // ALL THREE tables, not just Standard + Advanced. Specials is a bar-clearing shortlist that
@@ -7699,6 +7846,51 @@ const COLOR_KEY_ITEMS = {
   injury: {swatch: {color: 'var(--red)', text: 'Out'}, label: 'Injury',
     note: 'color-coded by severity \u2014 red Out, amber Day-To-Day'},
 };
+// A banner naming every team on tonight's slate whose rotation is materially depleted, and who
+// is out. Rendered above the bet tables so the caveat arrives BEFORE the rankings, not after --
+// a warning underneath a confident-looking Top 30 gets read second, if at all.
+function buildDisruptionBanner(container, teams){
+  const disrupted = [...new Set(teams)].map(rosterDisruption)
+    .filter(d => d && d.level !== 'none')
+    .sort((a,b)=>b.share-a.share);
+  if(!disrupted.length) return null;
+  const major = disrupted.some(d=>d.level==='major');
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'margin:8px 0 12px;padding:10px 12px;border-radius:6px;font-size:12.5px;'
+    + `border:2px solid ${major ? 'var(--red)' : '#F5C518'};`
+    + `background:${major ? 'var(--redbg)' : '#fffbe6'};`;
+  const head = document.createElement('div');
+  head.style.cssText = `font-weight:800;margin-bottom:5px;color:${major ? 'var(--red)' : 'var(--ink)'};`;
+  head.textContent = major ? 'Roster disruption \u2014 read the hit rates below with care'
+                           : 'Roster note';
+  wrap.appendChild(head);
+  const icon = document.createElement('span'); head.appendChild(icon);
+  appendDefIcon(icon, ROSTER_DISRUPTION_DEF);
+  disrupted.forEach(d=>{
+    const line = document.createElement('div');
+    line.style.cssText = 'margin-top:3px;line-height:1.45;';
+    const name = document.createElement('b');
+    name.textContent = `${FULL_TEAM_NAME[d.team] || d.team}: `;
+    line.appendChild(name);
+    line.appendChild(document.createTextNode(disruptionLabel(d)));
+    wrap.appendChild(line);
+  });
+  if(major){
+    const why = document.createElement('div');
+    why.style.cssText = 'margin-top:7px;font-size:11.5px;color:var(--sub);line-height:1.45;';
+    why.textContent = 'Every hit rate below was earned in games those players were available for. '
+      + 'The remaining rotation absorbs their minutes and usage, so Unders in particular are likely '
+      + 'to be priced off a team that no longer exists tonight.';
+    wrap.appendChild(why);
+  }
+  const fresh = document.createElement('div');
+  fresh.style.cssText = 'margin-top:6px;font-size:11px;color:var(--sub);';
+  fresh.textContent = injuryFreshnessLabel();
+  wrap.appendChild(fresh);
+  container.appendChild(wrap);
+  return wrap;
+}
+
 function buildColorKey(container, keys){
   const wrap = document.createElement('details');
   wrap.style.cssText = 'margin:6px 0 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);';
@@ -10172,6 +10364,10 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
       if(line===undefined) return;
       const team = findPlayerTeam(pname, homeShort, awayShort);
       if(!team) return;
+      // A player ruled Out (or Doubtful) cannot produce anything tonight, so no hit rate about
+      // her means anything. Only the Advanced table checked this before -- Standard, Specials and
+      // the matchup board would all happily rank a bet on someone who isn't playing.
+      if(betPlayerIsUnavailable({player: pname, team})) return;
       const opponent = team===homeShort ? awayShort : homeShort;
       const overThreshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
       const r5 = hitRateFor(pname, team, statKey, line, 5), r10 = hitRateFor(pname, team, statKey, line, 10), r15 = hitRateFor(pname, team, statKey, line, 15), rAll = hitRateFor(pname, team, statKey, line, 'all');
@@ -14105,6 +14301,7 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
       const line = (over||under||{}).point;
       if(line===undefined) return;
       const team = findPlayerTeam(pname, homeShort, awayShort);
+      if(betPlayerIsUnavailable({player: pname, team})) return;   // see gatherCandidateLegs
       const threshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
       if(over) legs.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:over.price, betType:'player_prop', team, player:pname, statKey, line, side:'over', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       if(under) legs.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:under.price, betType:'player_prop', team, player:pname, statKey, line, side:'under', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
