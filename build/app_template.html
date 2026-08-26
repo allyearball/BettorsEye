@@ -4867,6 +4867,10 @@ function invalidateInjuryDerivedCaches(){
   Object.keys(_specialsGroupTierCache).forEach(k=>{ delete _specialsGroupTierCache[k]; });
   _rosterDisruptionCache = null;
   _minutesProjectionCache = null;
+  // The with/without anchor is keyed on WHO is out tonight, so a refreshed injury report can
+  // change which teammate it anchors to. Missing this would leave the app anchoring to a player
+  // who has since been cleared.
+  _withoutAnchorCache = null;
 }
 
 // Buckets ESPN's free-text status into a rough severity so the UI can color-code it. Checks
@@ -4893,6 +4897,9 @@ const INJURY_SEVERITY_COLOR = {out:'var(--red)', doubtful:'var(--red)', question
 const ROSTER_DISRUPTION_WINDOW = 5;
 const ROSTER_DISRUPTION_MINOR = 0.15;   // 15% of rotation minutes out -- worth a note
 const ROSTER_DISRUPTION_MAJOR = 0.25;   // 25%+ -- the projections behind every hit rate are stale
+// A "regular" for the usage channel below -- minutes per team game over the same 5-game window.
+// Matches the >=18 mpg definition the usage fit used; see USAGE_RESIDUAL_BY_OUT.
+const USAGE_REGULAR_MIN = 18;
 let _rosterDisruptionCache = null;
 function rosterDisruption(team){
   if(!_rosterDisruptionCache) _rosterDisruptionCache = {};
@@ -4931,9 +4938,15 @@ function rosterDisruption(team){
 
   const share = teamMinutes > 0 ? outMinutes / teamMinutes : 0;
   const rotationOut = out.filter(o=>o.inRotation).length;
+  // A SECOND, STRICTER COUNT. rotationOut treats anyone with a single recent minute as "in the
+  // rotation", which is right for the banner but wrong for the usage channel: the usage fit
+  // defined an absence as a REGULAR (>=18 minutes per team game) being out, and the measured
+  // shifts only mean anything against that same definition. Counting a 6-minute reserve as an
+  // absence here would read a 12% usage bump off a bench player's night off.
+  const regularsOut = out.filter(o => (perPlayer[o.player] || 0) >= USAGE_REGULAR_MIN).length;
   const level = share >= ROSTER_DISRUPTION_MAJOR ? 'major'
               : share >= ROSTER_DISRUPTION_MINOR ? 'minor' : 'none';
-  const result = {team, out, rotationOut, outMinutes: Math.round(outMinutes*10)/10,
+  const result = {team, out, rotationOut, regularsOut, outMinutes: Math.round(outMinutes*10)/10,
                   teamMinutes: Math.round(teamMinutes*10)/10, share, level,
                   perPlayer};   // baseline minutes per team game, reused by the minutes projection
   _rosterDisruptionCache[team] = result;
@@ -5059,11 +5072,40 @@ function projectMinutesForTeam(team){
 // adjustment in the range where per-minute scaling is roughly believable and refuses to invent
 // anything beyond it.
 //
-// UNCALIBRATED, DELIBERATELY: the relationship is treated as linear within the cap because there
-// is no fitted elasticity yet. Stage 3's backtest should fit one per stat (rebounds track minutes
-// closely; points depend on usage as well) and replace the straight line. Until then this is a
-// stated assumption, not a tuned constant.
-const MINUTES_ADJUST_MAX_RATIO = 1.4;
+// FITTED, NOT ASSUMED (see fitelasticity.js, run against 4,914 real player-games from 170
+// players through 2026-08-23). Two independent within-player methods -- an out-of-sample MAE grid
+// search and a split-half estimator -- agreed closely, and both overturned the Stage 2 guess:
+//
+//   * Knowing minutes matters a lot. Using them cuts prediction error 7-23% versus ignoring them.
+//   * SCORING IS SUPER-LINEAR IN MINUTES. Points came out at ~1.3, threes ~1.3, the combos
+//     1.2-1.25 -- not the sub-1 damping Stage 2 assumed. More minutes does not just mean more
+//     time; it means a bigger role while on the floor. Rebounds and assists, which are far more
+//     per-possession and far less usage-driven, came out at ~1.0.
+//   * The response is ASYMMETRIC: fitted upward it is much milder (points 1.15) than fitted
+//     downward (1.6). The downward number is also the most confounded -- a game is often short
+//     BECAUSE it went badly (foul trouble, a blowout, an early injury), so low minutes and low
+//     production are jointly caused rather than one driving the other. Reverse causality inflates
+//     it and no box-score-only dataset can separate the two.
+//
+// So: upward uses the directly measured upward response, downward uses the conservative overall
+// estimate rather than the most-confounded figure. The app's dominant case is upward anyway --
+// players absorbing an absent teammate's minutes.
+const MINUTES_ELASTICITY_UP = {pts:1.15, reb:0.90, ast:0.80, tpm:0.95, pra:1.15, pr:1.15, pa:1.20, ra:1.00};
+const MINUTES_ELASTICITY_DOWN = {pts:1.30, reb:1.00, ast:1.00, tpm:1.30, pra:1.20, pr:1.25, pa:1.25, ra:1.05};
+function minutesElasticity(statKey, ratio){
+  const table = ratio >= 1 ? MINUTES_ELASTICITY_UP : MINUTES_ELASTICITY_DOWN;
+  return table[statKey] !== undefined ? table[statKey] : 1;
+}
+// The clamp was measured too, and it was WRONG at +/-40%. On the stretched games that most
+// resemble what this extrapolates -- minutes at least 1.4x away from a player's own norm -- a
+// 1.4 clamp made points error 16% WORSE than no clamp at all (3.136 vs 2.710 MAE), because it
+// was truncating real, correctly-signed movement. A 2.0 clamp costs only ~2% versus none.
+//
+// It is kept rather than removed because the measurement can only speak for ratios the data
+// actually contains. Projecting a 4-minute player to 21 is outside anything observed, and there
+// the clamp is not an accuracy device but a refusal to extrapolate somewhere the fit has no
+// standing.
+const MINUTES_ADJUST_MAX_RATIO = 2.0;
 const MINUTES_ADJUST_MIN_RATIO = 1 / MINUTES_ADJUST_MAX_RATIO;
 // Below this the adjustment is noise and not worth confusing the display with.
 const MINUTES_ADJUST_MIN_SHIFT = 0.08;
@@ -5073,60 +5115,277 @@ function minutesAdjustmentFor(playerName, team){
   const p = proj.players[playerName];
   if(!p || !p.baseMin) return null;
   const shift = Math.abs(p.ratio - 1);
+  // The usage channel is a TEAM-level effect: it depends on how many regulars are out, not on
+  // whether this particular player's minutes moved. A starter whose 32 minutes don't budge while
+  // three teammates sit is still taking a materially bigger share of the shots.
+  const usg = usageResidualForTeam(team);
+  const usageMaterial = usg.residual >= USAGE_APPLY_MIN;
   return {baseMin: p.baseMin, projMin: p.projMin, delta: p.delta, ratio: p.ratio,
           reliable: proj.reliable, unplaced: proj.unplaced,
-          // Two independent reasons NOT to adjust: the move is too small to be worth it, or the
-          // projection it would be based on isn't trustworthy in the first place.
-          apply: proj.reliable && shift >= MINUTES_ADJUST_MIN_SHIFT};
+          usgRatio: usg.residual, regularsOut: usg.regularsOut, usageMaterial,
+          // Two independent reasons NOT to adjust: neither channel has moved enough to be worth
+          // it, or the projection it would be based on isn't trustworthy in the first place.
+          apply: proj.reliable && (shift >= MINUTES_ADJUST_MIN_SHIFT || usageMaterial)};
 }
 // The value a historical game would have produced at tonight's projected minutes. Combined stats
 // scale each COMPONENT and sum, rather than scaling the total -- same answer for a linear model,
 // but it stays correct the moment Stage 3 gives the components different elasticities.
-function projectedStatValue(g, statKey, projMin){
+// usgRatio is the RESIDUAL usage move (see USAGE_RESIDUAL_BY_OUT below) -- 1 means "no usage
+// channel", which is what every caller that predates Stage 4 gets by omitting it.
+function projectedStatValue(g, statKey, projMin, usgRatio){
   const played = g.min;
   if(!played || played <= 0) return statValue(g, statKey);
   let ratio = projMin / played;
   ratio = Math.max(MINUTES_ADJUST_MIN_RATIO, Math.min(MINUTES_ADJUST_MAX_RATIO, ratio));
   const parts = COMBO_STAT_PARTS[statKey];
   if(parts){
+    // Each component scales by ITS OWN elasticity and the results are summed. This is where
+    // per-component fitting earns its keep: rebounds move with minutes at ~1.0 while points move
+    // at ~1.15-1.3, so scaling a P+R total by one blended exponent would misprice both halves.
+    // The usage factor is per-component for the same reason, and it matters MORE there: points
+    // respond to usage at 0.86 while rebounds respond at 0.12 and assists at -0.07.
     let total = 0;
     for(const part of parts){
       const v = g[part];
       if(v === null || v === undefined) return null;
-      total += v * ratio;
+      total += v * Math.pow(ratio, minutesElasticity(part, ratio)) * usageFactor(part, usgRatio);
     }
     return total;
   }
   const v = statValue(g, statKey);
-  return (v === null || v === undefined) ? v : v * ratio;
+  return (v === null || v === undefined) ? v
+    : v * Math.pow(ratio, minutesElasticity(statKey, ratio)) * usageFactor(statKey, usgRatio);
 }
-// Minutes-adjusted twins of hitRateFor / propHitRateSided. Same signatures plus projMin, same
-// return shape, so callers can swap between them freely.
-function adjustedHitRateFor(playerName, team, statKey, line, windowSize, projMin){
+// Minutes-adjusted twins of hitRateFor / propHitRateSided. Same signatures plus projMin and the
+// optional usgRatio, same return shape, so callers can swap between them freely.
+function adjustedHitRateFor(playerName, team, statKey, line, windowSize, projMin, usgRatio){
   const threshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
   const pl = DATA.fullPlayerLogs[playerName+'|'+team];
   if(!pl) return null;
   const played = windowSlice(pl.log, windowSize).filter(g=>!g.dnp);
   if(!played.length) return {gp:0, hits:0, rate:0, found:true, adjusted:true};
-  const hits = played.filter(g=>{ const v = projectedStatValue(g, statKey, projMin); return v!==null && v>=threshold; }).length;
+  const hits = played.filter(g=>{ const v = projectedStatValue(g, statKey, projMin, usgRatio); return v!==null && v>=threshold; }).length;
   return {gp: played.length, hits, rate: hits/played.length, found:true, adjusted:true};
 }
-function adjustedPropHitRateSided(playerName, team, statKey, line, side, windowSize, projMin){
+function adjustedPropHitRateSided(playerName, team, statKey, line, side, windowSize, projMin, usgRatio){
   const pl = DATA.fullPlayerLogs[playerName+'|'+team];
   if(!pl) return null;
   const threshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
   const played = windowSlice(pl.log, windowSize).filter(g=>!g.dnp);
-  const vals = played.map(g=>projectedStatValue(g, statKey, projMin)).filter(v=>v!==null && v!==undefined);
+  const vals = played.map(g=>projectedStatValue(g, statKey, projMin, usgRatio)).filter(v=>v!==null && v!==undefined);
   if(!vals.length) return {gp:0, hits:0, rate:0, found:true, adjusted:true};
   const hits = vals.filter(v => side==='under' ? v < threshold : v >= threshold).length;
   return {gp: vals.length, hits, rate: hits/vals.length, found:true, adjusted:true};
 }
+
+// ==================== The USAGE channel (Stage 4) ====================
+// Minutes are only half of what happens when a starter sits. The other half is that whoever is
+// left takes a bigger share of the possessions WHILE ON THE FLOOR. Those are separate channels
+// and they hit each stat completely differently, so they are fitted and applied separately.
+//
+// FITTED, NOT ASSUMED (fitusage.js and fitusage2.js, 162 players / 4,594 player-games).
+//
+// 1. HOW MUCH PER-MINUTE PRODUCTION RESPONDS TO USAGE. Within player, with minutes already
+//    netted out (the response variable is stat PER MINUTE). Points 0.86 -- usage is very nearly
+//    the whole story for scoring. Threes 0.42. Rebounds 0.12 and assists MINUS 0.07: USG% is a
+//    shooting-and-turnover metric, so a player who shoots more is, if anything, passing slightly
+//    less. Anyone claiming a vacated starter makes everyone's assist numbers jump is describing
+//    something this data does not contain.
+const USAGE_ELASTICITY = {pts:0.86, reb:0.12, ast:-0.07, tpm:0.42, pra:0.64, pr:0.74, pa:0.76, ra:0.09};
+// 2. THE DOUBLE-COUNTING CORRECTION -- the part that makes this safe to stack on top of the
+//    minutes adjustment. The minutes elasticities were fitted on real games, and in real games
+//    usage drifts up with minutes anyway. Within player, log(USG) on log(MIN) has slope 0.135:
+//    a 20% minutes rise normally brings 2.5% more usage with it, and that 2.5% is ALREADY inside
+//    the minutes exponent. Only usage movement beyond that is new information.
+const USAGE_MINUTES_SLOPE = 0.135;
+// 3. HOW FAR USAGE ACTUALLY MOVES, by how many regulars (>=18 min/team game) are out, measured
+//    against each player's OWN FULL-STRENGTH games. Getting that baseline right matters: an
+//    earlier cut of this measured against each player's season average, which already contains
+//    her depleted-roster nights, and it read the effect as roughly zero. Against full-strength
+//    games the same data says otherwise. Raw medians, then net of the slope-0.135 companion move:
+//
+//      regulars out    games    USG      MIN      residual USG (what gets applied)
+//      0               1592     0.993    0.999    1.000
+//      1               1085     1.033    1.068    1.024
+//      2                430     1.049    1.138    1.031
+//      3+               100     1.149    1.206    1.120
+//
+//    Medians, not means, because the means run 1.5-5 points higher and are dragged by a tail of
+//    blowouts and injury-shortened games.
+const USAGE_RESIDUAL_BY_OUT = {0: 1.000, 1: 1.024, 2: 1.031, 3: 1.120};
+// One regular out moves points about 2%, which is not worth relabelling a row over; three out
+// moves them about 10%, which is. Below this bar the usage channel is computed and shown but
+// does not on its own switch a bet into "adjusted" mode.
+const USAGE_APPLY_MIN = 1.05;
+function usageResidualForTeam(team){
+  const d = rosterDisruption(team);
+  const n = d.regularsOut || 0;
+  const residual = USAGE_RESIDUAL_BY_OUT[Math.min(3, n)];
+  return {regularsOut: n, residual, out: d.out.filter(o => (d.perPlayer[o.player]||0) >= USAGE_REGULAR_MIN)};
+}
+function usageFactor(statKey, usgRatio){
+  if(usgRatio === undefined || usgRatio === null || usgRatio === 1) return 1;
+  const e = USAGE_ELASTICITY[statKey];
+  return e === undefined ? 1 : Math.pow(usgRatio, e);
+}
+
+// ==================== With/without anchoring (Stage 4) ====================
+// The most direct evidence about tonight is what she actually did the LAST time this teammate
+// sat. The problem is there are usually three or four such games, and three or four games of
+// anything is mostly noise. So the split is blended toward the model rather than believed:
+//
+//     projection = w * (her mean without that teammate) + (1-w) * (the minutes+usage model)
+//     w = n / (n + K)
+//
+// K WAS FITTED, AND THE ANSWER IS HUMBLING. A leave-one-out search over 460 (player, absent
+// teammate) pairs put the optimum at K=40 for points and the point-combos and K=20 for the rest
+// -- meaning a with/without split needs twenty to forty games before it earns even half the
+// weight, and no pair in the data has anywhere near that. At a realistic n of 4, points get
+// w = 4/44 = 9%. The total accuracy gain over ignoring the split entirely is 0.4-1.3% (median
+// 0.9%), and the MAE curve is monotone toward the model all the way out.
+//
+// It is built anyway, at its fitted weight, for two reasons: 0.9% is still positive and free,
+// and the SPLIT ITSELF is worth surfacing even where its predictive weight is small -- "she has
+// averaged 19.4 in the 4 games without Bueckers" is information a bettor wants to see, whatever
+// the model does with it. What it must not do is masquerade as a strong signal, and at K=40 it
+// cannot.
+const WITHOUT_SHRINK_K = {pts:40, reb:20, ast:20, tpm:20, pra:40, pr:40, pa:40, ra:20};
+const WITHOUT_MIN_GAMES = 3;
+let _withoutAnchorCache = null;
+// Games this player played in which `mate` did not appear at all.
+function gamesWithoutTeammate(playerName, team, mateName){
+  const pl = DATA.fullPlayerLogs[playerName+'|'+team];
+  const ml = DATA.fullPlayerLogs[mateName+'|'+team];
+  if(!pl || !ml) return null;
+  const matePlayed = new Set((ml.log||[]).filter(g=>!g.dnp).map(g=>g.date));
+  return (pl.log||[]).filter(g=>!g.dnp && !matePlayed.has(g.date));
+}
+// The anchor is the single highest-minutes regular who is out tonight. Using the intersection of
+// ALL of tonight's absentees would be more faithful and is almost always empty -- the exact
+// combination of three specific players missing has typically never happened before.
+function withoutAnchorFor(playerName, team, statKey){
+  if(!_withoutAnchorCache) _withoutAnchorCache = {};
+  const ck = playerName+'|'+team+'|'+statKey;
+  if(ck in _withoutAnchorCache) return _withoutAnchorCache[ck];
+  let result = null;
+  const d = rosterDisruption(team);
+  const regulars = d.out.filter(o => (d.perPlayer[o.player]||0) >= USAGE_REGULAR_MIN)
+                        .sort((a,b)=>b.avgMin-a.avgMin);
+  const mate = regulars[0];
+  if(mate && mate.player !== playerName){
+    const games = gamesWithoutTeammate(playerName, team, mate.player);
+    if(games && games.length >= WITHOUT_MIN_GAMES){
+      const vals = games.map(g=>statValue(g, statKey)).filter(v=>v!==null && v!==undefined);
+      if(vals.length >= WITHOUT_MIN_GAMES){
+        const n = vals.length;
+        const K = WITHOUT_SHRINK_K[statKey] !== undefined ? WITHOUT_SHRINK_K[statKey] : 20;
+        result = {mate: mate.player, mateMin: mate.avgMin, n,
+                  mean: vals.reduce((a,b)=>a+b,0)/n, weight: n/(n+K)};
+      }
+    }
+  }
+  _withoutAnchorCache[ck] = result;
+  return result;
+}
+
+// ==================== Projection + edge (Stage 4) ====================
+// A projected stat line for tonight: her recent games replayed at her projected minutes and
+// tonight's projected usage, using the fitted elasticities. Weighted toward recent form the same
+// way the rest of the app is -- the last 10 games played, which is the window the L10 hit rate
+// uses.
+const PROJECTION_WINDOW = 10;
+function projectedStatFor(playerName, team, statKey, projMin, usgRatio){
+  const pl = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!pl) return null;
+  const played = windowSlice(pl.log, PROJECTION_WINDOW).filter(g=>!g.dnp);
+  if(!played.length) return null;
+  const vals = played.map(g=>projectedStatValue(g, statKey, projMin, usgRatio)).filter(v=>v!==null && v!==undefined);
+  if(!vals.length) return null;
+  return vals.reduce((a,b)=>a+b, 0) / vals.length;
+}
+// The model projection with the with/without split blended in at its fitted weight. Returns the
+// pieces as well as the answer, because the display shows the workings.
+function fullProjectionFor(playerName, team, statKey, projMin, usgRatio){
+  const model = projectedStatFor(playerName, team, statKey, projMin, usgRatio);
+  if(model === null) return null;
+  const anchor = withoutAnchorFor(playerName, team, statKey);
+  if(!anchor) return {model, projected: model, anchor: null, weight: 0};
+  const projected = anchor.weight * anchor.mean + (1 - anchor.weight) * model;
+  return {model, projected, anchor, weight: anchor.weight};
+}
+// The projection, the line and the gap between them -- computed for EVERY player prop, not only
+// for disrupted rosters. It is information, and hiding information because it might disagree with
+// a hit rate is the exact failure this replaced.
+//
+// EDGE IS SIGNED TOWARD THE BET. Positive means the projection supports the side being
+// recommended: for an Over, projection minus line; for an Under, line minus projection. So a
+// negative edge is always, on every row, "the projection contradicts this bet".
+function projectionEdge(leg, projMin, usgRatio){
+  if(!leg || !leg.player || !leg.team || leg.line === undefined || leg.line === null) return null;
+  if(projMin === undefined || projMin === null){
+    const m = minutesAdjustmentFor(leg.player, leg.team);
+    projMin = m ? m.projMin : null;
+    if(usgRatio === undefined) usgRatio = m ? m.usgRatio : 1;
+  }
+  if(projMin === null || projMin === undefined) return null;
+  const full = fullProjectionFor(leg.player, leg.team, leg.statKey, projMin, usgRatio);
+  if(!full) return null;
+  const edge = leg.side === 'under' ? (leg.line - full.projected) : (full.projected - leg.line);
+  return {projected: Math.round(full.projected*10)/10, model: Math.round(full.model*10)/10,
+          line: leg.line, side: leg.side, edge: Math.round(edge*10)/10,
+          anchor: full.anchor, weight: full.weight};
+}
+// ==================== The agreement gate: DEMOTE, don't drop (Stage 4) ====================
+// The first version of this vetoed any bet whose projection contradicted its own side. That was
+// wrong, and wrong in an expensive direction: a disagreement between a model and a market is the
+// only place an edge can live. A gate that deletes every such bet deletes the reason to have a
+// model at all, and it does it invisibly -- the bet simply is not on the board and no one can
+// tell it was ever considered.
+//
+// So the default is now DEMOTE AND FLAG. The bet stays, carrying a visible mark and a ranking
+// penalty large enough that an agreeing 70% bet outranks a contradicted 80% one.
+//
+// A veto still exists, but only where the disagreement is decisive AND the hit rate it is
+// arguing with is weak evidence in its own right:
+//   * decisive: the projection misses the line by more than a fifth of the line, not by a
+//     rounding error.
+//   * weak: she has missed 2+ of the last 10 or 3+ of the last 15, so the qualifying rate is a
+//     partial, interrupted sample (6-of-8 rather than 12-of-15). Both conditions must hold.
+const AGREEMENT_MARGIN = 0.5;         // inside this, the projection is not saying anything
+const AGREEMENT_STRONG_EDGE = 0.20;   // |edge| as a share of the line
+const AGREEMENT_THIN_GP10 = 9;
+const AGREEMENT_THIN_GP15 = 13;
+const AGREEMENT_DEMOTE_PENALTY = 0.15;
+function projectionAgreement(leg, projMin, usgRatio){
+  const e = projectionEdge(leg, projMin, usgRatio);
+  if(!e) return null;
+  return Object.assign({}, e, {agrees: e.edge >= -AGREEMENT_MARGIN});
+}
+// 'ok' | 'demote' | 'veto'. gp10/gp15 are the games-played counts behind the qualifying windows.
+function agreementVerdict(agreement, gp10, gp15){
+  if(!agreement || agreement.agrees) return 'ok';
+  const decisive = agreement.line > 0 && (Math.abs(agreement.edge) / agreement.line) >= AGREEMENT_STRONG_EDGE;
+  const thin = (gp10 !== undefined && gp10 !== null && gp10 < AGREEMENT_THIN_GP10)
+            || (gp15 !== undefined && gp15 !== null && gp15 < AGREEMENT_THIN_GP15);
+  return (decisive && thin) ? 'veto' : 'demote';
+}
+function betIsDemoted(bet){ return !!(bet && bet.agreementVerdict === 'demote'); }
+const AGREEMENT_DEF = 'Her <b>projected</b> total for tonight \u2014 her last ' + PROJECTION_WINDOW
+  + ' games replayed at her projected minutes and tonight\u2019s projected usage \u2014 next to the line, with the '
+  + 'gap between them. <b>Edge is signed toward the bet</b>: positive means the projection supports the side shown, '
+  + 'negative means it contradicts it. A contradicted bet is <b>flagged and demoted</b>, not deleted \u2014 a model '
+  + 'disagreeing with the market is where an edge would have to come from, so hiding those rows would hide the only '
+  + 'interesting ones. It is dropped outright only when the contradiction is decisive (missing the line by more than '
+  + Math.round(AGREEMENT_STRONG_EDGE*100) + '% of it) <i>and</i> the hit rate arguing back is itself a thin, '
+  + 'interrupted sample \u2014 she has missed 2+ of the last 10 or 3+ of the last 15.';
+
 const MINUTES_ADJUSTED_DEF = 'This player\u2019s minutes are projected to change tonight because teammates '
   + 'are ruled out, so the hit rates in this row have been <b>recomputed at her projected minutes</b>: each past '
   + 'game is scaled by (projected minutes \u00f7 the minutes she played that game) before being compared to the '
-  + 'line. Scaling is capped at \u00b140% \u2014 beyond that, per-minute extrapolation stops being believable. '
-  + 'The unadjusted figures are in the tooltip on the Proj Min cell. This assumes production scales linearly with '
-  + 'minutes within that cap, which is an assumption, not a fitted result.';
+  + 'line, using elasticities <b>fitted from 4,914 real player-games</b> rather than assumed \u2014 scoring turns '
+  + 'out to scale faster than 1:1 with minutes (points ~1.15 going up), rebounds and assists close to 1:1. '
+  + 'Scaling is capped at \u00b1100%: the fit is only meaningful over minute changes the data actually contains, '
+  + 'and beyond that this refuses to extrapolate. The unadjusted figures are in the tooltip on the Proj Min cell.';
 
 // Is this specific player ruled out (or doubtful) for tonight? Recommending a bet on someone who
 // will not take the floor is the most basic error a bet list can make, and until now only the
@@ -6267,10 +6526,133 @@ function computePlayerMinutesTrend(playerName, team, n){
     && (pct === null ? true : Math.abs(pct) > MINUTES_TREND_PCT_BAR);
   return {n, insufficient:false, recentAvg, priorAvg, delta, pct, significant, injuryExcluded,
           direction: delta > 0 ? 'up' : (delta < 0 ? 'down' : 'flat'),
-          recentGames: recent.map(g=>({date:g.date, min:minOf(g), dnp:!!g.dnp})),
-          priorGames:  prior.map(g=>({date:g.date, min:minOf(g), dnp:!!g.dnp}))};
+          // `starter` and `opp`/`homeAway` are carried through so the table below can describe
+          // each game without going back to the raw log and re-finding the row.
+          recentGames: recent.map(g=>({date:g.date, min:minOf(g), dnp:!!g.dnp, starter:!!g.starter, opp:g.opp, homeAway:g.homeAway})),
+          priorGames:  prior.map(g=>({date:g.date, min:minOf(g), dnp:!!g.dnp, starter:!!g.starter, opp:g.opp, homeAway:g.homeAway}))};
 }
 const MINUTES_TREND_DEF = 'Compares each player\u2019s average minutes over her last N games to the N games right before that. Non-injury DNPs (coach\u2019s decision, rest, etc.) count as 0 minutes, so a genuine role change still shows up as a real decrease. Injury-related DNPs are excluded from the comparison entirely, since a health absence isn\u2019t a role change \u2014 note this depends on injury-reason data that isn\u2019t in the current dataset yet, so until a fresh data pull backfills it, all DNPs are treated as non-injury by default. Needs at least 2\u00d7N games of history to make a fair same-size comparison.';
+
+// Everything the app knows about one game in a minutes-trend window: who it was against, where
+// it was played, how it finished, and what this player's night looked like. Returns null only if
+// the game genuinely isn't in DATA.games -- a player log entry with no matching game row.
+function minutesTrendGameInfo(playerName, team, entry){
+  if(!entry || !entry.date) return null;
+  const g = Object.values(DATA.games).find(gm => gm.date === entry.date && (gm.home === team || gm.away === team));
+  if(!g) return null;
+  const isHome = g.home === team;
+  const opp = isHome ? g.away : g.home;
+  const venueTeam = g.home;   // the HOST's arena, which is not this player's team on a road game
+  const venue = (DATA.teamVenues && DATA.teamVenues[venueTeam]) || null;
+  const my = isHome ? g.homeScore : g.awayScore;
+  const their = isHome ? g.awayScore : g.homeScore;
+  const winner = my === their ? null : (my > their ? team : opp);
+  return {
+    date: entry.date, isHome, opp, team,
+    // "Connecticut Sun @ Indiana Fever" / "Connecticut Sun vs Indiana Fever" -- full city+nickname
+    // on both sides, which is what makes it readable without knowing the abbreviations.
+    matchup: `${FULL_TEAM_NAME[team] || team} ${isHome ? 'vs' : '@'} ${FULL_TEAM_NAME[opp] || opp}`,
+    venue: venue ? venue.name : null,
+    venueCity: venue ? [venue.city, venue.state].filter(Boolean).join(', ') : null,
+    myScore: my, theirScore: their,
+    finalLine: `${FULL_TEAM_NAME[g.away] || g.away} ${g.awayScore} — ${FULL_TEAM_NAME[g.home] || g.home} ${g.homeScore}`,
+    winner, winnerFull: winner ? (FULL_TEAM_NAME[winner] || winner) : null,
+    min: entry.min, dnp: entry.dnp, starter: entry.starter,
+  };
+}
+function minutesTrendGameLines(playerName, info, entry){
+  if(!info) return [`${entry.date}`, entry.dnp ? 'DNP — 0 minutes' : `${entry.min} minutes`,
+                    'No game record on file for this date.'];
+  const place = [info.venue, info.venueCity].filter(Boolean).join(' — ');
+  const result = info.winner ? `${info.finalLine}  (${info.winnerFull} win)` : `${info.finalLine}  (tie)`;
+  const role = entry.dnp ? 'Did not play — counted as 0 minutes'
+                         : `${entry.min} minutes — ${entry.starter ? 'Started' : 'Off the bench'}`;
+  return [`${info.date} — ${info.matchup}`, place || 'Venue unknown', result, `${playerName}: ${role}`];
+}
+// The two windows as a table rather than two runs of comma-separated text. Row 1 is the header,
+// rows 2-6 are games #1-#5, and #1 is the MOST RECENT game in each window -- reading down the
+// column walks backwards in time, which is the direction a role change is read in.
+//
+// Clicking a minutes figure opens the full record of that game beneath the table. It is a click
+// and not only a hover: hover does not exist on a phone, and this app is used on one. The title
+// attribute carries the same text so a desktop hover still works without the click.
+function buildMinutesTrendTable(t, playerName, team){
+  const box = document.createElement('div');
+  box.style.cssText = 'margin-top:12px;';
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:11px;color:var(--sub);margin-bottom:5px;';
+  hint.textContent = 'Tap any minutes figure to see that game.';
+  box.appendChild(hint);
+
+  const table = document.createElement('table');
+  // width:auto overrides the global `table{width:100%}` -- a three-column table of two-digit
+  // numbers stretched across the page puts a metre of whitespace between the two columns being
+  // compared, which is the one thing this table exists to make easy.
+  table.style.cssText = 'border-collapse:collapse;font-size:12.5px;width:auto;';
+  const thead = document.createElement('thead');
+  const hr = document.createElement('tr');
+  const thStyle = 'padding:4px 16px;border-bottom:2px solid var(--line);font-weight:700;'
+    + 'text-transform:none;letter-spacing:normal;color:var(--ink);font-size:12px;';
+  [['', 'left'], [`Last ${t.n}`, 'center'], [`Prior ${t.n}`, 'center']].forEach(([label, align])=>{
+    const th = document.createElement('th');
+    th.style.cssText = thStyle + `text-align:${align};`;
+    th.textContent = label; hr.appendChild(th);
+  });
+  thead.appendChild(hr); table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  // Most recent first within each window; the compute function returns them oldest-first.
+  const recent = t.recentGames.slice().reverse();
+  const prior  = t.priorGames.slice().reverse();
+  const detail = document.createElement('div');
+  detail.style.cssText = 'margin-top:10px;font-size:12px;line-height:1.55;padding:9px 11px;border-radius:6px;'
+    + 'background:var(--panel2, #f7f8fa);border:1px solid var(--line);display:none;';
+  let selected = null;
+  const cells = [];
+  const showGame = (td, entry) => {
+    if(selected === td){   // a second tap on the same cell closes it again
+      selected = null; detail.style.display = 'none';
+      cells.forEach(c=>{ c.style.background = ''; });
+      return;
+    }
+    selected = td;
+    cells.forEach(c=>{ c.style.background = ''; });
+    td.style.background = 'var(--greenbg)';
+    detail.innerHTML = '';
+    minutesTrendGameLines(playerName, minutesTrendGameInfo(playerName, team, entry), entry).forEach((line, i)=>{
+      const d = document.createElement('div');
+      if(i === 0) d.style.fontWeight = '700';
+      if(i > 0) d.style.color = 'var(--sub)';
+      d.textContent = line; detail.appendChild(d);
+    });
+    detail.style.display = 'block';
+  };
+  for(let i = 0; i < t.n; i++){
+    const tr = document.createElement('tr');
+    const tdNum = document.createElement('td');
+    tdNum.style.cssText = 'padding:4px 14px 4px 0;color:var(--sub);font-weight:700;border-bottom:1px solid var(--line);';
+    tdNum.textContent = String(i+1);
+    tr.appendChild(tdNum);
+    [recent[i], prior[i]].forEach(entry=>{
+      const td = document.createElement('td');
+      td.style.cssText = 'padding:4px 14px;text-align:center;border-bottom:1px solid var(--line);';
+      if(!entry){ td.textContent = '—'; td.style.color = 'var(--sub)'; tr.appendChild(td); return; }
+      td.textContent = entry.dnp ? 'DNP (0)' : String(entry.min);
+      if(entry.dnp) td.style.color = 'var(--red)';
+      td.style.cursor = 'pointer';
+      td.style.textDecoration = 'underline dotted';
+      td.title = minutesTrendGameLines(playerName, minutesTrendGameInfo(playerName, team, entry), entry).join('\n');
+      td.addEventListener('click', ()=>showGame(td, entry));
+      cells.push(td);
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  box.appendChild(table);
+  box.appendChild(detail);
+  return box;
+}
 
 function renderMinutesTrendSection(container, playerName, team, n){
   const t = computePlayerMinutesTrend(playerName, team, n);
@@ -6315,10 +6697,7 @@ function renderMinutesTrendSection(container, playerName, team, n){
   row.appendChild(box('Change %', t.pct === null ? '\u2014' : `${sign}${Math.round(t.pct*100)}%`, tone));
   wrap.appendChild(row);
 
-  const detail = document.createElement('div'); detail.style.cssText = 'font-size:11px;color:var(--sub);margin-top:8px;';
-  const listOf = games => games.map(g => g.dnp ? `${g.date}: DNP (0)` : `${g.date}: ${g.min}`).join('  \u00b7  ');
-  detail.innerHTML = `<b>Last ${t.n}:</b> ${listOf(t.recentGames)}<br><b>Prior ${t.n}:</b> ${listOf(t.priorGames)}`;
-  wrap.appendChild(detail);
+  wrap.appendChild(buildMinutesTrendTable(t, playerName, team));
 
   if(!t.significant){
     const note = document.createElement('div'); note.style.cssText = 'font-size:11px;color:var(--sub);margin-top:6px;';
@@ -6874,6 +7253,22 @@ async function renderHomePage(){
       // a position group to look up, and the per-player memo caches are shared with the Specials
       // tab below (which already builds the same data for today's slate), so this is close to free.
       renderTopBetsTable(contentDiv, cachedForToday, 30, liveGames, sharedKeys, selectedBook, {showTierColumns: true});
+      // "Show both, sorted": the 75% list above is untouched; the bets it rejects purely because
+      // the player's role changed tonight get their own board beneath it, ranked by projected
+      // edge. It renders nothing at all on a night with no disruption, which is most nights.
+      const roleChange = computeRoleChangeBets(cachedForToday, selectedBook, stdKeysSet);
+      if(roleChange.length){
+        const rcHolder = document.createElement('div');
+        rcHolder.style.cssText = 'margin-top:26px;';
+        contentDiv.appendChild(rcHolder);
+        renderTopBetsTable(rcHolder, cachedForToday, ROLE_CHANGE_MAX, liveGames, sharedKeys, selectedBook, {
+          bets: roleChange,
+          showTierColumns: true,
+          title: `⚠️ Role-Change Board — rejected by the ${Math.round(ROLE_CHANGE_QUAL*100)}% bar, backed by the projection`,
+          titleDef: ROLE_CHANGE_DEF,
+          emptyMessage: 'No bets tonight were rejected by the hit-rate bar while showing a large projected edge on a changed role.',
+        });
+      }
       renderAdvancedTopBetsTable(contentDiv2, cachedForToday, 30, liveGames, sharedKeys, selectedBook);
       renderSpecialsTable(contentDiv3, cachedForToday, liveGames, selectedBook, sharedKeys);
     };
@@ -7469,6 +7864,12 @@ function worstCaseRate(bet){
   if(!rates.length) return 0;
   return Math.min(...rates);
 }
+// The ranking key: the hit rate a bet is sold on, less a penalty when tonight's projection
+// contradicts it. Kept as a named function rather than inlined into the comparator so the
+// Specials sort and the tests can use the identical rule.
+function rankScoreForBet(bet){
+  return worstCaseRate(bet) - (betIsDemoted(bet) ? AGREEMENT_DEMOTE_PENALTY : 0);
+}
 
 // ================= "Strong signal" confidence highlight =================
 // A stricter bar than the baseline Top 30 ranking already requires -- both tables already only
@@ -8022,6 +8423,10 @@ const COLOR_KEY_ITEMS = {
     note: 'green when the matchup favors this side of the bet, red when it works against it'},
   injury: {swatch: {color: 'var(--red)', text: 'Out'}, label: 'Injury',
     note: 'color-coded by severity \u2014 red Out, amber Day-To-Day'},
+  edge: {swatch: {color: 'var(--green)', text: '+3.9'}, label: 'Edge',
+    note: 'the projection minus the line, signed toward the bet \u2014 green means tonight\u2019s projection supports this side, red means it argues against it'},
+  demoted: {swatch: {color: 'var(--red)', text: 'demoted'}, label: 'Demoted',
+    note: 'the projection contradicts this bet, so it has been pushed down the ranking rather than removed \u2014 it is still here to be judged on its merits'},
 };
 // A banner naming every team on tonight's slate whose rotation is materially depleted, and who
 // is out. Rendered above the bet tables so the caveat arrives BEFORE the rankings, not after --
@@ -8140,10 +8545,93 @@ function fillProjMinCell(td, bet){
   from.textContent = `from ${m.baseMin}`;
   td.appendChild(main); td.appendChild(from);
   const pct = v => (v===null || v===undefined) ? '\u2014' : Math.round(v*100)+'%';
+  // The projected TOTAL is the more useful number of the two, so it goes on the row rather than
+  // only in a tooltip -- "she projects to 17.8 against a 15.5 line" is the whole argument.
+  const a = bet.agreement;
+  if(a){
+    const proj = document.createElement('div');
+    proj.style.cssText = 'font-size:10px;font-weight:700;';
+    proj.textContent = `proj ${a.projected} vs ${a.line}`;
+    proj.style.color = a.agrees ? 'var(--green)' : 'var(--red)';
+    td.appendChild(proj);
+  }
   td.title = `Projected ${m.projMin} min tonight vs ${m.baseMin} recently (${m.delta>0?'+':''}${m.delta}).`
     + ` Hit rates in this row are recomputed at that projection.`
+    + (a ? ` Projected total ${a.projected} against a line of ${a.line} \u2014 which ${a.agrees?'agrees with':'contradicts'} the ${a.side}.` : '')
     + ` Unadjusted: L5 ${pct(bet.rawRate5)}, L10 ${pct(bet.rawRate10)}, L15 ${pct(bet.rawRate15)}, Season ${pct(bet.rawRateAll)}.`;
 }
+// Proj | Line | Edge, on every player prop -- not only on disrupted rosters. The headline number
+// is the EDGE, signed toward the bet, because that is the number a bettor acts on; the projection
+// and the line sit underneath it as the workings.
+//
+// THE FIELD IS `projEdge`, NOT `edge`. `bet.edge` was already taken: the Advanced table hangs its
+// own object there ({l5, l10, l15, full, agreement, dvp}) and overwrites whatever gatherCandidateLegs
+// set. Reusing the name meant the Advanced pipeline silently destroyed the projection edge, and
+// betConfidenceInfo -- which reads bet.edge.agreement -- would have been reading a field that no
+// longer existed on Standard rows.
+function fillEdgeCell(td, bet){
+  const e = bet && bet.projEdge;
+  if(!e){ td.textContent = '—'; td.style.color = 'var(--sub)'; return; }
+  const main = document.createElement('div');
+  main.style.cssText = 'font-weight:700;';
+  main.textContent = (e.edge > 0 ? '+' : '') + e.edge.toFixed(1);
+  main.style.color = e.edge >= 0 ? 'var(--green)' : 'var(--red)';
+  const sub = document.createElement('div');
+  sub.style.cssText = 'font-size:10px;font-weight:400;color:var(--sub);white-space:nowrap;';
+  sub.textContent = `${e.projected} vs ${e.line}`;
+  td.appendChild(main); td.appendChild(sub);
+  if(bet.agreementVerdict === 'demote'){
+    const flag = document.createElement('div');
+    flag.style.cssText = 'font-size:10px;font-weight:700;color:var(--red);';
+    flag.textContent = 'demoted';
+    td.appendChild(flag);
+  }
+  const a = e.anchor;
+  td.title = `Projected ${e.projected} tonight against a line of ${e.line} — an edge of `
+    + `${e.edge>0?'+':''}${e.edge.toFixed(1)} ${e.edge>=0?'in favor of':'against'} this ${e.side}.`
+    + (a ? ` Blends the minutes+usage model (${e.model}) with her ${a.n}-game average without ${a.mate}`
+         + ` (${Math.round(a.mean*10)/10}) at ${Math.round(a.weight*100)}% weight — the weight a `
+         + `${a.n}-game split earns once it is regressed for sample size.`
+         : ' Minutes+usage model only — no usable with/without split for tonight’s absentees.')
+    + (bet.agreementVerdict === 'demote'
+        ? ' The projection contradicts this bet, so it has been DEMOTED in the ranking rather than removed.'
+        : '');
+}
+function edgeSortValue(bet){
+  return (bet && bet.projEdge) ? bet.projEdge.edge : null;
+}
+// The Live Lines prop tables show BOTH sides of every line in one row, so a single signed edge
+// has no meaning there -- whatever helps the Over hurts the Under by the same amount. This shows
+// the projection itself and names the side it favors, which is the same information arranged for
+// a two-sided row.
+function fillProjectionCell(td, r){
+  const m = minutesAdjustmentFor(r.player, r.team);
+  if(!m){ td.textContent = '—'; td.style.color = 'var(--sub)'; return; }
+  const e = projectionEdge({player:r.player, team:r.team, statKey:r.statKey, line:r.line, side:'over'}, m.projMin, m.usgRatio);
+  if(!e){ td.textContent = '—'; td.style.color = 'var(--sub)'; return; }
+  const main = document.createElement('div');
+  main.style.fontWeight = '700';
+  main.textContent = e.projected.toFixed(1);
+  const flat = Math.abs(e.edge) <= AGREEMENT_MARGIN;
+  const sub = document.createElement('div');
+  sub.style.cssText = 'font-size:9.5px;font-weight:700;';
+  if(flat){ sub.textContent = 'neither'; sub.style.color = 'var(--sub)'; main.style.color = 'var(--sub)'; }
+  else { sub.textContent = e.edge > 0 ? `Over +${e.edge.toFixed(1)}` : `Under +${(-e.edge).toFixed(1)}`;
+         sub.style.color = 'var(--green)'; }
+  td.appendChild(main); td.appendChild(sub);
+  td.title = `Projected ${e.projected} tonight against a line of ${e.line}`
+    + (flat ? ' — close enough to the line that the projection favors neither side.'
+            : `, which favors the ${e.edge>0?'Over':'Under'} by ${Math.abs(e.edge).toFixed(1)}.`)
+    + (m.apply ? ` Her role is projected to change tonight (${m.baseMin} → ${m.projMin} min`
+                 + (m.usgRatio > 1 ? `, usage ×${m.usgRatio.toFixed(2)}` : '') + ').' : '');
+}
+const EDGE_COL_DEF = 'The gap between tonight’s <b>projection</b> and the <b>line</b>, signed toward the bet: '
+  + 'positive means the projection supports the side shown, negative means it contradicts it. The projection is her '
+  + 'last ' + PROJECTION_WINDOW + ' games replayed at tonight’s projected minutes and usage, blended with what she '
+  + 'has actually done without tonight’s absent regular — that split weighted by how many games are behind it, '
+  + 'which for a realistic 3-6 game sample is under 15%. Shown on every prop, on quiet nights as well as disrupted ones. '
+  + 'A negative edge does not remove the bet; it flags and demotes it. Click to sort.';
+
 function projMinSortValue(bet){
   const m = bet && bet.minutesProj;
   if(!m || !m.baseMin) return null;
@@ -8300,6 +8788,83 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
   pool.sort(compareStandardBets);
   return { todaysGames, topBets: pool.slice(0, topN) };
 }
+
+// ==================== The role-change board (Stage 4) ====================
+// THE PROBLEM THIS SOLVES. The Top 30 asks one question: has this bet hit 75% of the time
+// recently? On a night when a team is missing three starters, that question is being asked of a
+// player whose role tonight has nothing to do with the games the rate was measured on -- and the
+// bets that pass are systematically the WRONG ones. A backup guard about to play 34 minutes has
+// a beautiful Under record built entirely on 16-minute nights. The bar does not reject her; the
+// bar is what selects her.
+//
+// TWO WAYS TO HANDLE THAT, AND ONLY ONE IS HONEST. Lowering the bar for these players would mean
+// quietly changing what "75%" means depending on who is injured, and there is no backtest to
+// justify a specific new number (see below). So the 75% list is left EXACTLY as it was, and the
+// bets it rejects on role-change grounds get their own clearly-labelled board underneath, where
+// what qualifies them is stated plainly: not a hit rate, a projected edge.
+//
+// WHAT IS NOT KNOWN. Whether the 75% bar should move for these games is an empirical question
+// that cannot be answered from this app's own archive: ODDS_HISTORY holds only h2h, spreads and
+// totals -- no player-prop lines were ever snapshotted -- so there is nothing to replay a
+// different bar against. This section deliberately does not pretend otherwise. It ranks by
+// projected edge and says so, and it stays a separate list rather than being merged into a
+// ranking whose threshold has been tuned on nothing.
+const ROLE_CHANGE_MIN_EDGE_SHARE = 0.15;   // the projection must beat the line by 15% of the line
+const ROLE_CHANGE_MIN_ABS_EDGE = 1.0;      // ...and by at least a full unit, so 0.5-point lines
+                                           //    can't qualify on rounding
+const ROLE_CHANGE_MAX = 12;
+const ROLE_CHANGE_QUAL = 0.75;
+function roleChangeEdgeShare(bet){
+  if(!bet || !bet.projEdge || !bet.line) return null;
+  return bet.projEdge.edge / bet.line;
+}
+function computeRoleChangeBets(cachedFetch, selectedBook, excludeKeys){
+  selectedBook = selectedBook || 'best';
+  const todayStr = new Date().toDateString();
+  const now = new Date();
+  const todaysGames = cachedFetch.filter(({ev}) =>
+    new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
+  if(!todaysGames.length) return [];
+  const MIN_PRICE = -165;
+  let pool = [];
+  todaysGames.forEach(({ev, detail})=>{
+    const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+    const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+    const gameMarkets = marketsByKey(getBookmakerData(ev, selectedBook));
+    const detailMarkets = marketsByKey(detail ? getBookmakerData(detail, selectedBook) : null);
+    const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+    let legs = [];
+    // QUAL 0 -- the whole point is to look at what the hit-rate bar threw away.
+    try{ legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0, selectedBook); }catch(e){ legs = []; }
+    pool = pool.concat(legs.filter(l => l.price >= MIN_PRICE && !STANDARD_EXCLUDED_BET_TYPES.has(l.betType))
+                           .map(l => Object.assign({}, l, {game: gameLabel})));
+  });
+  const out = pool.filter(b => {
+    if(b.betType !== 'player_prop' && b.betType !== 'player_prop_alt') return false;
+    // ONLY players whose role actually changed tonight. Without this the section becomes a
+    // second, lower-bar Top 30 for the whole slate, which is a different (and unjustified) thing.
+    if(!b.minutesAdjusted || !b.projEdge) return false;
+    // Anything already on the Top 30 belongs there, not here -- no bet appears on both boards.
+    if(excludeKeys){ const k = betIdentityKey(b); if(k && excludeKeys.has(k)) return false; }
+    // It must be a bet the 75% bar REJECTS. One that clears it is already handled.
+    if(b.rate10 >= ROLE_CHANGE_QUAL && b.rate15 >= ROLE_CHANGE_QUAL) return false;
+    const share = roleChangeEdgeShare(b);
+    return share !== null && b.projEdge.edge >= ROLE_CHANGE_MIN_ABS_EDGE && share >= ROLE_CHANGE_MIN_EDGE_SHARE;
+  });
+  out.sort((a,b)=> roleChangeEdgeShare(b) - roleChangeEdgeShare(a));
+  return out.slice(0, ROLE_CHANGE_MAX);
+}
+const ROLE_CHANGE_DEF = 'A <b>separate</b> board, ranked by projected edge rather than by hit rate. Everything here '
+  + 'was <b>rejected by the ' + Math.round(ROLE_CHANGE_QUAL*100) + '% bar above</b>, and every player on it has a role '
+  + 'tonight that her recent games were not played in — teammates are ruled out, and her minutes or her share of the '
+  + 'offense is projected to move. That is exactly the situation where a historical hit rate is answering the wrong '
+  + 'question: it describes a player who no longer exists. To appear here a bet needs a projection that beats its line '
+  + 'by at least ' + Math.round(ROLE_CHANGE_MIN_EDGE_SHARE*100) + '% of the line and at least '
+  + ROLE_CHANGE_MIN_ABS_EDGE.toFixed(1) + ' outright. <b>These are not ' + Math.round(ROLE_CHANGE_QUAL*100)
+  + '% bets and are not claimed to be.</b> The list above is untouched — this sits beside it so you can see both, '
+  + 'rather than one quietly being widened into the other. Whether the '
+  + Math.round(ROLE_CHANGE_QUAL*100) + '% bar <i>should</i> move on these nights is an open question: answering it '
+  + 'needs an archive of historical prop lines to replay, and this app has never stored one.';
 
 // Every leg the book is offering on ONE matchup, ranked by the same probability chain the
 // Standard Top 30 uses -- but with NO hit-rate qualifier (QUAL 0), no price floor, and no cap,
@@ -8564,7 +9129,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   toggleRow.appendChild(expandLabel);
   const stdOutliers = buildExcludeOutliersToggle(toggleRow, ()=>renderStdTable());
   container.appendChild(toggleRow);
-  buildColorKey(container, ['outlier','confidence','star','defTint','rate','minTrend','vsTeam','dvp']);
+  buildColorKey(container, ['outlier','confidence','star','defTint','rate','minTrend','edge','demoted','vsTeam','dvp']);
 
   const wrap = document.createElement('div'); wrap.className='table-wrap compact-show-all'; // all details shown from the start, in both Full and Compact mode -- no toggle needed
   expandCb.addEventListener('change', ()=>{ wrap.classList.toggle('show-simdef-extra', expandCb.checked); });
@@ -8574,6 +9139,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     +'<th class="th-l5 compact-hide">L5%</th><th class="th-l10 compact-hide">L10%</th><th class="th-l15 compact-hide">L15%</th><th class="th-season compact-hide">Season%</th>'
     +'<th class="th-mintrend compact-hide">Min Trend</th>'
     +'<th class="th-projmin compact-hide">Proj Min</th>'
+    +'<th class="th-edge compact-hide">Edge</th>'
     + (showTierCols ? '<th class="left th-group compact-hide">Matchup Group</th><th class="th-vstier compact-hide">Vs That Tier</th>' : '')
     +'<th class="th-l10ema compact-hide">L10 EMA</th>'
     +'<th class="defcol th-defallowed compact-hide">Allowed/Gm</th><th class="left compact-hide">Game</th><th class="left compact-hide">Vs Opponent This Season</th>'
@@ -8598,7 +9164,8 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   appendDefIcon(thead.querySelector('.th-l15'), 'Hit rate over her last 15 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-season'), 'Hit rate over her full season, with the actual record (hits/games) in parentheses. Not part of the Overall % ranking calculation \u2014 shown for reference alongside L5/L10/L15.');
   appendDefIcon(thead.querySelector('.th-mintrend'), MINUTES_TREND_COL_DEF);
-  appendDefIcon(thead.querySelector('.th-projmin'), MINUTES_ADJUSTED_DEF);
+  appendDefIcon(thead.querySelector('.th-projmin'), MINUTES_ADJUSTED_DEF + '<br><br>' + AGREEMENT_DEF);
+  appendDefIcon(thead.querySelector('.th-edge'), EDGE_COL_DEF);
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
   appendDefIcon(thead.querySelector('.th-defallowed'), STAT_DEFINITIONS.defAllowed);
@@ -8643,6 +9210,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     {value: bet => bet.rateAll},                                                                // Season%
     {value: minutesTrendSortValue},                                                             // Min Trend
     {value: projMinSortValue},                                                                  // Proj Min
+    {value: edgeSortValue},                                                                     // Edge
     ...(showTierCols ? [
       {value: bet => { const g = betGroupTierInfo(bet); return g ? g.weightedHeight : null; }, dir: 'asc'}, // Matchup Group (by height, so shortest->tallest)
       {value: bet => { const hr = betTierHitRate(bet); return (hr && hr.gp) ? hr.rate : null; }}, // Vs That Tier (gp 0 => null, so it sorts last like its em dash implies)
@@ -8742,7 +9310,9 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     fillMinutesTrendCell(tdMinTrend, bet);
     const tdProjMin = document.createElement('td'); tdProjMin.style.cssText = cellStyle;
     fillProjMinCell(tdProjMin, bet);
-    [tdL5, tdL10, tdL15, tdSeason, tdMinTrend, tdProjMin].forEach(td=>td.classList.add('compact-hide'));
+    const tdEdge = document.createElement('td'); tdEdge.style.cssText = cellStyle;
+    fillEdgeCell(tdEdge, bet);
+    [tdL5, tdL10, tdL15, tdSeason, tdMinTrend, tdProjMin, tdEdge].forEach(td=>td.classList.add('compact-hide'));
     // Opposing height tier + her season record against that tier. Both are memoised per player
     // (and per player+opponent), so the ~70 rows of a matchup board cost roughly one heavy
     // computeHeightTierData call per distinct player, not one per row.
@@ -8863,7 +9433,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar, tdRank, tdPos, tdLabel, tdPrice, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdMinTrend, tdProjMin]
+    [tdStar, tdRank, tdPos, tdLabel, tdPrice, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdMinTrend, tdProjMin, tdEdge]
       .concat(showTierCols ? [tdGroupTier, tdVsTier] : [])
       .concat([tdL10Ema, tdAllowed, tdGame, tdVsOpp, tdDef, tdSimDef, tdDefL5, tdSimDefL5, tdDvpSeason, tdDvpL15, tdDvpL10, tdDvpL5col, tdSportsbook, tdTrack])
       .forEach(td=>tr.appendChild(td));
@@ -8959,7 +9529,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   const advToggleRow = document.createElement('div'); advToggleRow.style.cssText = 'margin-bottom:8px;display:flex;gap:18px;flex-wrap:wrap;';
   const advOutliers = buildExcludeOutliersToggle(advToggleRow, ()=>renderAdvTable());
   container.appendChild(advToggleRow);
-  buildColorKey(container, ['outlier','confidence','star','defTint','rate','minTrend','vsTeam','dvp','injury']);
+  buildColorKey(container, ['outlier','confidence','star','defTint','rate','minTrend','edge','demoted','vsTeam','dvp','injury']);
 
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table'); table.style.width='100%';
@@ -8968,6 +9538,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     +'<th class="left defcol th-defrank">Opp Def Rank</th><th class="left defcol th-defrankl5">Opp Def Rank L5</th><th class="defcol th-defallowed">Allowed/Gm</th>'
     +'<th class="th-l5">L5</th><th class="th-l10b">L10</th><th class="th-l15b">L15</th><th class="th-full">Season</th>'
     +'<th class="th-mintrend">Min Trend</th>'
+    +'<th class="th-adv-edge">Edge</th>'
     +'<th class="th-agree">Agree</th><th class="th-dvp">DvP Idx</th><th class="left">Injury</th><th></th></tr>';
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
@@ -8977,6 +9548,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   appendDefIcon(thead.querySelector('.th-l15b'), 'EMA over her last 15 games played, plus how many of those 15 actually cleared this line on this side.');
   appendDefIcon(thead.querySelector('.th-full'), 'EMA over her full season, plus how many games this season actually cleared this line on this side.');
   appendDefIcon(thead.querySelector('.th-mintrend'), MINUTES_TREND_COL_DEF);
+  appendDefIcon(thead.querySelector('.th-adv-edge'), EDGE_COL_DEF);
   appendDefIcon(thead.querySelector('.th-agree'), 'How many of the 4 EMA windows (L5/L10/L15/season) agree with the direction (Over/Under) the line implies. Only legs with 3/4 or 4/4 agreement are shown \u2014 anything less isn\u2019t a real signal.');
   appendDefIcon(thead.querySelector('.th-dvp'), STAT_DEFINITIONS.dvpPts.replace('Points', 'this stat'));
   table.appendChild(thead);
@@ -9016,6 +9588,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     {value: bet => bet.edge && bet.edge.l15},
     {value: bet => bet.edge && bet.edge.full},
     {value: minutesTrendSortValue},                              // Min Trend
+    {value: edgeSortValue},                                      // Edge (projection vs line)
     {value: bet => bet.edge && bet.edge.agreement},
     {value: bet => bet.edge && bet.edge.dvp},
     {value: bet => bet.injuryNote || null, dir: 'asc'},
@@ -9116,7 +9689,9 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
     else tdInjury.textContent = '\u2014';
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar,tdRank,tdPos,tdLabel,tdGame,tdVsOpp,tdPrice,tdSportsbook,tdDef,tdDefL5,tdAllowed,tdL5,tdL10,tdL15,tdFull,tdMinTrend,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
+    const tdAdvEdge = document.createElement('td'); tdAdvEdge.style.cssText = cellStyle;
+    fillEdgeCell(tdAdvEdge, bet);
+    [tdStar,tdRank,tdPos,tdLabel,tdGame,tdVsOpp,tdPrice,tdSportsbook,tdDef,tdDefL5,tdAllowed,tdL5,tdL10,tdL15,tdFull,tdMinTrend,tdAdvEdge,tdAgree,tdDvp,tdInjury,tdTrack].forEach(td=>tr.appendChild(td));
     tbody.appendChild(tr);
     });
   }
@@ -9230,14 +9805,22 @@ function computeSpecialsBets(cachedFetch, selectedBook){
       // longer has and land on a "deliberately short list" she shouldn't be on at all.
       const madj = minutesAdjustmentFor(leg.player, leg.team);
       const useAdj = !!(madj && madj.apply);
+      const ur = useAdj ? madj.usgRatio : 1;
       const sided = (win) => useAdj
-        ? adjustedPropHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, win, madj.projMin)
+        ? adjustedPropHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, win, madj.projMin, ur)
         : propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, win);
       const hr5 = sided(5);
       const hr10 = sided(10);
       if(!hr10 || !hr10.gp || hr10.rate < SPECIALS_RECENT_BAR) return;     // qualifier 1
       const hr15 = sided(15);
       if(!hr15 || !hr15.gp || hr15.rate < SPECIALS_RECENT_BAR) return;     // qualifier 2
+
+      // Projection and edge for every Specials candidate; the demote/veto verdict only where the
+      // adjustment applied. This used to be a fifth qualifying bar that silently deleted the bet.
+      const edge = projectionEdge(leg, madj ? madj.projMin : null, ur);
+      const agreement = useAdj && edge ? Object.assign({}, edge, {agrees: edge.edge >= -AGREEMENT_MARGIN}) : null;
+      const verdict = agreementVerdict(agreement, hr10.gp, hr15.gp);
+      if(verdict === 'veto') return;
 
       const tierData = cachedHeightTierData(leg.player, leg.team);
       if(!tierData) return;
@@ -9257,7 +9840,8 @@ function computeSpecialsBets(cachedFetch, selectedBook){
         gp5: hr5.gp, gp10: hr10.gp, gp15: hr15.gp, gpAll: hrAll ? hrAll.gp : 0,
         sportsbook: bookSourceLabel({price: leg.price, book: leg.book}, selectedBook),
         market: SPECIALS_MARKET_LABEL[leg.statKey] || leg.statKey,
-        minutesAdjusted: useAdj, minutesProj: madj || null,
+        minutesAdjusted: useAdj, minutesProj: madj || null, agreement,
+        projEdge: edge, agreementVerdict: verdict,
         game: gameLabel, opponent: opp, hr5, hr10, hr15, hrAll, hrTier,
         groupTier: groupInfo.groupTier, groupHeightIn: groupInfo.weightedHeight,
         // Carried so the rendered Game cell can link BOTH teams, rather than re-deriving
@@ -9268,8 +9852,10 @@ function computeSpecialsBets(cachedFetch, selectedBook){
   });
 
   // Strongest tier record first (that's the distinguishing qualifier), then the weaker of the
-  // two recent windows, then price as a final tiebreak.
-  out.sort((a,b)=> (b.hrTier.rate - a.hrTier.rate)
+  // two recent windows, then price as a final tiebreak. The demotion penalty is applied to the
+  // LEADING key, so a contradicted bet drops down the list rather than only losing tiebreaks.
+  const spScore = b => b.hrTier.rate - (betIsDemoted(b) ? AGREEMENT_DEMOTE_PENALTY : 0);
+  out.sort((a,b)=> (spScore(b) - spScore(a))
     || (Math.min(b.hr10.rate, b.hr15.rate) - Math.min(a.hr10.rate, a.hr15.rate))
     || (b.price - a.price));
   return {todaysGames, bets: out};
@@ -9308,24 +9894,25 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook, st
   // No confidence box here (Specials has no confidence score of its own), but it does carry the
   // star and the defense row-tint. An earlier version of this comment claimed the table had
   // neither -- asserted without checking the row builder, which has tinted rows all along.
-  buildColorKey(container, ['outlier','star','defTint','rate','minTrend','vsTeam']);
+  buildColorKey(container, ['outlier','star','defTint','rate','minTrend','edge','demoted','vsTeam']);
 
   const wrap = document.createElement('div'); wrap.className='table-wrap';
   const table = document.createElement('table');
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-sp-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
-    + '<th>L5</th><th>L10</th><th>L15</th><th>Season</th><th class="th-sp-mintrend">Min Trend</th><th class="th-sp-projmin">Proj Min</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
+    + '<th>L5</th><th>L10</th><th>L15</th><th>Season</th><th class="th-sp-mintrend">Min Trend</th><th class="th-sp-projmin">Proj Min</th><th class="th-sp-edge">Edge</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
     + '<th class="left">Vs That Team</th>'
     + '<th class="left defcol th-sp-defrank">Opp Def Rank</th><th class="left defcol th-sp-defrankl5">Opp Def Rank L5</th>'
     + '<th class="left">Sportsbook</th><th></th></tr>';
   appendDefIcon(thead.querySelector('.th-sp-mintrend'), MINUTES_TREND_COL_DEF);
-  appendDefIcon(thead.querySelector('.th-sp-projmin'), MINUTES_ADJUSTED_DEF);
+  appendDefIcon(thead.querySelector('.th-sp-projmin'), MINUTES_ADJUSTED_DEF + '<br><br>' + AGREEMENT_DEF);
+  appendDefIcon(thead.querySelector('.th-sp-edge'), EDGE_COL_DEF);
   appendDefIcon(thead.querySelector('.th-sp-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-sp-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   const TIER_TITLE = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
-  // Header order: Star, Rank, Pos, Bet, Game, Price, L5, L10, L15, Season, Min Trend, Proj Min, Tonight's Group, Vs That Tier, Vs That Team,
+  // Header order: Star, Rank, Pos, Bet, Game, Price, L5, L10, L15, Season, Min Trend, Proj Min, Edge, Tonight's Group, Vs That Tier, Vs That Team,
   // Opp Def Rank, Opp Def Rank L5, Sportsbook, Track. The hit-rate cells hold {found, rate, hits,
   // gp} objects, so each sorts on .rate -- and only when that window actually has games behind it.
   const hrRate = hr => (hr && hr.found && hr.gp) ? hr.rate : null;
@@ -9344,6 +9931,7 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook, st
     {value: bet => hrRate(bet.hrAll)},
     {value: minutesTrendSortValue},                          // Min Trend
     {value: projMinSortValue},                               // Proj Min
+    {value: edgeSortValue},                                  // Edge
     // Sorted by the group's actual weighted height, not the tier name -- that keeps
     // shortest -> middle -> tallest in a meaningful order instead of alphabetical.
     {value: bet => bet.groupHeightIn, dir: 'asc'},
@@ -9424,6 +10012,8 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook, st
       fillMinutesTrendCell(tdMinTrend, bet); tr.appendChild(tdMinTrend);
       const tdProjMin = document.createElement('td'); tdProjMin.style.textAlign='center';
       fillProjMinCell(tdProjMin, bet); tr.appendChild(tdProjMin);
+      const tdEdge = document.createElement('td'); tdEdge.style.textAlign='center';
+      fillEdgeCell(tdEdge, bet); tr.appendChild(tdEdge);
       const tdGroup = document.createElement('td'); tdGroup.className='left';
       // Clicking the tier opens her full game-by-game record against opposing groups in that
       // height band -- across every team she's faced, not just tonight's opponent.
@@ -10134,22 +10724,24 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
     const ouOutliers = buildExcludeOutliersToggle(outlierGroup, ()=>applyFilter());
     filterBar.appendChild(outlierGroup);
     container.appendChild(filterBar);
-    buildColorKey(container, ['outlier','rate','minTrend']);
+    buildColorKey(container, ['outlier','rate','minTrend','edge']);
 
     const th = (w, extra) => `<th class="${extra||''}" style="padding:4px 3px;border-bottom:2px solid var(--line);width:${w};">`;
     const marketTh = showMarketColumn ? th('13%','left') + 'Mkt</th>' : '';
-    const nameWidth = showMarketColumn ? '22%' : '26%';
-    const ouWidth   = showMarketColumn ? '21%' : '24%';
-    const trendWidth= showMarketColumn ? '11%' : '12%';
-    const trackWidth= showMarketColumn ? '12%' : '14%';
+    const nameWidth = showMarketColumn ? '20%' : '23%';
+    const ouWidth   = showMarketColumn ? '19%' : '22%';
+    const trendWidth= showMarketColumn ? '10%' : '11%';
+    const projWidth = showMarketColumn ? '9%'  : '9%';
+    const trackWidth= showMarketColumn ? '11%' : '13%';
     const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;margin-bottom:20px;table-layout:fixed;font-size:11px;';
     table.innerHTML = `<thead><tr>${th(nameWidth,'left')}Player</th>${marketTh}`
       + `${th(ouWidth)}Over</th>${th(ouWidth)}Under</th>`
-      + `${th(trendWidth,'th-ll-mintrend')}Min Trend</th>${th(trackWidth)}Track</th></tr></thead>`;
+      + `${th(trendWidth,'th-ll-mintrend')}Min Trend</th>${th(projWidth,'th-ll-proj')}Proj</th>${th(trackWidth)}Track</th></tr></thead>`;
     appendDefIcon(table.querySelector('.th-ll-mintrend'), MINUTES_TREND_COL_DEF);
+    appendDefIcon(table.querySelector('.th-ll-proj'), EDGE_COL_DEF);
     const tbody = document.createElement('tbody'); table.appendChild(tbody);
     container.appendChild(table);
-    const colCount = showMarketColumn ? 6 : 5;
+    const colCount = showMarketColumn ? 7 : 6;
 
     const filterableRows = [];
     rows.forEach(r=>{
@@ -10185,6 +10777,9 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const tdMinTrend = document.createElement('td'); tdMinTrend.style.cssText='padding:4px 3px;text-align:center;font-size:10.5px;';
       fillMinutesTrendCell(tdMinTrend, {player:r.pname, team:r.team});
 
+      const tdProj = document.createElement('td'); tdProj.style.cssText='padding:4px 3px;text-align:center;font-size:10.5px;';
+      fillProjectionCell(tdProj, {player:r.pname, team:r.team, statKey, line:r.line});
+
       const tdTrack = document.createElement('td'); tdTrack.style.cssText='padding:4px 2px;text-align:center;';
       tdTrack.addEventListener('click', e=>e.stopPropagation());
       const overThreshold = Number.isInteger(r.line) ? r.line+1 : Math.ceil(r.line);
@@ -10205,8 +10800,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
         tdTrack.appendChild(btn);
       }
 
-      (showMarketColumn ? [tdName, tdMarket, tdOver, tdUnder, tdMinTrend, tdTrack]
-                        : [tdName, tdOver, tdUnder, tdMinTrend, tdTrack]).forEach(td=>tr.appendChild(td));
+      (showMarketColumn ? [tdName, tdMarket, tdOver, tdUnder, tdMinTrend, tdProj, tdTrack]
+                        : [tdName, tdOver, tdUnder, tdMinTrend, tdProj, tdTrack]).forEach(td=>tr.appendChild(td));
       tbody.appendChild(tr);
 
       const detailTr = document.createElement('tr');
@@ -10611,31 +11206,50 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
       const useAdj = !!(madj && madj.apply);
       const raw5 = hitRateFor(pname, team, statKey, line, 5), raw10 = hitRateFor(pname, team, statKey, line, 10),
             raw15 = hitRateFor(pname, team, statKey, line, 15), rawAll = hitRateFor(pname, team, statKey, line, 'all');
-      const r5 = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 5, madj.projMin) : raw5;
-      const r10 = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 10, madj.projMin) : raw10;
-      const r15 = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 15, madj.projMin) : raw15;
-      const rAll = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 'all', madj.projMin) : rawAll;
+      const ur = useAdj ? madj.usgRatio : 1;
+      const r5 = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 5, madj.projMin, ur) : raw5;
+      const r10 = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 10, madj.projMin, ur) : raw10;
+      const r15 = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 15, madj.projMin, ur) : raw15;
+      const rAll = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 'all', madj.projMin, ur) : rawAll;
       if(!r10 || !r15) return;
       // require she actually played at least 60% of the games in BOTH windows (6-of-10, 9-of-15) —
       // otherwise a small-sample player (e.g. 2 games played all year) can slip through on a fluke rate
       if(r10.gp < MIN_GP_10 || r15.gp < MIN_GP_15) return;
-      if(overO && r10.rate>=QUAL && r15.rate>=QUAL){
+      // Projection and edge are computed for EVERY prop, disrupted roster or not -- they are the
+      // Edge column, and a column that only populates on nights with injuries is useless. What
+      // stays scoped to disrupted rosters is only the RANKING consequence: the demote/veto
+      // verdict fires where the minutes or usage adjustment applied, because that is where the
+      // hit rate is describing a role the player no longer has.
+      const projMinFor = madj ? madj.projMin : null;
+      const edgeOver  = projectionEdge({player:pname, team, statKey, line, side:'over'},  projMinFor, ur);
+      const edgeUnder = projectionEdge({player:pname, team, statKey, line, side:'under'}, projMinFor, ur);
+      const agreeOver  = useAdj && edgeOver  ? Object.assign({}, edgeOver,  {agrees: edgeOver.edge  >= -AGREEMENT_MARGIN}) : null;
+      const agreeUnder = useAdj && edgeUnder ? Object.assign({}, edgeUnder, {agrees: edgeUnder.edge >= -AGREEMENT_MARGIN}) : null;
+      const vOver  = agreementVerdict(agreeOver,  r10.gp, r15.gp);
+      const vUnder = agreementVerdict(agreeUnder, r10.gp, r15.gp);
+      if(overO && r10.rate>=QUAL && r15.rate>=QUAL && vOver !== 'veto'){
         candidates.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:overO.price, sportsbook:bookSourceLabel(overO, bookForFallback), rate5:r5?r5.rate:null, rate10:r10.rate, rate15:r15.rate, rateAll:rAll?rAll.rate:null, gp5:r5?r5.gp:0, gp10:r10.gp, gp15:r15.gp, gpAll:rAll?rAll.gp:0,
-          minutesAdjusted: useAdj, minutesProj: madj || null,
+          minutesAdjusted: useAdj, minutesProj: madj || null, agreement: agreeOver,
+          projEdge: edgeOver, agreementVerdict: vOver,
           rawRate5: raw5?raw5.rate:null, rawRate10: raw10.rate, rawRate15: raw15.rate, rawRateAll: rawAll?rawAll.rate:null,
           betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'over', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
-      if(underO && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
+      if(underO && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL && vUnder !== 'veto'){
         candidates.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:underO.price, sportsbook:bookSourceLabel(underO, bookForFallback), rate5:r5?1-r5.rate:null, rate10:1-r10.rate, rate15:1-r15.rate, rateAll:rAll?1-rAll.rate:null, gp5:r5?r5.gp:0, gp10:r10.gp, gp15:r15.gp, gpAll:rAll?rAll.gp:0,
-          minutesAdjusted: useAdj, minutesProj: madj || null,
+          minutesAdjusted: useAdj, minutesProj: madj || null, agreement: agreeUnder,
+          projEdge: edgeUnder, agreementVerdict: vUnder,
           rawRate5: raw5?1-raw5.rate:null, rawRate10: 1-raw10.rate, rawRate15: 1-raw15.rate, rawRateAll: rawAll?1-rawAll.rate:null,
           betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'under', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
     });
   });
 
-  // sort by worst-case confidence (min of the two windows) descending, so the safest legs lead
-  candidates.sort((a,b)=> worstCaseRate(b) - worstCaseRate(a));
+  // Sort by worst-case confidence (min of the two windows) descending, so the safest legs lead --
+  // minus a flat penalty for any bet the projection contradicts. THIS IS THE DEMOTION. The
+  // penalty is deliberately large enough to reorder across a real quality gap: an agreeing 70%
+  // bet now finishes ahead of a contradicted 80% one, which is the whole point of demoting
+  // rather than deleting. The bet is still on the board, still auditable, just not at the top.
+  candidates.sort((a,b)=> rankScoreForBet(b) - rankScoreForBet(a));
   return candidates;
 }
 
