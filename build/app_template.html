@@ -5579,16 +5579,30 @@ function replayTrackedPick(bet){
 // expectation. The sample spans offsets of -2..+2 around it because real lines scatter with about
 // 1.6 points of spread.
 //
-// WHAT IT ACTUALLY BUYS, OUT OF SAMPLE. Measured against the old hit-rate ranking on identical
-// rows, at offset 0 -- lines sitting where real lines sit, the hardest case:
+// WHAT IT ACTUALLY BUYS -- AND THE HONEST VERSION OF THAT NUMBER. On the synthetic sample the top
+// tenth of the board went 64.4% -> 68.9%. That figure did NOT survive contact with real lines and
+// should not be quoted.
 //
-//     top 10% of the board:   hit-rate ranking 64.4%   ->   this model 68.9%
-//     the whole board:        hit-rate ranking 55.6%   ->   this model 58.0%
+// THE REAL TEST (bt/validate.js): 617 graded player props from this app's own App Tracker archive,
+// real book lines, real prices, real results, 2026-08-05 to 2026-08-23 -- all after the model's
+// training cut, with features rebuilt as of each pick's own game date.
 //
-// and across all offsets the top decile goes 86.1% -> 88.3%. The RELATIVE comparison is the solid
-// part: both methods face the same rows, so the improvement is not an artefact of how the lines
-// were built. The absolute figures depend on that construction and should be read as indicative
-// until the same test can be run against the real lines now being archived.
+//   * Those 617 picks hit 52.5%. The average price-implied chance was 54.0%. The app has no
+//     demonstrated edge over the market on this sample.
+//   * The model's probabilities are NOT CALIBRATED on real lines. It says 60-70% and those bets
+//     won 47.8%; it says 40-50% and those won 55.3%. Flat to inverted across the middle, which is
+//     where nearly all the mass sits. The near-perfect calibration on the synthetic sample was an
+//     artefact of lines I placed myself.
+//   * Under leave-one-day-out cross-validation, NO combination of these signals beat simply
+//     predicting the base rate (log-loss 0.6950 for the model vs 0.6919 for a constant). Ranked
+//     slices that look strong in-sample (top 10% at 69.4%) fall to 56.5% once the day being
+//     predicted is held out.
+//
+// SO WHY IS IT STILL THE RANKING KEY? Because the thing it replaced was measurably worse. Within
+// the Advanced list specifically, the OLD ranking's top 30% hit 42.0% while the list as a whole hit
+// 51.2% -- the old key was anti-correlated with winning. The new key's top 30% is 49.7%. That is
+// not an edge; it is the removal of a negative one. Nothing here justifies a claim that this model
+// picks winners, and the column tooltip says so in as many words.
 //
 // EVERY FEATURE COMES OFF THE PLAYER'S OWN GAME LOG. Usage, rest, starter rate and opponent defence
 // were all fitted and then dropped -- the first three fitted to near-zero weight, and opponent
@@ -5684,17 +5698,27 @@ function advancedWinProbability(leg, asOfDate){
   return {pOver: Math.round(pOver*1000)/1000, winProb: Math.round(winProb*1000)/1000,
           modelSide: pOver >= 0.5 ? 'over' : 'under', agrees: (pOver >= 0.5 ? 'over' : 'under') === leg.side};
 }
-const ADVANCED_WINPROB_DEF = 'The model\u2019s <b>probability that this exact bet lands tonight</b> \u2014 not a record '
-  + 'of how often it landed before. Fitted by logistic regression on ' + ADVANCED_MODEL.trainRows.toLocaleString()
-  + ' player-game-line rows from this season and tested on ' + ADVANCED_MODEL.testRows.toLocaleString()
-  + ' later ones, split by date so the test set is strictly in the future of what it learned from. '
+// The measured result, kept as data rather than prose so the tooltip and any future write-up
+// cannot drift apart -- and so re-running bt/validate.js has exactly one place to update.
+const ADVANCED_REAL_TEST = {
+  n: 617, from: '2026-08-05', to: '2026-08-23',
+  overallPct: '52.5', impliedPct: '54.0', midBucketPct: '47.8',
+  advOverallPct: '51.2', oldAdvTop30Pct: '42.0', newAdvTop30Pct: '49.7',
+};
+const ADVANCED_WINPROB_DEF = 'A model estimate of the chance this bet lands tonight, used to order the board. '
   + 'It reads her level, her spread, the skew of her distribution, where the line sits inside it in units of her own '
-  + 'game-to-game variation, her minutes and how they are moving, her per-minute rate, and home/away. '
-  + '<b>Why this replaced hit-rate ranking:</b> a hit rate says how often a bet landed at a line the book set '
-  + '<i>after</i> watching the same games, which flatters it. Out of sample, ranking by this probability lifted the '
-  + 'top tenth of the board from 64.4% to 68.9% at lines sitting where real lines sit. Those figures come from a '
-  + 'reconstruction \u2014 lines placed at each player\u2019s trailing mean, which is where books were measured to put '
-  + 'them \u2014 so treat the improvement as solid and the absolute number as indicative.';
+  + 'game-to-game variation, her minutes and how they are moving, her per-minute rate, and home/away \u2014 fitted on '
+  + ADVANCED_MODEL.trainRows.toLocaleString() + ' player-game-line rows and tested on later ones. '
+  + '<b>Read it as a sort order, not as a probability.</b> Checked against ' + ADVANCED_REAL_TEST.n + ' of this app\u2019s own '
+  + 'graded picks at real book lines, it is <b>not calibrated</b>: bets it rated 60\u201370% won '
+  + ADVANCED_REAL_TEST.midBucketPct + '% of the time, and under proper cross-validation nothing in it beat simply '
+  + 'assuming the average. Those same ' + ADVANCED_REAL_TEST.n + ' picks hit ' + ADVANCED_REAL_TEST.overallPct + '% overall '
+  + 'against an average price-implied ' + ADVANCED_REAL_TEST.impliedPct + '%, so this app has <b>no demonstrated edge over '
+  + 'the market</b> and nothing here should be read as one. '
+  + 'It replaced hit-rate ranking because that was measurably worse, not because this is good: within the Advanced list '
+  + 'the old key\u2019s top 30% hit ' + ADVANCED_REAL_TEST.oldAdvTop30Pct + '% while the list as a whole hit '
+  + ADVANCED_REAL_TEST.advOverallPct + '% \u2014 it was pointing the wrong way. This one\u2019s top 30% is '
+  + ADVANCED_REAL_TEST.newAdvTop30Pct + '%. That is a negative removed, not an edge added.';
 
 const AGREEMENT_DEF = 'Her <b>projected</b> total for tonight \u2014 her last ' + PROJECTION_WINDOW
   + ' games replayed at her projected minutes and tonight\u2019s projected usage \u2014 next to the line, with the '
@@ -8120,7 +8144,11 @@ function computeRowSignal(pname, team, opponent, statKey, line){
 // candidates from gatherCandidateLegs, so a leg pointing the "wrong" way per our own
 // consensus is correctly dropped rather than scored).
 function computeAdvancedEdgeForLeg(leg){
-  if(leg.betType !== 'player_prop') return null;
+  // Alternates included. computeRowSignal reads leg.line, and an alt carries the half-point
+  // equivalent of its milestone there, so the EMA comparison is exactly the one it would make for
+  // the same number posted as an over/under. Excluding them here was what kept every alt off the
+  // Advanced board even after the leg gatherer started emitting them.
+  if(leg.betType !== 'player_prop' && leg.betType !== 'player_prop_alt') return null;
   const sig = computeRowSignal(leg.player, leg.team, leg.opponent, leg.statKey, leg.line);
   if(!sig) return null;
   if((leg.side==='over') !== (sig.direction==='over')) return null;
@@ -9063,8 +9091,12 @@ function buildAdvancedEdgeCandidates(todaysGames, selectedBook){
     const dkDetail = detail ? getBookmakerData(detail, selectedBook) : null;
     const gameMarkets = marketsByKey(dk);
     const detailMarkets = marketsByKey(dkDetail);
-    const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0, selectedBook)
-      .filter(l => l.betType==='player_prop' && l.price >= MIN_PRICE);
+    const legsRaw = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0, selectedBook)
+      // Alternates included: they are player props with a milestone threshold instead of a
+      // half-point line, and everything downstream (the win-probability model, grading, the
+      // tracker) reads leg.line, which carries the half-point equivalent.
+      .filter(l => (l.betType==='player_prop' || l.betType==='player_prop_alt') && l.price >= MIN_PRICE);
+    const legs = collapseAltLadders(legsRaw);
     const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
     legs.forEach(leg=>{
       const inj = playerInjuryStatus(leg.player, leg.team);
@@ -9143,8 +9175,9 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
     const detailMarkets = marketsByKey(dkDetail);
     // Game Total exclusion (see the conversation this came from) lives at the source now, inside
     // gatherCandidateLegs itself -- applies uniformly to every feature using it, not just here.
-    const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL, selectedBook)
-      .filter(l => l.price >= MIN_PRICE && !STANDARD_EXCLUDED_BET_TYPES.has(l.betType));
+    const legs = collapseAltLadders(
+      gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, QUAL, selectedBook)
+        .filter(l => l.price >= MIN_PRICE && !STANDARD_EXCLUDED_BET_TYPES.has(l.betType)));
     const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
     return legs.map(l => Object.assign({}, l, {game: gameLabel}));
   }
@@ -9252,7 +9285,7 @@ function computeMatchupTopBets(ev, detail, selectedBook){
   const gameMarkets = marketsByKey(getBookmakerData(ev, selectedBook));
   const detailMarkets = marketsByKey(detail ? getBookmakerData(detail, selectedBook) : null);
   const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
-  const legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0, selectedBook)
+  const legs = collapseAltLadders(gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0, selectedBook))
     .map(l => Object.assign({}, l, {game: gameLabel}));
   legs.sort(compareStandardBets);
   return legs;
@@ -11626,6 +11659,61 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   // penalty is deliberately large enough to reorder across a real quality gap: an agreeing 70%
   // bet now finishes ahead of a contradicted 80% one, which is the whole point of demoting
   // rather than deleting. The bet is still on the board, still auditable, just not at the top.
+  // ---- alternate ("X+") ladders ----
+  // Same qualifying bars as the standard lines, but measured with altHitRateFor, because the
+  // milestone IS the threshold: "20+" needs 20, where a 20.5 line needs 21. Only the best level
+  // per (player, stat, side) survives, so one ladder cannot swallow the board.
+  (function addAlternates(){
+    const altLegs = [];
+    ALT_PROP_MARKETS.forEach(mkey=>{
+      const market = detailMarkets[mkey]; if(!market) return;
+      const statKey = PROP_MARKET_TO_STAT[mkey];
+      (market.outcomes || []).forEach(o=>{
+        if(!o || !o.description || o.point === undefined || o.point === null) return;
+        const pname = o.description;
+        const team = findPlayerTeam(pname, homeShort, awayShort);
+        if(!team) return;
+        if(betPlayerIsUnavailable({player: pname, team})) return;
+        const side = o.name === 'Under' ? 'under' : 'over';
+        const opponent = team === homeShort ? awayShort : homeShort;
+        const r5  = altHitRateSided(pname, team, statKey, o.point, side, 5);
+        const r10 = altHitRateSided(pname, team, statKey, o.point, side, 10);
+        const r15 = altHitRateSided(pname, team, statKey, o.point, side, 15);
+        const rAll= altHitRateSided(pname, team, statKey, o.point, side, 'all');
+        if(!r10 || !r15) return;
+        if(r10.gp < MIN_GP_10 || r15.gp < MIN_GP_15) return;
+        if(r10.rate < QUAL || r15.rate < QUAL) return;
+        // The projection and the demote/veto verdict work on the half-point equivalent, which is
+        // what makes an alt comparable to a standard line everywhere downstream.
+        const effLine = altEffectiveLine(o.point);
+        const madj = minutesAdjustmentFor(pname, team);
+        const useAdj = !!(madj && madj.apply);
+        const ur = useAdj ? madj.usgRatio : 1;
+        const edge = projectionEdge({player:pname, team, statKey, line:effLine, side}, madj ? madj.projMin : null, ur);
+        const agreement = useAdj && edge ? Object.assign({}, edge, {agrees: edge.edge >= -AGREEMENT_MARGIN}) : null;
+        const verdict = agreementVerdict(agreement, r10.gp, r15.gp);
+        if(verdict === 'veto') return;
+        altLegs.push({label:`${pname} ${o.point}+ ${PROP_MARKET_LABEL[mkey]}${side === 'under' ? ' (Under)' : ''}`,
+          price:o.price, sportsbook:bookSourceLabel(o, bookForFallback),
+          rate5:r5?r5.rate:null, rate10:r10.rate, rate15:r15.rate, rateAll:rAll?rAll.rate:null,
+          gp5:r5?r5.gp:0, gp10:r10.gp, gp15:r15.gp, gpAll:rAll?rAll.gp:0,
+          minutesAdjusted: useAdj, minutesProj: madj || null, agreement,
+          projEdge: edge, agreementVerdict: verdict,
+          betType:'player_prop_alt', team, opponent, player:pname, statKey,
+          market: PROP_MARKET_LABEL[mkey], line: effLine, altPoint: o.point, side,
+          thresholdToHit: o.point, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
+      });
+    });
+    // NOT collapsed here. The obvious-looking version -- keep the best level at this point --
+    // is wrong, and wrong in a way that silently deletes the whole feature: "best" means the
+    // highest hit rate, which is always the LOWEST milestone on the ladder, which is the one
+    // priced at -2000 that every caller's price floor then throws away. One level survives the
+    // collapse and then nothing survives the filter. The collapse has to run AFTER whatever price
+    // policy the caller applies, so it happens in the callers instead.
+    altLegs.forEach(l=>candidates.push(l));
+  })();
+
+  // sort by worst-case confidence (min of the two windows) descending, so the safest legs lead
   candidates.sort((a,b)=> rankScoreForBet(b) - rankScoreForBet(a));
   return candidates;
 }
@@ -15698,6 +15786,53 @@ async function renderBetTrackerPage(){
 
 // Extracts every priced outcome from a merged captured-market set (used only for History Import,
 // where we want ALL available lines, not just ones clearing a confidence bar).
+// ==================== Alternate ("X+") player-prop lines ====================
+// The books post a whole ladder of milestone lines per player -- 10+, 12+, 14+ points and so on --
+// priced from heavy favourite to long shot. The app has understood the `player_prop_alt` bet type
+// and rendered the ladders on Live Lines for a long time, but NEITHER leg gatherer ever emitted
+// them, so no alternate has ever reached a betting table.
+//
+// TWO THINGS MAKE AN ALT DIFFERENT FROM A STANDARD O/U, and both are easy to get wrong:
+//   1. THE POINT IS THE LITERAL THRESHOLD. "20+" hits at 20, not at 21. A standard 20.5 line hits
+//      at 21. So the point is carried as thresholdToHit (which gradeLeg already honours with
+//      `val >= threshold`), and anything that expects an over/under half-line is handed
+//      point - 0.5 instead -- 20+ is exactly "over 19.5".
+//   2. A LADDER IS MANY BETS ON ONE PLAYER. Ten levels of Caitlin Clark points could take ten of
+//      the thirty slots on the Standard board. Only the strongest qualifying level per
+//      (player, stat, side) is kept, so a ladder contributes one row, not ten.
+// The -165 price floor the Standard and Advanced lists already apply does the other necessary
+// filtering on its own: it drops the "2+ points at -2000" end of every ladder.
+const ALT_PROP_MARKETS = ['player_points_alternate','player_rebounds_alternate','player_assists_alternate',
+  'player_threes_alternate','player_points_rebounds_assists_alternate','player_points_rebounds_alternate',
+  'player_points_assists_alternate','player_rebounds_assists_alternate'];
+function altEffectiveLine(point){ return point - 0.5; }
+// Keeps the single best level per (player, stat, side) out of a list of alt legs. "Best" is the
+// worst-case rate across the windows, which is the same thing the Standard board ranks on.
+// Keeps every non-alternate leg untouched and collapses each alt ladder to its single strongest
+// surviving level, per (player, stat, side). Called by each board AFTER its own price filter --
+// see the note in gatherCandidateLegs for why the order matters.
+function collapseAltLadders(legs){
+  const out = [], best = new Map();
+  for(const leg of legs){
+    if(leg.betType !== 'player_prop_alt'){ out.push(leg); continue; }
+    const k = leg.player + '|' + leg.statKey + '|' + leg.side;
+    const score = Math.min(leg.rate10 == null ? 0 : leg.rate10, leg.rate15 == null ? 0 : leg.rate15);
+    const cur = best.get(k);
+    if(!cur || score > cur.score) best.set(k, {score, leg});
+  }
+  for(const v of best.values()) out.push(v.leg);
+  return out;
+}
+// Side-aware alt hit rate. altHitRateFor answers "did she reach this threshold"; the Under side of
+// an alt is the complement, and a window with no games played must stay null rather than becoming
+// a confident 100% under.
+function altHitRateSided(playerName, team, statKey, point, side, windowSize){
+  const r = altHitRateFor(playerName, team, statKey, point, windowSize);
+  if(!r || !r.gp) return r;
+  return {gp: r.gp, hits: side === 'under' ? r.gp - r.hits : r.hits,
+          rate: side === 'under' ? 1 - r.rate : r.rate, found: true};
+}
+
 function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gameDate){
   const legs = [];
   const h2h = markets['h2h'];
@@ -15747,6 +15882,26 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
       const threshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
       if(over) legs.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:over.price, betType:'player_prop', team, player:pname, statKey, line, side:'over', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       if(under) legs.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:under.price, betType:'player_prop', team, player:pname, statKey, line, side:'under', thresholdToHit:threshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
+    });
+  });
+  // Alternate ladders. No hit-rate bar here -- gatherAllCapturedLegs is the "everything priced"
+  // gatherer by design, and its caller (Specials) applies its own four bars afterwards. `line`
+  // carries the half-point equivalent so every downstream consumer that expects an O/U line reads
+  // the right number; thresholdToHit carries the literal milestone, which is what grades it.
+  ALT_PROP_MARKETS.forEach(mkey=>{
+    const market = markets[mkey]; if(!market) return;
+    const statKey = PROP_MARKET_TO_STAT[mkey];
+    (market.outcomes || []).forEach(o=>{
+      if(!o || !o.description || o.point === undefined || o.point === null) return;
+      const pname = o.description;
+      const team = findPlayerTeam(pname, homeShort, awayShort);
+      if(!team) return;
+      if(betPlayerIsUnavailable({player: pname, team})) return;
+      const side = o.name === 'Under' ? 'under' : 'over';
+      legs.push({label:`${pname} ${side === 'under' ? 'Under' : ''}${o.point}+ ${PROP_MARKET_LABEL[mkey]}`.replace('  ',' '),
+        price:o.price, betType:'player_prop_alt', team, player:pname, statKey,
+        line: altEffectiveLine(o.point), altPoint: o.point, side,
+        thresholdToHit: o.point, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
     });
   });
   return legs;
