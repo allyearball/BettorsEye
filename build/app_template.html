@@ -7829,9 +7829,9 @@ function renderOddsPage(){
           bets: computeMatchupTopBets(mEv, mDetail, selectedBook),
           showTierColumns: true,
           title: `\u2b50 Top Matchup Bets \u2014 ${matchupLabel}`,
-          titleDef: `Every bet the selected sportsbook is currently offering on this matchup, ranked 1 (most likely) downward by worst-case hit rate across the last-5, last-10 and last-15-game windows \u2014 the same "Overall %" ranking the Top Bets page uses, with the same columns and filters, plus two the Top Bets page doesn\u2019t carry: <b>Matchup Group</b> (the height tier of the opposing players at her position tonight, counting only those not ruled Out) and <b>Vs That Tier</b> (her season record against that same tier, across every team she\u2019s faced). Unlike that page there is no hit-rate qualifier and no cap on how many bets are listed, so low-probability bets appear here too, further down. <b>Min Price starts at -165</b> to match the Top Bets cutoff; clear or change it to see bets at any price. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.`,
+          titleDef: `Every bet the selected sportsbook is currently offering on this matchup, ranked 1 (most likely) downward by worst-case hit rate across the last-5, last-10 and last-15-game windows \u2014 the same "Overall %" ranking the Top Bets page uses, with the same columns and filters, plus two the Top Bets page doesn\u2019t carry: <b>Matchup Group</b> (the height tier of the opposing players at her position tonight, counting only those not ruled Out) and <b>Vs That Tier</b> (her season record against that same tier, across every team she\u2019s faced). Unlike that page there is no hit-rate qualifier and no cap on how many bets are listed, so low-probability bets appear here too, further down. <b>Min Price starts at ${TOP_BETS_MIN_PRICE}</b> to match the Top Bets cutoff; clear or change it to see bets at any price. Not a guarantee \u2014 this is historical frequency, and these still reflect small samples.`,
           emptyMessage: `No lines are posted for ${matchupLabel} yet at the selected sportsbook \u2014 books typically post player props a day or two before tip-off. Try switching the Sportsbook selector above.`,
-          defaultFilters: {minPrice: -165},
+          defaultFilters: {minPrice: TOP_BETS_MIN_PRICE},
         });
         return;
       }
@@ -9082,7 +9082,7 @@ function buildVsOpponentCell(leg){
 
 function buildAdvancedEdgeCandidates(todaysGames, selectedBook){
   selectedBook = selectedBook || 'best';
-  const MIN_PRICE = -165;
+  const MIN_PRICE = TOP_BETS_MIN_PRICE;
   let pool = [];
   todaysGames.forEach(({ev, detail})=>{
     const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
@@ -9165,7 +9165,7 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
   const todaysGames = cachedFetch.filter(({ev}) => new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
   if(todaysGames.length === 0) return { todaysGames, topBets: [] };
 
-  const MIN_PRICE = -165;
+  const MIN_PRICE = TOP_BETS_MIN_PRICE;
   function candidatesForGame(ev, detail, QUAL){
     const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
     const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
@@ -9230,7 +9230,7 @@ function computeRoleChangeBets(cachedFetch, selectedBook, excludeKeys){
   const todaysGames = cachedFetch.filter(({ev}) =>
     new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
   if(!todaysGames.length) return [];
-  const MIN_PRICE = -165;
+  const MIN_PRICE = TOP_BETS_MIN_PRICE;
   let pool = [];
   todaysGames.forEach(({ev, detail})=>{
     const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
@@ -9427,7 +9427,7 @@ function betIdentityKey(bet){
 //   title           section heading text
 //   titleDef        the \u24d8 tooltip on that heading
 //   emptyMessage    shown instead of the table when `bets` comes back empty
-//   defaultFilters  seed values for the filter bar, e.g. {minPrice: -165}; the inputs render
+//   defaultFilters  seed values for the filter bar, e.g. {minPrice: TOP_BETS_MIN_PRICE}; the inputs render
 //                   pre-filled so it's visible that a filter is active, and Clear Filters still
 //                   clears to nothing rather than snapping back to these
 function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys, selectedBook, opts){
@@ -9450,7 +9450,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
   sec.textContent = opts.title || `\u2b50 Today\u2019s Top ${topN} Bets \u2014 Standard`;
   container.appendChild(sec);
-  appendDefIcon(sec, opts.titleDef || `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced -165 or better. <b>Player props only right now</b> \u2014 moneyline, spread and over/under picks are held back from this list for the time being (they still appear on a game\u2019s Top Matchup Bets and in its parlay sections). Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows (see "Overall %"); ties on that fall back to Season %, and further ties fall back to the L10 EMA's distance from the line (player props only \u2014 team-level bets have no per-player EMA, so they stay tied at that level). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.` + (showTierCols ? tierColsNote : ''));
+  appendDefIcon(sec, opts.titleDef || `Only includes games scheduled for today that haven\u2019t tipped off yet, or that tipped off within the last ~${TOP_BETS_QUARTER_GRACE_MINUTES} minutes (a real-world-elapsed-time estimate for end of the 1st quarter \u2014 this app has no live game clock) \u2014 and only bets priced ${TOP_BETS_MIN_PRICE} or better. <b>Player props only right now</b> \u2014 moneyline, spread and over/under picks are held back from this list for the time being (they still appear on a game\u2019s Top Matchup Bets and in its parlay sections). Ranked 1 (most likely) to ${topN} by worst-case hit rate across the last-5, last-10, and last-15-game windows (see "Overall %"); ties on that fall back to Season %, and further ties fall back to the L10 EMA's distance from the line (player props only \u2014 team-level bets have no per-player EMA, so they stay tied at that level). Not a guarantee \u2014 this is historical frequency, and these still reflect small samples. Click "+ Track" on any bet to log it.` + (showTierCols ? tierColsNote : ''));
 
   if(!usingOverride && todaysGames.length === 0){
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
@@ -9461,7 +9461,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
 
   if(topBets.length === 0){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg.textContent = opts.emptyMessage || 'No player prop in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at -165 or better. (Moneyline, spread and over/under picks are held back from this list for the time being.)';
+    msg.textContent = opts.emptyMessage || 'No player prop in today\u2019s games currently clears 70% in both the last-10 and last-15 windows at ' + TOP_BETS_MIN_PRICE + ' or better. (Moneyline, spread and over/under picks are held back from this list for the time being.)';
     container.appendChild(msg);
     return;
   }
@@ -9868,7 +9868,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   const sec = document.createElement('div'); sec.className='section-title'; sec.style.fontSize='15px';
   sec.textContent = `\ud83e\udde0 Today\u2019s Top ${topN} Bets \u2014 Advanced Analytics`;
   container.appendChild(sec);
-  appendDefIcon(sec, `Player props only, ranked by a composite edge score \u2014 not the same ranking as the hit-rate table above. A leg only qualifies if at least 3 of its 4 EMA windows (L5/L10/L15/full season) agree with the side DraftKings' line implies, AND the opponent's Defense-vs-Position Index doesn't flatly contradict that direction (beyond 0.85/1.15 the wrong way excludes it outright, not just a discount). What's left is scored by how big the edge is, how volatile she's been (IQR over her last 10 games \u2014 high volatility discounts the score), the DvP Index itself (scaled bonus/penalty short of the hard cutoff above), and a Usage Rate (USG%) trend \u2014 whether her last 5 games show rising or falling involvement versus her season norm, nudging the score up to \u00b115%. Players listed Out or Doubtful are excluded outright; Questionable/Day-to-Day players are kept but flagged and discounted. Same pregame-through-Q1 window and -165 price floor as the table above. This is a second opinion from a different methodology, not a replacement \u2014 worth comparing where the two tables agree and where they don't.`);
+  appendDefIcon(sec, `Player props only, ranked by a composite edge score \u2014 not the same ranking as the hit-rate table above. A leg only qualifies if at least 3 of its 4 EMA windows (L5/L10/L15/full season) agree with the side DraftKings' line implies, AND the opponent's Defense-vs-Position Index doesn't flatly contradict that direction (beyond 0.85/1.15 the wrong way excludes it outright, not just a discount). What's left is scored by how big the edge is, how volatile she's been (IQR over her last 10 games \u2014 high volatility discounts the score), the DvP Index itself (scaled bonus/penalty short of the hard cutoff above), and a Usage Rate (USG%) trend \u2014 whether her last 5 games show rising or falling involvement versus her season norm, nudging the score up to \u00b115%. Players listed Out or Doubtful are excluded outright; Questionable/Day-to-Day players are kept but flagged and discounted. Same pregame-through-Q1 window and ${TOP_BETS_MIN_PRICE} price floor as the table above. This is a second opinion from a different methodology, not a replacement \u2014 worth comparing where the two tables agree and where they don't.`);
 
   if(todaysGames.length === 0){
     const msg0 = document.createElement('div'); msg0.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
@@ -9881,7 +9881,7 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
   const topBets = pool.slice(0, topN);
   if(topBets.length === 0){
     const msg = document.createElement('div'); msg.style.cssText='font-size:13px;color:var(--sub);margin-bottom:20px;';
-    msg.textContent = 'Nothing in today\u2019s eligible games currently has at least 3 of 4 EMA windows agreeing with DraftKings\u2019 posted line at -165 or better.';
+    msg.textContent = 'Nothing in today\u2019s eligible games currently has at least 3 of 4 EMA windows agreeing with DraftKings\u2019 posted line at ' + TOP_BETS_MIN_PRICE + ' or better.';
     container.appendChild(msg);
     return;
   }
@@ -10126,7 +10126,21 @@ function renderAdvancedTopBetsTable(container, cachedFetch, topN, liveGames, sta
 // gatherAllCapturedLegs doesn't set it, so it's mapped from statKey here using the same wording
 // PROP_MARKET_LABEL uses.
 const SPECIALS_MARKET_LABEL = STAT_KEY_LABEL; // same prop-stat keys; kept as a name for readability at the call sites
-const SPECIALS_MIN_PRICE = -135;
+// ONE PRICE FLOOR FOR EVERY BOARD. Standard, Advanced, Specials, the matchup board and the
+// role-change board each used to carry their own copy of this number (-165 three times, -135
+// once), which meant "the price cutoff" was really four cutoffs free to drift apart in silence.
+//
+// NOTE THE DIRECTION: a floor of -125 is STRICTER than -165, not looser. -140 clears -165 and does
+// NOT clear -125, so raising the floor removes heavy favourites rather than admitting them.
+//
+// Measured on 617 real graded picks from the App Tracker (bt/floorcheck.js), moving from -165 to
+// -125 removes 242 of them -- the -165..-126 band, which hit 56.6% at an average price of -144 for
+// a -3.9% return. What is left hits 49.9% at an average price of -34 for -1.8%. So the change
+// trades roughly 2.6 points of hit rate for roughly 0.8 points of return and cuts the board by
+// about a third. Both figures sit inside their confidence intervals: this is a stance about which
+// bets are worth listing, not a demonstrated improvement.
+const TOP_BETS_MIN_PRICE = -125;
+const SPECIALS_MIN_PRICE = TOP_BETS_MIN_PRICE;
 const SPECIALS_RECENT_BAR = 0.50;   // qualifiers 1 and 2
 const SPECIALS_TIER_BAR = 0.80;     // qualifier 3
 
@@ -10497,7 +10511,12 @@ function renderTopBets(container, cachedFetch, topN, selectedBook){
     return;
   }
 
-  const MIN_PRICE = -250; // "-250 or better" — a bet's price must be -250 or higher (less negative / more positive)
+  // CURRENTLY UNREFERENCED. Nothing calls renderTopBets any more -- the home page uses
+  // renderTopBetsTable instead. It is left in place rather than deleted, but its price floor is
+  // pointed at the shared constant: it used to carry its own -250, and a dead function holding a
+  // different cutoff is precisely how "the price floor" drifts back into being several floors the
+  // moment someone wires it up again.
+  const MIN_PRICE = TOP_BETS_MIN_PRICE;
   function candidatesForGame(ev, detail, QUAL){
     const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
     const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
@@ -15800,7 +15819,7 @@ async function renderBetTrackerPage(){
 //   2. A LADDER IS MANY BETS ON ONE PLAYER. Ten levels of Caitlin Clark points could take ten of
 //      the thirty slots on the Standard board. Only the strongest qualifying level per
 //      (player, stat, side) is kept, so a ladder contributes one row, not ten.
-// The -165 price floor the Standard and Advanced lists already apply does the other necessary
+// The shared TOP_BETS_MIN_PRICE floor every board applies does the other necessary
 // filtering on its own: it drops the "2+ points at -2000" end of every ladder.
 const ALT_PROP_MARKETS = ['player_points_alternate','player_rebounds_alternate','player_assists_alternate',
   'player_threes_alternate','player_points_rebounds_assists_alternate','player_points_rebounds_alternate',
