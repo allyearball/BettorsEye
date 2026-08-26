@@ -4866,6 +4866,7 @@ function invalidateInjuryDerivedCaches(){
   // These are `const` objects, so the keys are cleared rather than the binding reassigned.
   Object.keys(_specialsGroupTierCache).forEach(k=>{ delete _specialsGroupTierCache[k]; });
   _rosterDisruptionCache = null;
+  _minutesProjectionCache = null;
 }
 
 // Buckets ESPN's free-text status into a rough severity so the UI can color-code it. Checks
@@ -4933,7 +4934,8 @@ function rosterDisruption(team){
   const level = share >= ROSTER_DISRUPTION_MAJOR ? 'major'
               : share >= ROSTER_DISRUPTION_MINOR ? 'minor' : 'none';
   const result = {team, out, rotationOut, outMinutes: Math.round(outMinutes*10)/10,
-                  teamMinutes: Math.round(teamMinutes*10)/10, share, level};
+                  teamMinutes: Math.round(teamMinutes*10)/10, share, level,
+                  perPlayer};   // baseline minutes per team game, reused by the minutes projection
   _rosterDisruptionCache[team] = result;
   return result;
 }
@@ -4950,6 +4952,181 @@ const ROSTER_DISRUPTION_DEF = 'The share of this team\u2019s recent rotation min
   + Math.round(ROSTER_DISRUPTION_MAJOR*100) + '%+ this is flagged as MAJOR; at '
   + Math.round(ROSTER_DISRUPTION_MINOR*100) + '%+ as minor. Players who weren\u2019t in the recent rotation anyway '
   + 'count toward neither \u2014 their absence changes nothing about tonight.';
+
+// ==================== Minutes projection (Stage 2) ====================
+// When players are ruled out, their minutes do not vanish -- the 200-minute pool (5 players x 40)
+// is fixed, so every minute they would have played goes to somebody still available. This
+// projects where.
+//
+// Redistribution is POSITION-FIRST: a center's minutes mostly go to other centers, because that
+// is how substitution patterns actually work. Whatever a position group cannot absorb (nobody
+// available there, or everyone already capped) spills to the whole team. Within a group, minutes
+// go in proportion to what a player already plays -- a 30-minute starter absorbs more of a
+// starter's absence than a 10-minute reserve does -- but the cap stops that from running away.
+const MINUTES_PROJECTION_CAP = 36;      // a WNBA game is 40 minutes; 36+ is already a heavy night
+const MINUTES_PROJECTION_PASSES = 8;    // convergence guard for the capped redistribution loop
+// Above this share of unplaceable freed minutes, the projection is declared unreliable and no
+// adjustment is applied -- see the comment where `reliable` is computed.
+const MINUTES_PROJECTION_MAX_UNPLACED = 0.2;
+// Distributes `amount` across `targets`, weighted by their current minutes, respecting a cap.
+// Returns whatever could NOT be placed, so the caller can spill it elsewhere rather than
+// silently losing it.
+function distributeMinutes(amount, targets, current, cap){
+  let remaining = amount;
+  for(let pass=0; pass<MINUTES_PROJECTION_PASSES && remaining > 0.01; pass++){
+    const eligible = targets.filter(n => current[n] < cap);
+    if(!eligible.length) break;
+    const totalW = eligible.reduce((a,n)=>a+current[n], 0);
+    if(totalW <= 0) break;
+    let placed = 0;
+    eligible.forEach(n=>{
+      const share = remaining * (current[n] / totalW);
+      const room = cap - current[n];
+      const add = Math.min(share, room);
+      current[n] += add;
+      placed += add;
+    });
+    remaining -= placed;
+    if(placed <= 0.001) break;   // everyone capped; the loop cannot make further progress
+  }
+  return remaining;
+}
+let _minutesProjectionCache = null;
+function projectMinutesForTeam(team){
+  if(!_minutesProjectionCache) _minutesProjectionCache = {};
+  if(team in _minutesProjectionCache) return _minutesProjectionCache[team];
+
+  const d = rosterDisruption(team);
+  const base = d.perPlayer || {};
+  const outNames = new Set(d.out.map(o=>o.player));
+  const available = Object.keys(base).filter(n => !outNames.has(n));
+  const proj = {};
+  available.forEach(n=>{ proj[n] = base[n]; });
+
+  let unplaced = 0;
+  if(d.outMinutes > 0 && available.length){
+    // Freed minutes, grouped by the position bucket of the player who is out.
+    const freedByBucket = {};
+    d.out.filter(o=>o.inRotation).forEach(o=>{
+      const b = positionBucket(getPlayerPosition(o.player, team)) || 'ANY';
+      freedByBucket[b] = (freedByBucket[b] || 0) + (base[o.player] || 0);
+    });
+    Object.keys(freedByBucket).forEach(bucket=>{
+      const sameBucket = available.filter(n => (positionBucket(getPlayerPosition(n, team)) || 'ANY') === bucket);
+      let left = freedByBucket[bucket];
+      if(sameBucket.length) left = distributeMinutes(left, sameBucket, proj, MINUTES_PROJECTION_CAP);
+      // Spill: no one at that position, or they all hit the cap.
+      if(left > 0.01) left = distributeMinutes(left, available, proj, MINUTES_PROJECTION_CAP);
+      unplaced += Math.max(0, left);
+    });
+  }
+
+  const players = {};
+  available.forEach(n=>{
+    const b = base[n], pm = proj[n];
+    players[n] = {baseMin: Math.round(b*10)/10, projMin: Math.round(pm*10)/10,
+                  delta: Math.round((pm-b)*10)/10, ratio: b > 0 ? pm/b : 1};
+  });
+  // unplaced > 0 means the rotation genuinely cannot absorb the absence without exceeding the
+  // cap -- a real situation (a team down to seven bodies), and worth reporting rather than
+  // quietly pretending the minutes were placed.
+  // WHEN THE PROJECTION IS NOT TRUSTWORTHY. If a large share of the freed minutes cannot be
+  // placed without blowing past the cap, the remaining rotation genuinely cannot cover this
+  // absence -- players who have barely featured recently, or who aren't in the log at all
+  // (call-ups, hardship signings), are going to play. There is no data here about them, so any
+  // per-player projection is guesswork dressed up as arithmetic. Better to decline than to
+  // confidently promote a 14-minute reserve to 36 and rescale her whole history on it.
+  const reliable = d.outMinutes <= 0 || (unplaced / d.outMinutes) <= MINUTES_PROJECTION_MAX_UNPLACED;
+  const result = {team, players, freed: Math.round(d.outMinutes*10)/10,
+                  unplaced: Math.round(unplaced*10)/10, level: d.level, reliable,
+                  unplacedShare: d.outMinutes > 0 ? unplaced/d.outMinutes : 0};
+  _minutesProjectionCache[team] = result;
+  return result;
+}
+
+// ==================== Minutes-adjusted hit rates (Stage 2) ====================
+// A hit rate answers "how often did she clear this number?" -- but every game in that sample was
+// played under her OLD minutes. If she is about to play a third more than usual, the honest
+// question is "how often would she have cleared it playing tonight's minutes?".
+//
+// So each historical game is scaled by (projected minutes / the minutes she played THAT game)
+// before being compared to the line. Per-game rather than one flat multiplier, because a night
+// cut short by foul trouble should scale up more than a normal one.
+//
+// THE CAP IS THE IMPORTANT PART. Straight-line extrapolation says a 6-minute game scales by 5x,
+// which is nonsense -- production per minute is not constant across wildly different roles, and
+// nobody sustains their garbage-time rate over 30 minutes. Clamping to +/-40% keeps the
+// adjustment in the range where per-minute scaling is roughly believable and refuses to invent
+// anything beyond it.
+//
+// UNCALIBRATED, DELIBERATELY: the relationship is treated as linear within the cap because there
+// is no fitted elasticity yet. Stage 3's backtest should fit one per stat (rebounds track minutes
+// closely; points depend on usage as well) and replace the straight line. Until then this is a
+// stated assumption, not a tuned constant.
+const MINUTES_ADJUST_MAX_RATIO = 1.4;
+const MINUTES_ADJUST_MIN_RATIO = 1 / MINUTES_ADJUST_MAX_RATIO;
+// Below this the adjustment is noise and not worth confusing the display with.
+const MINUTES_ADJUST_MIN_SHIFT = 0.08;
+function minutesAdjustmentFor(playerName, team){
+  if(!playerName || !team) return null;
+  const proj = projectMinutesForTeam(team);
+  const p = proj.players[playerName];
+  if(!p || !p.baseMin) return null;
+  const shift = Math.abs(p.ratio - 1);
+  return {baseMin: p.baseMin, projMin: p.projMin, delta: p.delta, ratio: p.ratio,
+          reliable: proj.reliable, unplaced: proj.unplaced,
+          // Two independent reasons NOT to adjust: the move is too small to be worth it, or the
+          // projection it would be based on isn't trustworthy in the first place.
+          apply: proj.reliable && shift >= MINUTES_ADJUST_MIN_SHIFT};
+}
+// The value a historical game would have produced at tonight's projected minutes. Combined stats
+// scale each COMPONENT and sum, rather than scaling the total -- same answer for a linear model,
+// but it stays correct the moment Stage 3 gives the components different elasticities.
+function projectedStatValue(g, statKey, projMin){
+  const played = g.min;
+  if(!played || played <= 0) return statValue(g, statKey);
+  let ratio = projMin / played;
+  ratio = Math.max(MINUTES_ADJUST_MIN_RATIO, Math.min(MINUTES_ADJUST_MAX_RATIO, ratio));
+  const parts = COMBO_STAT_PARTS[statKey];
+  if(parts){
+    let total = 0;
+    for(const part of parts){
+      const v = g[part];
+      if(v === null || v === undefined) return null;
+      total += v * ratio;
+    }
+    return total;
+  }
+  const v = statValue(g, statKey);
+  return (v === null || v === undefined) ? v : v * ratio;
+}
+// Minutes-adjusted twins of hitRateFor / propHitRateSided. Same signatures plus projMin, same
+// return shape, so callers can swap between them freely.
+function adjustedHitRateFor(playerName, team, statKey, line, windowSize, projMin){
+  const threshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
+  const pl = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!pl) return null;
+  const played = windowSlice(pl.log, windowSize).filter(g=>!g.dnp);
+  if(!played.length) return {gp:0, hits:0, rate:0, found:true, adjusted:true};
+  const hits = played.filter(g=>{ const v = projectedStatValue(g, statKey, projMin); return v!==null && v>=threshold; }).length;
+  return {gp: played.length, hits, rate: hits/played.length, found:true, adjusted:true};
+}
+function adjustedPropHitRateSided(playerName, team, statKey, line, side, windowSize, projMin){
+  const pl = DATA.fullPlayerLogs[playerName+'|'+team];
+  if(!pl) return null;
+  const threshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
+  const played = windowSlice(pl.log, windowSize).filter(g=>!g.dnp);
+  const vals = played.map(g=>projectedStatValue(g, statKey, projMin)).filter(v=>v!==null && v!==undefined);
+  if(!vals.length) return {gp:0, hits:0, rate:0, found:true, adjusted:true};
+  const hits = vals.filter(v => side==='under' ? v < threshold : v >= threshold).length;
+  return {gp: vals.length, hits, rate: hits/vals.length, found:true, adjusted:true};
+}
+const MINUTES_ADJUSTED_DEF = 'This player\u2019s minutes are projected to change tonight because teammates '
+  + 'are ruled out, so the hit rates in this row have been <b>recomputed at her projected minutes</b>: each past '
+  + 'game is scaled by (projected minutes \u00f7 the minutes she played that game) before being compared to the '
+  + 'line. Scaling is capped at \u00b140% \u2014 beyond that, per-minute extrapolation stops being believable. '
+  + 'The unadjusted figures are in the tooltip on the Proj Min cell. This assumes production scales linearly with '
+  + 'minutes within that cap, which is an assumption, not a fitted result.';
 
 // Is this specific player ruled out (or doubtful) for tonight? Recommending a bet on someone who
 // will not take the floor is the most basic error a bet list can make, and until now only the
@@ -7938,6 +8115,44 @@ function buildColorKey(container, keys){
   return wrap;
 }
 
+// Projected minutes for tonight: "24 \u2192 31" when teammates being out changes her role,
+// a plain dash when nothing about her minutes is expected to move. The tooltip carries the
+// unadjusted hit rates, so the adjustment is always auditable against what it replaced.
+function fillProjMinCell(td, bet){
+  const m = bet && bet.minutesProj;
+  if(!m || !m.baseMin){ td.textContent = '\u2014'; td.style.color = 'var(--sub)'; return; }
+  if(!bet.minutesAdjusted){
+    td.textContent = m.reliable === false ? `${m.baseMin} ?` : `${m.baseMin}`;
+    td.style.color = 'var(--sub)';
+    td.title = m.reliable === false
+      ? `Too many minutes are unaccounted for (${m.unplaced} of them) to project this team's rotation `
+        + 'reliably \u2014 players outside the recent rotation will have to play, and there is no history '
+        + 'for them. Hit rates here are UNADJUSTED and should be treated with extra caution.'
+      : 'Her minutes are not projected to change materially tonight, so the hit rates in this row are unadjusted.';
+    return;
+  }
+  td.style.fontWeight = '700';
+  td.style.color = m.delta > 0 ? 'var(--green)' : 'var(--red)';
+  const main = document.createElement('div');
+  main.textContent = `${m.projMin}`;
+  const from = document.createElement('div');
+  from.style.cssText = 'font-size:10px;font-weight:400;color:var(--sub);';
+  from.textContent = `from ${m.baseMin}`;
+  td.appendChild(main); td.appendChild(from);
+  const pct = v => (v===null || v===undefined) ? '\u2014' : Math.round(v*100)+'%';
+  td.title = `Projected ${m.projMin} min tonight vs ${m.baseMin} recently (${m.delta>0?'+':''}${m.delta}).`
+    + ` Hit rates in this row are recomputed at that projection.`
+    + ` Unadjusted: L5 ${pct(bet.rawRate5)}, L10 ${pct(bet.rawRate10)}, L15 ${pct(bet.rawRate15)}, Season ${pct(bet.rawRateAll)}.`;
+}
+function projMinSortValue(bet){
+  const m = bet && bet.minutesProj;
+  if(!m || !m.baseMin) return null;
+  // Sorts by the PROJECTION, not the delta. Keying on delta meant that on a night with nobody
+  // out every row's key was 0 -- clicking the header did nothing, while the cells showed a
+  // perfectly sortable column of minutes. The key now matches what the cell displays.
+  return m.projMin != null ? m.projMin : m.baseMin;
+}
+
 const MINUTES_TREND_COL_DEF = 'Change in her average minutes per game over her last '
   + MINUTES_TREND_WINDOW + ' games versus the ' + MINUTES_TREND_WINDOW + ' games before that, with the percentage change in '
   + 'parentheses. <b>Highlighted green or red only when the shift clears both bars: more than '
@@ -8358,6 +8573,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   thead.innerHTML = '<tr><th class="th-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th>Price</th><th class="th-overall">Overall %</th>'
     +'<th class="th-l5 compact-hide">L5%</th><th class="th-l10 compact-hide">L10%</th><th class="th-l15 compact-hide">L15%</th><th class="th-season compact-hide">Season%</th>'
     +'<th class="th-mintrend compact-hide">Min Trend</th>'
+    +'<th class="th-projmin compact-hide">Proj Min</th>'
     + (showTierCols ? '<th class="left th-group compact-hide">Matchup Group</th><th class="th-vstier compact-hide">Vs That Tier</th>' : '')
     +'<th class="th-l10ema compact-hide">L10 EMA</th>'
     +'<th class="defcol th-defallowed compact-hide">Allowed/Gm</th><th class="left compact-hide">Game</th><th class="left compact-hide">Vs Opponent This Season</th>'
@@ -8382,6 +8598,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
   appendDefIcon(thead.querySelector('.th-l15'), 'Hit rate over her last 15 games played, with the actual record (hits/games) in parentheses.');
   appendDefIcon(thead.querySelector('.th-season'), 'Hit rate over her full season, with the actual record (hits/games) in parentheses. Not part of the Overall % ranking calculation \u2014 shown for reference alongside L5/L10/L15.');
   appendDefIcon(thead.querySelector('.th-mintrend'), MINUTES_TREND_COL_DEF);
+  appendDefIcon(thead.querySelector('.th-projmin'), MINUTES_ADJUSTED_DEF);
   appendDefIcon(thead.querySelector('.th-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
   appendDefIcon(thead.querySelector('.th-defallowed'), STAT_DEFINITIONS.defAllowed);
@@ -8425,6 +8642,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     {value: bet => bet.rate15},                                                                 // L15%
     {value: bet => bet.rateAll},                                                                // Season%
     {value: minutesTrendSortValue},                                                             // Min Trend
+    {value: projMinSortValue},                                                                  // Proj Min
     ...(showTierCols ? [
       {value: bet => { const g = betGroupTierInfo(bet); return g ? g.weightedHeight : null; }, dir: 'asc'}, // Matchup Group (by height, so shortest->tallest)
       {value: bet => { const hr = betTierHitRate(bet); return (hr && hr.gp) ? hr.rate : null; }}, // Vs That Tier (gp 0 => null, so it sorts last like its em dash implies)
@@ -8522,7 +8740,9 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     const tdSeason = mkRate(bet.rateAll, bet.gpAll, isProp ? hitCountFor(bet,'all') : null);
     const tdMinTrend = document.createElement('td'); tdMinTrend.style.cssText = cellStyle;
     fillMinutesTrendCell(tdMinTrend, bet);
-    [tdL5, tdL10, tdL15, tdSeason, tdMinTrend].forEach(td=>td.classList.add('compact-hide'));
+    const tdProjMin = document.createElement('td'); tdProjMin.style.cssText = cellStyle;
+    fillProjMinCell(tdProjMin, bet);
+    [tdL5, tdL10, tdL15, tdSeason, tdMinTrend, tdProjMin].forEach(td=>td.classList.add('compact-hide'));
     // Opposing height tier + her season record against that tier. Both are memoised per player
     // (and per player+opponent), so the ~70 rows of a matchup board cost roughly one heavy
     // computeHeightTierData call per distinct player, not one per row.
@@ -8643,7 +8863,7 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     }
     const tdTrack = document.createElement('td'); tdTrack.style.cssText = cellStyle;
     tdTrack.appendChild(makeTrackAndHistoryButtons(bet, 10));
-    [tdStar, tdRank, tdPos, tdLabel, tdPrice, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdMinTrend]
+    [tdStar, tdRank, tdPos, tdLabel, tdPrice, tdOverall, tdL5, tdL10, tdL15, tdSeason, tdMinTrend, tdProjMin]
       .concat(showTierCols ? [tdGroupTier, tdVsTier] : [])
       .concat([tdL10Ema, tdAllowed, tdGame, tdVsOpp, tdDef, tdSimDef, tdDefL5, tdSimDefL5, tdDvpSeason, tdDvpL15, tdDvpL10, tdDvpL5col, tdSportsbook, tdTrack])
       .forEach(td=>tr.appendChild(td));
@@ -9005,10 +9225,18 @@ function computeSpecialsBets(cachedFetch, selectedBook){
 
       // L5 is shown for context only -- it is NOT one of the four qualifying bars, so it's
       // computed after the cheap price check but never gates anything.
-      const hr5 = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 5);
-      const hr10 = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 10);
+      // Specials' four bars are qualifiers, not just a display -- so the minutes adjustment has
+      // to run BEFORE them, or a player would clear the bars on rates earned in a role she no
+      // longer has and land on a "deliberately short list" she shouldn't be on at all.
+      const madj = minutesAdjustmentFor(leg.player, leg.team);
+      const useAdj = !!(madj && madj.apply);
+      const sided = (win) => useAdj
+        ? adjustedPropHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, win, madj.projMin)
+        : propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, win);
+      const hr5 = sided(5);
+      const hr10 = sided(10);
       if(!hr10 || !hr10.gp || hr10.rate < SPECIALS_RECENT_BAR) return;     // qualifier 1
-      const hr15 = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 15);
+      const hr15 = sided(15);
       if(!hr15 || !hr15.gp || hr15.rate < SPECIALS_RECENT_BAR) return;     // qualifier 2
 
       const tierData = cachedHeightTierData(leg.player, leg.team);
@@ -9023,12 +9251,13 @@ function computeSpecialsBets(cachedFetch, selectedBook){
       // matching gp counts) frozen onto the bet at capture time. gatherCandidateLegs attaches
       // those for the Standard/Advanced pools; gatherAllCapturedLegs doesn't, so they're built
       // here from the same side-aware helper the Specials bars already use.
-      const hrAll = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, 'all');
+      const hrAll = sided('all');
       out.push(Object.assign({}, leg, {
         rate5: hr5.rate, rate10: hr10.rate, rate15: hr15.rate, rateAll: hrAll ? hrAll.rate : null,
         gp5: hr5.gp, gp10: hr10.gp, gp15: hr15.gp, gpAll: hrAll ? hrAll.gp : 0,
         sportsbook: bookSourceLabel({price: leg.price, book: leg.book}, selectedBook),
         market: SPECIALS_MARKET_LABEL[leg.statKey] || leg.statKey,
+        minutesAdjusted: useAdj, minutesProj: madj || null,
         game: gameLabel, opponent: opp, hr5, hr10, hr15, hrAll, hrTier,
         groupTier: groupInfo.groupTier, groupHeightIn: groupInfo.weightedHeight,
         // Carried so the rendered Game cell can link BOTH teams, rather than re-deriving
@@ -9085,17 +9314,18 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook, st
   const table = document.createElement('table');
   const thead = document.createElement('thead');
   thead.innerHTML = '<tr><th class="th-sp-star"></th><th>Rank</th><th class="left">Pos</th><th class="left">Bet</th><th class="left">Game</th><th>Price</th>'
-    + '<th>L5</th><th>L10</th><th>L15</th><th>Season</th><th class="th-sp-mintrend">Min Trend</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
+    + '<th>L5</th><th>L10</th><th>L15</th><th>Season</th><th class="th-sp-mintrend">Min Trend</th><th class="th-sp-projmin">Proj Min</th><th class="left">Tonight’s Group</th><th>Vs That Tier</th>'
     + '<th class="left">Vs That Team</th>'
     + '<th class="left defcol th-sp-defrank">Opp Def Rank</th><th class="left defcol th-sp-defrankl5">Opp Def Rank L5</th>'
     + '<th class="left">Sportsbook</th><th></th></tr>';
   appendDefIcon(thead.querySelector('.th-sp-mintrend'), MINUTES_TREND_COL_DEF);
+  appendDefIcon(thead.querySelector('.th-sp-projmin'), MINUTES_ADJUSTED_DEF);
   appendDefIcon(thead.querySelector('.th-sp-defrank'), STAT_DEFINITIONS.defRank);
   appendDefIcon(thead.querySelector('.th-sp-defrankl5'), 'Same idea as Opp Def Rank, but using only the opponent\u2019s last 5 games instead of the full season -- catches a defense that\u2019s recently gotten notably better or worse. Click either rank number to see the full league ranking.');
   table.appendChild(thead);
   const tbody = document.createElement('tbody');
   const TIER_TITLE = {shortest:'Shortest', middle:'Middle', tallest:'Tallest'};
-  // Header order: Star, Rank, Pos, Bet, Game, Price, L5, L10, L15, Season, Min Trend, Tonight's Group, Vs That Tier, Vs That Team,
+  // Header order: Star, Rank, Pos, Bet, Game, Price, L5, L10, L15, Season, Min Trend, Proj Min, Tonight's Group, Vs That Tier, Vs That Team,
   // Opp Def Rank, Opp Def Rank L5, Sportsbook, Track. The hit-rate cells hold {found, rate, hits,
   // gp} objects, so each sorts on .rate -- and only when that window actually has games behind it.
   const hrRate = hr => (hr && hr.found && hr.gp) ? hr.rate : null;
@@ -9113,6 +9343,7 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook, st
     {value: bet => hrRate(bet.hr15)},
     {value: bet => hrRate(bet.hrAll)},
     {value: minutesTrendSortValue},                          // Min Trend
+    {value: projMinSortValue},                               // Proj Min
     // Sorted by the group's actual weighted height, not the tier name -- that keeps
     // shortest -> middle -> tallest in a meaningful order instead of alphabetical.
     {value: bet => bet.groupHeightIn, dir: 'asc'},
@@ -9191,6 +9422,8 @@ function renderSpecialsTable(container, cachedFetch, liveGames, selectedBook, st
       const tdSeason = document.createElement('td'); tdSeason.appendChild(singleWindowChip('', bet.hrAll)); tr.appendChild(tdSeason);
       const tdMinTrend = document.createElement('td');
       fillMinutesTrendCell(tdMinTrend, bet); tr.appendChild(tdMinTrend);
+      const tdProjMin = document.createElement('td'); tdProjMin.style.textAlign='center';
+      fillProjMinCell(tdProjMin, bet); tr.appendChild(tdProjMin);
       const tdGroup = document.createElement('td'); tdGroup.className='left';
       // Clicking the tier opens her full game-by-game record against opposing groups in that
       // height band -- across every team she's faced, not just tonight's opponent.
@@ -10370,17 +10603,32 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
       if(betPlayerIsUnavailable({player: pname, team})) return;
       const opponent = team===homeShort ? awayShort : homeShort;
       const overThreshold = Number.isInteger(line) ? line+1 : Math.ceil(line);
-      const r5 = hitRateFor(pname, team, statKey, line, 5), r10 = hitRateFor(pname, team, statKey, line, 10), r15 = hitRateFor(pname, team, statKey, line, 15), rAll = hitRateFor(pname, team, statKey, line, 'all');
+      // Minutes-adjusted when teammates being out moves her projected minutes materially. The
+      // RAW rates are kept alongside so the table can show both and the tooltip can explain the
+      // difference -- replacing them silently would hide the single most important thing about
+      // a bet on a depleted roster.
+      const madj = minutesAdjustmentFor(pname, team);
+      const useAdj = !!(madj && madj.apply);
+      const raw5 = hitRateFor(pname, team, statKey, line, 5), raw10 = hitRateFor(pname, team, statKey, line, 10),
+            raw15 = hitRateFor(pname, team, statKey, line, 15), rawAll = hitRateFor(pname, team, statKey, line, 'all');
+      const r5 = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 5, madj.projMin) : raw5;
+      const r10 = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 10, madj.projMin) : raw10;
+      const r15 = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 15, madj.projMin) : raw15;
+      const rAll = useAdj ? adjustedHitRateFor(pname, team, statKey, line, 'all', madj.projMin) : rawAll;
       if(!r10 || !r15) return;
       // require she actually played at least 60% of the games in BOTH windows (6-of-10, 9-of-15) —
       // otherwise a small-sample player (e.g. 2 games played all year) can slip through on a fluke rate
       if(r10.gp < MIN_GP_10 || r15.gp < MIN_GP_15) return;
       if(overO && r10.rate>=QUAL && r15.rate>=QUAL){
         candidates.push({label:`${pname} Over ${line} ${PROP_MARKET_LABEL[mkey]}`, price:overO.price, sportsbook:bookSourceLabel(overO, bookForFallback), rate5:r5?r5.rate:null, rate10:r10.rate, rate15:r15.rate, rateAll:rAll?rAll.rate:null, gp5:r5?r5.gp:0, gp10:r10.gp, gp15:r15.gp, gpAll:rAll?rAll.gp:0,
+          minutesAdjusted: useAdj, minutesProj: madj || null,
+          rawRate5: raw5?raw5.rate:null, rawRate10: raw10.rate, rawRate15: raw15.rate, rawRateAll: rawAll?rawAll.rate:null,
           betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'over', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
       if(underO && (1-r10.rate)>=QUAL && (1-r15.rate)>=QUAL){
         candidates.push({label:`${pname} Under ${line} ${PROP_MARKET_LABEL[mkey]}`, price:underO.price, sportsbook:bookSourceLabel(underO, bookForFallback), rate5:r5?1-r5.rate:null, rate10:1-r10.rate, rate15:1-r15.rate, rateAll:rAll?1-rAll.rate:null, gp5:r5?r5.gp:0, gp10:r10.gp, gp15:r15.gp, gpAll:rAll?rAll.gp:0,
+          minutesAdjusted: useAdj, minutesProj: madj || null,
+          rawRate5: raw5?1-raw5.rate:null, rawRate10: 1-raw10.rate, rawRate15: 1-raw15.rate, rawRateAll: rawAll?1-rawAll.rate:null,
           betType:'player_prop', team, opponent, player:pname, statKey, market:PROP_MARKET_LABEL[mkey], line, side:'under', thresholdToHit:overThreshold, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id});
       }
     });
