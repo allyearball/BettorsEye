@@ -9572,10 +9572,20 @@ function renderBettorsEyeTable(container, cachedFetch, liveGames, selectedBook, 
   }
 
   const tbl = document.createElement('table');
+  // Classed so appendDefIcon can find each header -- the same pattern the DvP and
+  // EMA columns use elsewhere in the file.
   tbl.innerHTML = '<thead><tr>'
     + '<th>#</th><th>Player</th><th>Bet</th><th>Price</th>'
-    + '<th>Line vs L10</th><th>Minutes</th><th>Win Prob</th><th>Edge</th><th>Read</th>'
+    + '<th class="th-be-linegap">Line vs L10</th>'
+    + '<th class="th-be-minutes">Minutes</th>'
+    + '<th class="th-be-winprob">Win Prob</th>'
+    + '<th class="th-be-edge">Edge</th>'
+    + '<th class="th-be-read">Read</th>'
     + '</tr></thead>';
+  const thead = tbl.querySelector('thead');
+  Object.keys(BETTORS_EYE_COL_DEFS).forEach(cls => {
+    appendDefIcon(thead.querySelector('.' + cls), BETTORS_EYE_COL_DEFS[cls]);
+  });
   const tb = document.createElement('tbody');
 
   bets.forEach((b, i)=>{
@@ -9620,6 +9630,54 @@ function renderBettorsEyeTable(container, cachedFetch, liveGames, selectedBook, 
   tbl.appendChild(tb);
   container.appendChild(tbl);
 }
+
+// Column definitions for the \u24d8 icons. Every number quoted here is one this
+// board was actually measured against -- see db/build/rolechange.txt,
+// db/build/bookadjust.txt and db/build/calibrate.txt.
+const BETTORS_EYE_COL_DEFS = {
+  'th-be-linegap':
+    'How far the book\u2019s line sits from her <b>trailing-10 average</b> for this stat. '
+    + 'This is the column that makes the board worth reading. On role-change nights the market '
+    + 'moves about <b>4.5&times; further</b> off a player\u2019s trailing average than this model does, '
+    + 'so a line still sitting at her average is the genuinely interesting row \u2014 the book has '
+    + 'not caught up. A large gap means it already has. Positive means the line is above her average.',
+
+  'th-be-minutes':
+    'Her <b>baseline minutes \u2192 projected minutes</b>, with the change in brackets. Baseline is her '
+    + 'minutes per team game over the last five. The projection takes the team\u2019s rotation '
+    + '<b>shortfall</b> \u2014 the minutes shown beneath, being the team\u2019s normal total minus what '
+    + 'tonight\u2019s available players usually carry \u2014 and spreads it across them in proportion to '
+    + '<b>headroom</b>, how far each sits below a 40-minute ceiling, clamping anyone who hits it and '
+    + 're-spreading the excess. On held-out games this cut minutes error <b>33% when a team was 40+ '
+    + 'minutes short</b> and 13% at 25\u201340, while making no measurable difference when nothing was '
+    + 'happening \u2014 which is the point: it only acts when the situation calls for it.',
+
+  'th-be-winprob':
+    'The probability this bet wins, with the market\u2019s own probability beneath it once the '
+    + 'bookmaker\u2019s margin is removed. <b>Right now these are the same number, deliberately.</b> '
+    + 'Under leave-one-slate-out cross-validation on 617 graded picks at real book prices, the '
+    + 'de-vigged market price alone scored better (log loss 0.6931) than any blend with our own '
+    + 'model signal (0.6952) \u2014 so the model\u2019s weight is set to <b>zero</b> rather than asserted. '
+    + 'It will be raised only when the closing-line tracker shows it has earned it, and when that '
+    + 'happens this number will visibly move away from the market\u2019s.',
+
+  'th-be-edge':
+    'Our win probability minus the market\u2019s, <b>in probability points</b>, after stripping the '
+    + 'bookmaker\u2019s margin. That margin was fitted at <b>3.1% per side</b> (about a 6.2% two-way '
+    + 'hold) by minimising log loss over 617 graded picks; de-vigging alone improved calibration '
+    + 'error from 3.99pp to 3.60pp. Comparing against the <i>raw</i> price instead would penalise '
+    + 'every bet by roughly half the hold, and by a different amount at different prices. With the '
+    + 'model weight currently at zero, this reads near 0.0pp on most rows by construction.',
+
+  'th-be-read':
+    'Whether the market has <b>already priced</b> tonight\u2019s role change. '
+    + '<b>\u201cAlready priced\u201d</b> means the line has moved further off her trailing average than our '
+    + 'projection does, or the edge is under 1.5 points \u2014 the book got there first. '
+    + '<b>\u201cLine has not moved\u201d</b> means it is still sitting at her trailing average even though '
+    + 'her role changed tonight. Priced rows are shown and dimmed rather than hidden, because on '
+    + 'this channel the books are measurably ahead of us, so <i>\u201cdo not bet this, and here is '
+    + 'why\u201d</i> is usually the more valuable answer.',
+};
 
 const BETTORS_EYE_DEF =
   'Bets on players whose <b>minutes are about to change</b> — a team at least '
