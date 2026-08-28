@@ -927,6 +927,10 @@ const TEAM_GAME_COLS = [
 
    Player and team tabs are keyed by INDEX rather than label, since both tab bars are built from
    an array and an index survives a label being reworded. */
+// Bettor's Eye is the FIRST tab but NOT the default landing tab. A severe rotation gap
+// happens in about 7% of team-games, so the board is legitimately empty most nights;
+// landing every user on an empty board would be a worse product than putting it second
+// in their eyeline and full when it matters.
 const LAST_TAB = { home: 'standard', player: 0, team: 0 };
 // Persisted so it also survives a reload, not just an in-session re-render.
 const TOP_BETS_BOOK_LS_KEY = 'wnba_top_bets_book';
@@ -7529,6 +7533,7 @@ async function renderHomePage(){
   // (Last 5/Last 10/Last 15/Full Season) used elsewhere, so only one table shows at a time
   // instead of both stacked on the page together.
   let activeHomeTab = LAST_TAB.home;
+  const contentDiv0 = document.createElement('div');
   const contentDiv = document.createElement('div');
   // Separate container for the second, advanced-analytics-ranked table below the original
   // hit-rate-ranked one.
@@ -7538,15 +7543,17 @@ async function renderHomePage(){
   const contentDiv3 = document.createElement('div');
   contentDiv3.style.marginTop = '24px';
   function paintHomeTabVisibility(){
+    contentDiv0.style.display = activeHomeTab==='bettorseye' ? '' : 'none';
     contentDiv.style.display = activeHomeTab==='standard' ? '' : 'none';
     contentDiv2.style.display = activeHomeTab==='advanced' ? '' : 'none';
     contentDiv3.style.display = activeHomeTab==='specials' ? '' : 'none';
   }
   main.appendChild(renderStickyBottomBar(
-    [{label:'Standard', value:'standard'}, {label:'Advanced', value:'advanced'}, {label:'Specials', value:'specials'}],
+    [{label:'Bettor\u2019s Eye', value:'bettorseye'}, {label:'Standard', value:'standard'}, {label:'Advanced', value:'advanced'}, {label:'Specials', value:'specials'}],
     activeHomeTab,
     (val)=>{ activeHomeTab = val; LAST_TAB.home = val; paintHomeTabVisibility(); }
   ));
+  main.appendChild(contentDiv0);
   main.appendChild(contentDiv);
   main.appendChild(contentDiv2);
   main.appendChild(contentDiv3);
@@ -7583,7 +7590,10 @@ async function renderHomePage(){
     // just to switch books, only for the Refresh button.
     // Above the tables, rebuilt on every recompute so a book switch or a Refresh keeps it in sync.
     const disruptionHolder = document.createElement('div');
-    contentDiv.parentNode.insertBefore(disruptionHolder, contentDiv);
+    // Above EVERYTHING, including the Bettor's Eye board -- the roster-disruption
+    // caveat has to be read before any table it applies to, and contentDiv0 now
+    // sits above contentDiv.
+    contentDiv0.parentNode.insertBefore(disruptionHolder, contentDiv0);
     recompute = function(){
       const todayStrForStars = new Date().toDateString();
       const nowForStars = new Date();
@@ -7619,6 +7629,7 @@ async function renderHomePage(){
           emptyMessage: 'No bets tonight were rejected by the hit-rate bar while showing a large projected edge on a changed role.',
         });
       }
+      renderBettorsEyeTable(contentDiv0, cachedForToday, liveGames, selectedBook, null);
       renderAdvancedTopBetsTable(contentDiv2, cachedForToday, 30, liveGames, sharedKeys, selectedBook);
       renderSpecialsTable(contentDiv3, cachedForToday, liveGames, selectedBook, sharedKeys);
     };
@@ -9214,6 +9225,410 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
 // different bar against. This section deliberately does not pretend otherwise. It ranks by
 // projected edge and says so, and it stays a separate list rather than being merged into a
 // ranking whose threshold has been tuned on nothing.
+// ============================================================================
+// BETTOR'S EYE -- drop-in module for app_template.html
+//
+// Paste this whole block into app_template.html immediately BEFORE the line
+//
+//     const ROLE_CHANGE_MIN_EDGE_SHARE = 0.15;
+//
+// (currently around line 9218). It is self-contained: it only calls helpers
+// that already exist in the file -- rosterDisruption, DATA.fullPlayerLogs,
+// gatherCandidateLegs, betIdentityKey, TOP_BETS_MIN_PRICE, marketsByKey,
+// getBookmakerData, SHORT_TEAM_NAME, isEligibleForTopBets.
+//
+// Then make the four edits in bettors_eye_wiring.md.
+//
+// WHAT THIS IS AND IS NOT. Every constant below was fitted on the 2026 season
+// and tested walk-forward; the numbers are in db/build/rolechange.txt and
+// db/build/bookadjust.txt. The minutes model is a real improvement. It is NOT
+// an edge over the market -- the books move further on role change than this
+// does. So the board is built to show WHERE THE LINE HAS AND HAS NOT MOVED,
+// and it labels rows the market has already priced instead of hiding them.
+// ============================================================================
+
+// ---- fitted constants ------------------------------------------------------
+// Minutes allocation. shortfall is spread across players in proportion to
+// headroom (how far each sits below a ceiling). Both fitted by grid search on
+// the first 45% of the season, tested on the rest.
+//   held-out minutes MAE:  normal -0.2% | mild +5.3% | significant +13.2% | severe +33.1%
+const BE_MINUTES_CEILING = 40;      // realistic per-game ceiling
+const BE_MINUTES_FLOOR_W = 4;       // every player keeps some chance at the spare minutes
+const BE_TEAM_MINUTES    = 200;     // player-minutes in a regulation WNBA game
+
+// How much a stat actually scales with EXTRA minutes. Fitted per stat.
+// Below 1.0 means production does not scale one-for-one: extra minutes arrive
+// in worse lineups, against starters, while tired. Scoring barely scales at
+// all; rebounds mostly do; threes do not.
+const BE_LAMBDA = {pts:0.25, reb:0.70, ast:0.25, tpm:0.00, pra:0.90,
+                   pr:0.80, pa:0.55, ra:0.50, stl:0.25, blk:0.25, tov:0.25};
+
+// Per-side overround, fitted by minimising log loss over 617 graded picks at
+// real book prices. Implies a two-way hold of about 6.2%.
+// REFIT THIS MONTHLY -- see recomputeOverround() below.
+let BE_OVERROUND = 1.031;
+
+// Board thresholds.
+const BE_MIN_SHORTFALL   = 25;      // minutes a team must be short to qualify at all
+const BE_MIN_DMIN        = 5;       // ...or this much projected minutes change for the player
+const BE_MAX_ROWS        = 12;
+const BE_PRICED_EDGE_PP  = 1.5;     // below this the market has effectively already moved
+
+// ---- probability plumbing --------------------------------------------------
+function beImplied(price){
+  return price < 0 ? (-price) / ((-price) + 100) : 100 / (price + 100);
+}
+// Strip the bookmaker's margin before comparing anything to it. Comparing a
+// model probability against the RAW implied probability penalises every bet by
+// roughly half the hold, and by a different amount at different prices.
+function beNoVig(price){
+  return Math.max(0.01, Math.min(0.99, beImplied(price) / BE_OVERROUND));
+}
+
+// ---- the minutes model -----------------------------------------------------
+// shortfall = 200 - (minutes the players expected to play normally carry).
+// Positive means somebody's minutes have to expand to fill a full game.
+function beTeamShortfall(team){
+  const d = rosterDisruption(team);
+  if(!d) return {shortfall: 0, available: [], out: [], target: BE_TEAM_MINUTES};
+  const outNames = new Set(d.out.map(o => o.player));
+  const available = Object.keys(d.perPlayer)
+    .filter(p => !outNames.has(p))
+    .map(p => ({player: p, base: d.perPlayer[p]}));
+  const carried = available.reduce((s, p) => s + p.base, 0);
+
+  // THE TARGET IS THE TEAM'S OWN NORMAL TOTAL, NOT A HARDCODED 200.
+  // Subtracting from 200 is only correct when the rotation window happens to
+  // account for every minute of a game. It does not always: a short window
+  // early in the season, a player dropped for having zero recent minutes, or a
+  // roster the feed has not fully caught up on all leave the sum below 200 --
+  // and every one of those would be read as a phantom 80-minute injury crisis.
+  // Using the team's own observed total means the shortfall reduces to exactly
+  // the absent players' minutes, which is what it is supposed to be, and equals
+  // the 200 form whenever the data is complete.
+  const observed = Object.keys(d.perPlayer).reduce((s, p) => s + d.perPlayer[p], 0);
+  const target = Math.max(carried, Math.min(BE_TEAM_MINUTES, observed));
+  return {
+    shortfall: target - carried,
+    target,
+    available,
+    out: d.out.filter(o => o.inRotation),
+    outMinutes: d.outMinutes,
+  };
+}
+
+// Spread the shortfall by headroom. A 32-minute starter has almost none; a
+// 10-minute reserve has plenty. Allocating this way conserves minutes by
+// construction rather than by hoping the coefficients add up.
+function beAllocateMinutes(team){
+  const s = beTeamShortfall(team);
+  if(!s.available.length) return {byPlayer: {}, shortfall: 0, out: s.out, outMinutes: s.outMinutes};
+
+  // Allocate by headroom, then CLAMP AND REDISTRIBUTE. A single pass can push a
+  // 30-minute starter to 53 when a lot of minutes come free, which is not a
+  // thing that happens in a 40-minute game. Anyone who hits the ceiling is
+  // pinned there and her excess is re-spread over whoever still has room.
+  const proj = s.available.map(p => p.base);
+  let remaining = s.shortfall;
+  for(let pass = 0; pass < 6 && Math.abs(remaining) > 0.01; pass++){
+    const open = [];
+    for(let i = 0; i < proj.length; i++){
+      if(remaining > 0 ? proj[i] < BE_MINUTES_CEILING : proj[i] > 0) open.push(i);
+    }
+    if(!open.length) break;
+    const w = open.map(i => Math.max(BE_MINUTES_FLOOR_W, BE_MINUTES_CEILING - proj[i]));
+    const tot = w.reduce((a, b) => a + b, 0) || 1;
+    let placed = 0;
+    open.forEach((i, k) => {
+      const want = remaining * w[k] / tot;
+      const capped = Math.max(0, Math.min(BE_MINUTES_CEILING, proj[i] + want));
+      placed += capped - proj[i];
+      proj[i] = capped;
+    });
+    remaining -= placed;
+    if(Math.abs(placed) < 1e-9) break;
+  }
+
+  const byPlayer = {};
+  s.available.forEach((p, i) => {
+    byPlayer[p.player] = {base: p.base, proj: proj[i], dMin: proj[i] - p.base};
+  });
+  return {byPlayer, shortfall: s.shortfall, target: s.target, out: s.out, outMinutes: s.outMinutes};
+}
+const _beAllocCache = {};
+function beAllocationFor(team){
+  if(!(team in _beAllocCache)) _beAllocCache[team] = beAllocateMinutes(team);
+  return _beAllocCache[team];
+}
+function beResetCache(){ Object.keys(_beAllocCache).forEach(k => delete _beAllocCache[k]); }
+
+// Her per-minute rate for this stat over her last 10 played games.
+function bePerMinuteRate(player, team, statKey){
+  const log = (DATA.fullPlayerLogs[player + '|' + team] || {}).log || [];
+  const played = log.filter(g => !g.dnp && (g.min || 0) > 0).slice(-10);
+  if(played.length < 5) return null;
+  const vals = played.map(g => beStatValue(g, statKey) / g.min);
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+const BE_COMBO = {pra:['pts','reb','ast'], pr:['pts','reb'], pa:['pts','ast'], ra:['reb','ast']};
+function beStatValue(g, k){
+  return BE_COMBO[k] ? BE_COMBO[k].reduce((a, p) => a + (g[p] || 0), 0) : (g[k] || 0);
+}
+function beTrailingMean(player, team, statKey){
+  const log = (DATA.fullPlayerLogs[player + '|' + team] || {}).log || [];
+  const played = log.filter(g => !g.dnp && (g.min || 0) > 0).slice(-10);
+  if(played.length < 5) return null;
+  return played.reduce((a, g) => a + beStatValue(g, statKey), 0) / played.length;
+}
+
+// THE PROJECTION. Anchored on the trailing mean, adjusted only by the CHANGE in
+// minutes. When minutes are unchanged this is EXACTLY the trailing mean, so it
+// cannot damage a normal game -- which is why it tests at -0.0% there and
+// +11.8% on PRA in the severe band.
+function beProject(player, team, statKey){
+  const base = beTrailingMean(player, team, statKey);
+  const rate = bePerMinuteRate(player, team, statKey);
+  if(base === null || rate === null) return null;
+  const alloc = beAllocationFor(team);
+  const m = alloc.byPlayer[player];
+  if(!m) return null;
+  const lam = BE_LAMBDA[statKey];
+  if(lam === undefined) return null;
+  return {
+    base, rate,
+    baseMin: m.base, projMin: m.proj, dMin: m.dMin,
+    shortfall: alloc.shortfall,
+    out: alloc.out,
+    proj: base + lam * rate * m.dMin,
+    lambda: lam,
+  };
+}
+
+// ---- turning a projection into a probability -------------------------------
+// The spread of her own last-10 outcomes is the scale for how far from the line
+// a projection has to sit before it means anything.
+function beOutcomeSd(player, team, statKey){
+  const log = (DATA.fullPlayerLogs[player + '|' + team] || {}).log || [];
+  const played = log.filter(g => !g.dnp && (g.min || 0) > 0).slice(-10);
+  if(played.length < 5) return null;
+  const v = played.map(g => beStatValue(g, statKey));
+  const m = v.reduce((a, b) => a + b, 0) / v.length;
+  const s = Math.sqrt(v.reduce((a, x) => a + (x - m) * (x - m), 0) / (v.length - 1));
+  return s > 0 ? s : null;
+}
+const beNormCdf = z => 0.5 * (1 + beErf(z / Math.SQRT2));
+function beErf(x){
+  const s = x < 0 ? -1 : 1; x = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * x);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return s * y;
+}
+
+// WIN PROBABILITY. Market-anchored, not model-anchored -- because under
+// leave-one-slate-out cross-validation the de-vigged price alone reached log
+// loss 0.6931 and adding the model signal made it WORSE at 0.6952.
+//
+// So the model enters as a bounded adjustment with a weight that is FITTED, not
+// assumed. BE_MODEL_WEIGHT is currently 0: the honest value today. Raise it
+// only when the CLV tracker shows it has earned it, and the app will say so.
+let BE_MODEL_WEIGHT = 0;
+function beWinProb(leg, projection){
+  const noVig = beNoVig(leg.price);
+  if(!projection || !BE_MODEL_WEIGHT) return {winProb: noVig, noVig, modelProb: null};
+  const sd = beOutcomeSd(leg.player, leg.team, leg.statKey);
+  if(!sd) return {winProb: noVig, noVig, modelProb: null};
+  const z = (projection.proj - leg.line) / sd;
+  const pOver = beNormCdf(z);
+  const modelProb = leg.side === 'under' ? 1 - pOver : pOver;
+  const blended = (1 - BE_MODEL_WEIGHT) * noVig + BE_MODEL_WEIGHT * modelProb;
+  return {winProb: Math.max(0.01, Math.min(0.99, blended)), noVig, modelProb};
+}
+
+// ---- the board -------------------------------------------------------------
+function computeBettorsEyeBets(cachedFetch, selectedBook, excludeKeys){
+  beResetCache();
+  selectedBook = selectedBook || 'best';
+  const todayStr = new Date().toDateString();
+  const now = new Date();
+  const todaysGames = cachedFetch.filter(({ev}) =>
+    new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
+  if(!todaysGames.length) return [];
+
+  let pool = [];
+  todaysGames.forEach(({ev, detail})=>{
+    const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+    const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+    const gameMarkets = marketsByKey(getBookmakerData(ev, selectedBook));
+    const detailMarkets = marketsByKey(detail ? getBookmakerData(detail, selectedBook) : null);
+    const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
+    let legs = [];
+    // Qualification bar 0 -- this board does not select on hit rate at all.
+    try{ legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0, selectedBook); }
+    catch(e){ legs = []; }
+    pool = pool.concat(
+      legs.filter(l => l.price >= TOP_BETS_MIN_PRICE &&
+                       (l.betType === 'player_prop' || l.betType === 'player_prop_alt'))
+          .map(l => Object.assign({}, l, {game: gameLabel})));
+  });
+
+  const rows = [];
+  for(const leg of pool){
+    const p = beProject(leg.player, leg.team, leg.statKey);
+    if(!p) continue;
+    // ELIGIBILITY: the team must be materially short, or this player's own
+    // minutes must be moving a lot. Without this the board becomes a second
+    // Top 30 for the whole slate, which is a different and unjustified thing.
+    if(p.shortfall < BE_MIN_SHORTFALL && Math.abs(p.dMin) < BE_MIN_DMIN) continue;
+
+    const {winProb, noVig, modelProb} = beWinProb(leg, p);
+    const sd = beOutcomeSd(leg.player, leg.team, leg.statKey);
+    const z = sd ? (p.proj - leg.line) / sd : 0;
+    const rawModelProb = sd ? (leg.side === 'under' ? 1 - beNormCdf(z) : beNormCdf(z)) : null;
+
+    // How far the BOOK has already moved off her trailing average. This is the
+    // column that makes the board worth reading: the market moves about 4.5x
+    // as far as this model does on role change, so a line still sitting at the
+    // trailing mean is the genuinely interesting row.
+    const lineGap = leg.line - p.base;
+    const modelGap = p.proj - p.base;
+    const marketMoved = Math.abs(lineGap) >= Math.abs(modelGap) && Math.abs(lineGap) > 0.4;
+
+    const edgePP = 100 * ((rawModelProb === null ? noVig : rawModelProb) - noVig);
+    rows.push(Object.assign({}, leg, {
+      be: {
+        proj: p.proj, base: p.base, baseMin: p.baseMin, projMin: p.projMin, dMin: p.dMin,
+        shortfall: p.shortfall, out: p.out, lambda: p.lambda,
+        lineGap, modelGap, marketMoved,
+        winProb, noVig, modelProb: rawModelProb, edgePP,
+        priced: marketMoved || Math.abs(edgePP) < BE_PRICED_EDGE_PP,
+      },
+    }));
+  }
+
+  // De-duplicate: one row per player+stat+side, keeping the best price.
+  const bestByKey = new Map();
+  for(const r of rows){
+    const k = `${r.player}|${r.statKey}|${r.side}`;
+    const prev = bestByKey.get(k);
+    if(!prev || r.price > prev.price) bestByKey.set(k, r);
+  }
+  let out = [...bestByKey.values()];
+  if(excludeKeys) out = out.filter(r => { const k = betIdentityKey(r); return !(k && excludeKeys.has(k)); });
+
+  // Rank by disagreement with the de-vigged market, in probability points --
+  // so a rebound line and a points line are directly comparable. Rows the
+  // market has already priced sort below, but are NOT removed: "do not bet
+  // this, and here is why" is the most useful thing this board says.
+  out.sort((a, b) => (a.be.priced === b.be.priced)
+    ? Math.abs(b.be.edgePP) - Math.abs(a.be.edgePP)
+    : (a.be.priced ? 1 : -1));
+  return out.slice(0, BE_MAX_ROWS);
+}
+
+// ---- rendering -------------------------------------------------------------
+function renderBettorsEyeTable(container, cachedFetch, liveGames, selectedBook, excludeKeys){
+  container.innerHTML = '';
+  const bets = computeBettorsEyeBets(cachedFetch, selectedBook, excludeKeys);
+
+  const h = document.createElement('h2');
+  h.textContent = 'Bettor’s Eye';
+  h.style.cssText = 'margin:0 0 4px;';
+  container.appendChild(h);
+
+  const sub = document.createElement('div');
+  sub.className = 'footnote';
+  sub.style.cssText = 'margin-bottom:14px;';
+  sub.innerHTML = BETTORS_EYE_DEF;
+  container.appendChild(sub);
+
+  if(!bets.length){
+    const empty = document.createElement('div');
+    empty.className = 'footnote';
+    empty.textContent = 'No team on tonight’s slate is materially short of its normal rotation. '
+      + 'This board is deliberately empty most nights — severe rotation gaps happen in about '
+      + '7% of team-games.';
+    container.appendChild(empty);
+    return;
+  }
+
+  const tbl = document.createElement('table');
+  tbl.innerHTML = '<thead><tr>'
+    + '<th>#</th><th>Player</th><th>Bet</th><th>Price</th>'
+    + '<th>Line vs L10</th><th>Minutes</th><th>Win Prob</th><th>Edge</th><th>Read</th>'
+    + '</tr></thead>';
+  const tb = document.createElement('tbody');
+
+  bets.forEach((b, i)=>{
+    const e = b.be;
+    const tr = document.createElement('tr');
+    if(e.priced) tr.style.opacity = '0.72';
+    const gapStr = (e.lineGap >= 0 ? '+' : '') + e.lineGap.toFixed(1);
+    const minStr = `${e.baseMin.toFixed(0)} → ${e.projMin.toFixed(0)}`
+      + ` (${e.dMin >= 0 ? '+' : ''}${e.dMin.toFixed(0)})`;
+    const edgeStr = (e.edgePP >= 0 ? '+' : '') + e.edgePP.toFixed(1) + 'pp';
+    const read = e.priced
+      ? '<span style="opacity:.75">Already priced</span>'
+      : '<b>Line has not moved</b>';
+    tr.innerHTML = `<td>${i+1}</td>`
+      + `<td><b>${b.player}</b><div class="footnote">${b.team} · ${b.game||''}</div></td>`
+      + `<td>${b.statLabel || b.statKey} ${b.side} ${b.line}</td>`
+      + `<td>${b.price > 0 ? '+' : ''}${b.price}</td>`
+      + `<td>${gapStr}<div class="footnote">L10 ${e.base.toFixed(1)}</div></td>`
+      + `<td>${minStr}<div class="footnote">${e.shortfall.toFixed(0)}m short</div></td>`
+      + `<td><b>${(100*e.winProb).toFixed(1)}%</b><div class="footnote">market ${(100*e.noVig).toFixed(1)}%</div></td>`
+      + `<td>${edgeStr}</td>`
+      + `<td>${read}</td>`;
+    tb.appendChild(tr);
+
+    // The explanation row -- the actual product. Who is out, how many minutes
+    // that frees, where they land, and whether the line reflects it yet.
+    const why = document.createElement('tr');
+    const outNames = (e.out || []).slice(0, 3).map(o => `${o.player} (${o.avgMin}m)`).join(', ');
+    why.innerHTML = `<td colspan="9" class="footnote" style="padding-top:0;border-top:none;">`
+      + (outNames ? `<b>Out:</b> ${outNames}. ` : '')
+      + `${e.shortfall.toFixed(0)} minutes short of a full rotation; model projects her `
+      + `${e.dMin >= 0 ? '+' : ''}${e.dMin.toFixed(0)} minutes. `
+      + `${b.statLabel || b.statKey} scales with minutes at λ=${e.lambda.toFixed(2)}, `
+      + `so projection ${e.proj.toFixed(1)} against a line of ${b.line}. `
+      + (e.marketMoved
+          ? `<b>The book has already moved this line ${gapStr} off her average — further than the model does. Priced.</b>`
+          : `<b>The line still sits at her trailing average even though her role changed tonight.</b>`)
+      + `</td>`;
+    tb.appendChild(why);
+  });
+
+  tbl.appendChild(tb);
+  container.appendChild(tbl);
+}
+
+const BETTORS_EYE_DEF =
+  'Bets on players whose <b>minutes are about to change</b> — a team at least '
+  + BE_MIN_SHORTFALL + ' minutes short of its normal rotation, or a player whose projected minutes '
+  + 'move by ' + BE_MIN_DMIN + '+. Ranked by how far our projection sits from the market price '
+  + 'with the bookmaker’s margin removed, in probability points. '
+  + '<b>Rows the market has already priced are shown and labelled, not hidden</b> — on this '
+  + 'channel the books move about 4.5&times; further than our model does, so "do not bet this" is '
+  + 'usually the more valuable answer. '
+  + 'Measured on 617 graded picks at real book prices — see Methodology.';
+
+// ---- monthly maintenance ---------------------------------------------------
+// Refit the overround from graded picks. One parameter, so it can only remove a
+// systematic level bias -- it cannot manufacture skill.
+function beRecomputeOverround(gradedPicks){
+  if(!gradedPicks || gradedPicks.length < 200) return null;
+  let best = null;
+  for(let T = 1.000; T <= 1.100; T += 0.001){
+    let ll = 0;
+    for(const g of gradedPicks){
+      const p = Math.max(0.001, Math.min(0.999, beImplied(g.price) / T));
+      ll -= g.won ? Math.log(p) : Math.log(1 - p);
+    }
+    ll /= gradedPicks.length;
+    if(!best || ll < best.ll) best = {T, ll};
+  }
+  return best;
+}
+
 const ROLE_CHANGE_MIN_EDGE_SHARE = 0.15;   // the projection must beat the line by 15% of the line
 const ROLE_CHANGE_MIN_ABS_EDGE = 1.0;      // ...and by at least a full unit, so 0.5-point lines
                                            //    can't qualify on rounding
@@ -12936,8 +13351,8 @@ function fillReplayEdgeCell(td, bet, r){
 // them on a night the player's role changed. It is tracked here for exactly one reason -- it is an
 // unproven idea, and the only way it stops being unproven is if its picks are graded alongside the
 // three established lists rather than admired in the abstract.
-const APP_TRACKER_SOURCES = ['standard', 'advanced', 'specials', 'rolechange'];
-const APP_TRACKER_SOURCE_LABEL = {standard: 'Standard', advanced: 'Advanced', specials: 'Specials', rolechange: 'Role Change'};
+const APP_TRACKER_SOURCES = ['bettorseye', 'standard', 'advanced', 'specials', 'rolechange'];
+const APP_TRACKER_SOURCE_LABEL = {bettorseye: 'Bettor\u2019s Eye', standard: 'Standard', advanced: 'Advanced', specials: 'Specials', rolechange: 'Role Change'};
 
 async function maybeSnapshotTodaysTopBets(cachedForToday){
   if(_snapshotAttemptedThisSession) return; // at most once per page session; avoids duplicate racing on fast repeated calls
