@@ -10057,10 +10057,10 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     appendDefIcon(thead.querySelector('.th-vstier'), 'How often this exact bet would have hit in her games this season against opposing position groups in that same height tier \u2014 every team she\u2019s faced, not just tonight\u2019s opponent. Small samples are common here: 80% over 5 games is 4-of-5, not a probability.');
   }
   appendDefIcon(thead.querySelector('.th-overall'), 'The actual number this table is ranked by: the worst-case (minimum) hit rate across whichever of L5/L10/L15 are available for this bet. A bet only ranks as high as its weakest window \u2014 one great window can\u2019t hide a mediocre one.');
-  appendDefIcon(thead.querySelector('.th-l5'), 'Hit rate over her last 5 games played, with the actual record (hits/games) in parentheses.');
-  appendDefIcon(thead.querySelector('.th-l10'), 'Hit rate over her last 10 games played, with the actual record (hits/games) in parentheses.');
-  appendDefIcon(thead.querySelector('.th-l15'), 'Hit rate over her last 15 games played, with the actual record (hits/games) in parentheses.');
-  appendDefIcon(thead.querySelector('.th-season'), 'Hit rate over her full season, with the actual record (hits/games) in parentheses. Not part of the Overall % ranking calculation \u2014 shown for reference alongside L5/L10/L15.');
+  appendDefIcon(thead.querySelector('.th-l5'), 'Hit rate over her last 5 games played, with the record behind it (hits/games) in parentheses. <b>On a row where the minutes adjustment fired</b> \u2014 her role changed tonight, so the Proj Min column shows a projection different from her recent average \u2014 this is the <b>adjusted</b> rate: her past games re-scored as if she had played tonight\u2019s projected minutes. The unadjusted record is shown beneath it as \u201craw\u201d. On every other row the two are the same number and no second line appears.');
+  appendDefIcon(thead.querySelector('.th-l10'), 'Hit rate over her last 10 games played, with the record behind it (hits/games) in parentheses. <b>On a row where the minutes adjustment fired</b> \u2014 her role changed tonight, so the Proj Min column shows a projection different from her recent average \u2014 this is the <b>adjusted</b> rate: her past games re-scored as if she had played tonight\u2019s projected minutes. The unadjusted record is shown beneath it as \u201craw\u201d. On every other row the two are the same number and no second line appears.');
+  appendDefIcon(thead.querySelector('.th-l15'), 'Hit rate over her last 15 games played, with the record behind it (hits/games) in parentheses. <b>On a row where the minutes adjustment fired</b> \u2014 her role changed tonight, so the Proj Min column shows a projection different from her recent average \u2014 this is the <b>adjusted</b> rate: her past games re-scored as if she had played tonight\u2019s projected minutes. The unadjusted record is shown beneath it as \u201craw\u201d. On every other row the two are the same number and no second line appears.');
+  appendDefIcon(thead.querySelector('.th-season'), 'Hit rate over her full season, with the record behind it (hits/games) in parentheses. <b>On a row where the minutes adjustment fired</b> this is the <b>adjusted</b> rate \u2014 her season re-scored at tonight\u2019s projected minutes \u2014 with the unadjusted record shown beneath as \u201craw\u201d. Not part of the Overall % ranking calculation; shown for reference alongside L5/L10/L15.');
   appendDefIcon(thead.querySelector('.th-mintrend'), MINUTES_TREND_COL_DEF);
   appendDefIcon(thead.querySelector('.th-projmin'), MINUTES_ADJUSTED_DEF + '<br><br>' + AGREEMENT_DEF);
   appendDefIcon(thead.querySelector('.th-edge'), EDGE_COL_DEF);
@@ -10192,18 +10192,37 @@ function renderTopBetsTable(container, cachedFetch, topN, liveGames, starredKeys
     const tdOverall = document.createElement('td'); tdOverall.style.cssText = cellStyle + 'font-weight:800;color:#000000;';
     tdOverall.textContent = Math.round(worstCaseRate(bet)*100)+'%';
 
-    const mkRate = (rate, gp, hitFrac) => {
+    // THE FRACTION MUST BELONG TO THE PERCENTAGE BESIDE IT.
+    //
+    // It used to be built by a separate call to hitCountFor(), which always reads
+    // the RAW log. But rate5/rate10/rate15/rateAll come from adjustedHitRateFor()
+    // whenever the minutes adjustment fired -- they re-score her past games as if
+    // she had played tonight's projected minutes. On those rows the cell printed an
+    // adjusted percentage next to a raw record and read as a contradiction:
+    // "90% (4/10)". Both numbers were individually correct and the pairing was not.
+    //
+    // rate is hits/gp by construction in both hitRateFor and adjustedHitRateFor, so
+    // rounding rate*gp recovers exactly the hit count that produced THAT rate. When
+    // the row is adjusted the raw rate is shown underneath rather than thrown away,
+    // because the unadjusted record is the thing a user most wants to sanity-check.
+    const mkRate = (rate, gp, rawRate) => {
       const td = document.createElement('td'); td.style.cssText = cellStyle;
       if(rate===null || rate===undefined){ td.textContent = '\u2014'; return td; }
       const pct = Math.round(rate*100);
-      const hc = isProp ? hitFrac : (gp ? {hits: Math.round(rate*gp), gp} : null);
-      td.textContent = hc ? `${pct}% (${hc.hits}/${hc.gp})` : `${pct}%`;
+      const adjusted = isProp && bet.minutesAdjusted;
+      td.textContent = gp ? `${pct}% (${Math.round(rate*gp)}/${gp})` : `${pct}%`;
+      if(adjusted && rawRate !== null && rawRate !== undefined){
+        const sub = document.createElement('div');
+        sub.style.cssText = 'font-size:10px;color:var(--sub);font-weight:400;';
+        sub.textContent = `adj \u2014 raw ${Math.round(rawRate*100)}% (${Math.round(rawRate*gp)}/${gp})`;
+        td.appendChild(sub);
+      }
       return td;
     };
-    const tdL5 = mkRate(bet.rate5, bet.gp5, isProp ? hitCountFor(bet,5) : null);
-    const tdL10 = mkRate(bet.rate10, bet.gp10, isProp ? hitCountFor(bet,10) : null);
-    const tdL15 = mkRate(bet.rate15, bet.gp15, isProp ? hitCountFor(bet,15) : null);
-    const tdSeason = mkRate(bet.rateAll, bet.gpAll, isProp ? hitCountFor(bet,'all') : null);
+    const tdL5 = mkRate(bet.rate5, bet.gp5, bet.rawRate5);
+    const tdL10 = mkRate(bet.rate10, bet.gp10, bet.rawRate10);
+    const tdL15 = mkRate(bet.rate15, bet.gp15, bet.rawRate15);
+    const tdSeason = mkRate(bet.rateAll, bet.gpAll, bet.rawRateAll);
     const tdMinTrend = document.createElement('td'); tdMinTrend.style.cssText = cellStyle;
     fillMinutesTrendCell(tdMinTrend, bet);
     const tdProjMin = document.createElement('td'); tdProjMin.style.cssText = cellStyle;
