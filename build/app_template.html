@@ -9525,6 +9525,26 @@ function computeBettorsEyeBets(cachedFetch, selectedBook, excludeKeys){
   return out.slice(0, BE_MAX_ROWS);
 }
 
+// ---- display helpers -------------------------------------------------------
+// Legs carry statKey ('tpm'), not a display label. Everything else in the app
+// resolves that through STAT_SHORT_LABEL, and this board must too, or it prints
+// raw column names like "tpm over 1" at users.
+function beStatLabel(leg){
+  return (typeof STAT_SHORT_LABEL !== 'undefined' && STAT_SHORT_LABEL[leg.statKey]) || leg.statKey;
+}
+// A WHOLE-NUMBER line can push. "over 1" means two or more, and landing exactly
+// on 1 returns the stake -- which is a materially different bet from "over 1.5"
+// and has to be readable as such. Books write these as "2+", so this does too.
+function beLineLabel(leg){
+  const n = Number(leg.line);
+  if(Number.isInteger(n)){
+    return leg.side === 'under'
+      ? `under ${n} (${n} pushes)`
+      : `${n + 1}+ (${n} pushes)`;
+  }
+  return `${leg.side} ${leg.line}`;
+}
+
 // ---- rendering -------------------------------------------------------------
 function renderBettorsEyeTable(container, cachedFetch, liveGames, selectedBook, excludeKeys){
   container.innerHTML = '';
@@ -9571,7 +9591,7 @@ function renderBettorsEyeTable(container, cachedFetch, liveGames, selectedBook, 
       : '<b>Line has not moved</b>';
     tr.innerHTML = `<td>${i+1}</td>`
       + `<td><b>${b.player}</b><div class="footnote">${b.team} · ${b.game||''}</div></td>`
-      + `<td>${b.statLabel || b.statKey} ${b.side} ${b.line}</td>`
+      + `<td>${beStatLabel(b)} ${beLineLabel(b)}</td>`
       + `<td>${b.price > 0 ? '+' : ''}${b.price}</td>`
       + `<td>${gapStr}<div class="footnote">L10 ${e.base.toFixed(1)}</div></td>`
       + `<td>${minStr}<div class="footnote">${e.shortfall.toFixed(0)}m short</div></td>`
@@ -9588,7 +9608,7 @@ function renderBettorsEyeTable(container, cachedFetch, liveGames, selectedBook, 
       + (outNames ? `<b>Out:</b> ${outNames}. ` : '')
       + `${e.shortfall.toFixed(0)} minutes short of a full rotation; model projects her `
       + `${e.dMin >= 0 ? '+' : ''}${e.dMin.toFixed(0)} minutes. `
-      + `${b.statLabel || b.statKey} scales with minutes at λ=${e.lambda.toFixed(2)}, `
+      + `${beStatLabel(b)} scales with minutes at λ=${e.lambda.toFixed(2)}, `
       + `so projection ${e.proj.toFixed(1)} against a line of ${b.line}. `
       + (e.marketMoved
           ? `<b>The book has already moved this line ${gapStr} off her average — further than the model does. Priced.</b>`
@@ -13314,8 +13334,15 @@ function fillReplayTotalCell(td, bet, r){
   line.appendChild(seg(' | ', 'var(--sub)'));
   // The actual is colored by whether the BET won, not by whether the projection was close --
   // those are different questions and the next column answers the other one.
-  const won = bet.side === 'under' ? (r.actual < r.line) : (r.actual > r.line);
-  line.appendChild(seg(`${r.actual} ${label}`, won ? 'var(--green)' : 'var(--red)', true));
+  // A whole-number line can land exactly on the number, which is a PUSH -- stake
+  // returned, neither won nor lost. Grading that as a loss understates the record.
+  // Every book line in the archive so far has been a half-point, so this has never
+  // fired; the Bettor's Eye board gathers at qualification bar 0 and can surface
+  // whole-number lines the older boards never selected.
+  const push = Number(r.actual) === Number(r.line);
+  const won = push ? null : (bet.side === 'under' ? (r.actual < r.line) : (r.actual > r.line));
+  line.appendChild(seg(`${r.actual} ${label}${push ? ' (push)' : ''}`,
+    push ? 'var(--sub)' : (won ? 'var(--green)' : 'var(--red)'), true));
   td.appendChild(line);
   if(r.totalError !== null){
     const sub = document.createElement('div');
