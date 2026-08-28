@@ -9252,6 +9252,233 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
 // headroom (how far each sits below a ceiling). Both fitted by grid search on
 // the first 45% of the season, tested on the rest.
 //   held-out minutes MAE:  normal -0.2% | mild +5.3% | significant +13.2% | severe +33.1%
+// The fitted per-side overround, used only when a market has one side priced.
+// Where both sides are known the real two-way de-vig is used instead.
+const CLV_FALLBACK_OVERROUND = 1.031;
+const CLV_MIN_SAMPLE = 30;          // below this, report the count and not a verdict
+
+function clvImpliedProb(price){
+  if(price === null || price === undefined || !isFinite(price)) return null;
+  return price < 0 ? (-price) / ((-price) + 100) : 100 / (price + 100);
+}
+
+// Two-way de-vig when both sides are known; the fitted scalar otherwise. Which
+// one was used is returned, because a number derived from a real de-vig and one
+// derived from a league-wide average are not equally trustworthy and the panel
+// should not present them as if they were.
+function clvNoVig(price, oppositePrice){
+  const p = clvImpliedProb(price);
+  if(p === null) return null;
+  const q = clvImpliedProb(oppositePrice);
+  if(q !== null && (p + q) > 0) return {prob: p / (p + q), method: 'two-way', overround: p + q};
+  return {prob: Math.max(0.01, Math.min(0.99, p / CLV_FALLBACK_OVERROUND)), method: 'fitted', overround: CLV_FALLBACK_OVERROUND};
+}
+
+// Fetch the closing lines for one date from the Worker.
+async function fetchClosingLines(dateStr){
+  const base = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+  const res = await fetch(`${base.replace(/\/$/,'')}/clv/closing?date=${encodeURIComponent(dateStr)}`);
+  if(!res.ok) throw new Error(`closing lines ${res.status}`);
+  const data = await res.json();
+  if(data.error) throw new Error(data.error);
+  return data;
+}
+
+// Index the Worker's response for lookup by the fields a tracked bet carries.
+function indexClosingLines(payload){
+  const byExact = new Map();          // eventId|player|stat|point
+  const byMarket = new Map();         // eventId|player|stat -> [rows sorted by point]
+  for(const c of (payload.closes || [])){
+    byExact.set(`${c.eventId}|${c.player}|${c.stat}|${c.point}`, c);
+    const mk = `${c.eventId}|${c.player}|${c.stat}`;
+    if(!byMarket.has(mk)) byMarket.set(mk, []);
+    byMarket.get(mk).push(c);
+  }
+  for(const rows of byMarket.values()) rows.sort((a,b)=>a.point-b.point);
+  return {byExact, byMarket, events: payload.events || {}};
+}
+
+// CLV for one tracked bet.
+//
+// THE MATCHING RULE, AND WHY IT IS STRICT. CLV compares like with like: the
+// price of the SAME line, same side, at close. If the book moved the line
+// itself -- 18.5 to 19.5 -- then the closing price of 19.5 is a different bet
+// and comparing the two prices measures nothing. Those are reported separately
+// as "line moved" rather than being folded in with a fudge factor, because a
+// line move is itself the strongest possible signal and deserves its own count.
+function clvForBet(bet, idx){
+  const eventId = bet.eventId, player = bet.player, stat = bet.statKey, point = bet.line;
+  if(!eventId || !player || !stat || point === undefined || point === null) return {status: 'unmatched'};
+  if(bet.side !== 'over' && bet.side !== 'under') return {status: 'unsupported'};
+
+  const exact = idx.byExact.get(`${eventId}|${player}|${stat}|${point}`);
+  if(!exact){
+    const market = idx.byMarket.get(`${eventId}|${player}|${stat}`);
+    if(!market || !market.length) return {status: 'unmatched'};
+    const nearest = market.reduce((a,b)=> Math.abs(b.point-point) < Math.abs(a.point-point) ? b : a);
+    return {status: 'line-moved', from: point, to: nearest.point,
+            direction: nearest.point > point ? 'up' : 'down', book: nearest.book};
+  }
+
+  const closePrice = bet.side === 'over' ? exact.over : exact.under;
+  const oppClose   = bet.side === 'over' ? exact.under : exact.over;
+  if(closePrice === null || closePrice === undefined) return {status: 'no-close-price'};
+
+  // Both ends de-vigged the same way, using the closing market's own overround.
+  // Using a different method at each end would put the two numbers on different
+  // scales and the difference between them would not be CLV.
+  const close = clvNoVig(closePrice, oppClose);
+  const open  = clvNoVig(bet.price, null);
+  const openProb = (close && close.method === 'two-way' && close.overround)
+    ? Math.max(0.01, Math.min(0.99, clvImpliedProb(bet.price) / close.overround))
+    : (open ? open.prob : null);
+  if(close === null || openProb === null) return {status: 'no-close-price'};
+
+  return {
+    status: 'ok',
+    clv: close.prob - openProb,       // probability points; positive = market came to you
+    openProb, closeProb: close.prob,
+    openPrice: bet.price, closePrice,
+    method: close.method, overround: close.overround,
+    book: exact.book, minutesToTip: exact.minutesToTip,
+  };
+}
+
+// Score every tracked bet for one date.
+async function computeClvForDate(dateStr, bets){
+  const payload = await fetchClosingLines(dateStr);
+  const idx = indexClosingLines(payload);
+  return bets.filter(b => b.snapshotDate === dateStr)
+             .map(b => Object.assign({}, b, {clvResult: clvForBet(b, idx)}));
+}
+
+// ---- reporting -------------------------------------------------------------
+function clvSummarise(scored){
+  const ok = scored.filter(s => s.clvResult.status === 'ok');
+  const vals = ok.map(s => s.clvResult.clv);
+  const mean = vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : null;
+  const sd = vals.length > 1
+    ? Math.sqrt(vals.reduce((a,v)=>a+(v-mean)*(v-mean),0)/(vals.length-1)) : null;
+  const se = (sd !== null && vals.length) ? sd/Math.sqrt(vals.length) : null;
+  return {
+    n: vals.length,
+    beat: ok.filter(s => s.clvResult.clv > 0).length,
+    mean, se,
+    ci: (mean !== null && se !== null) ? [mean - 1.96*se, mean + 1.96*se] : null,
+    twoWay: ok.filter(s => s.clvResult.method === 'two-way').length,
+    lineMoved: scored.filter(s => s.clvResult.status === 'line-moved').length,
+    unmatched: scored.filter(s => s.clvResult.status === 'unmatched').length,
+  };
+}
+
+function clvGroupBy(scored, keyFn){
+  const groups = new Map();
+  for(const s of scored){
+    const k = keyFn(s);
+    if(k === null || k === undefined) continue;
+    if(!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s);
+  }
+  return [...groups.entries()].map(([k, rows]) => ({key: k, ...clvSummarise(rows)}));
+}
+const CLV_PRICE_BANDS = [
+  {label:'-125 to -110', test: p => p <= -110 && p >= -125},
+  {label:'-109 to +100', test: p => p > -110 && p < 100},
+  {label:'+100 or better', test: p => p >= 100},
+];
+
+// ---- the panel -------------------------------------------------------------
+function renderClvPanel(container, scored){
+  container.innerHTML = '';
+  const all = clvSummarise(scored);
+
+  const h = document.createElement('h3');
+  h.textContent = 'Closing Line Value';
+  h.style.cssText = 'margin:0 0 4px;';
+  container.appendChild(h);
+
+  const sub = document.createElement('div');
+  sub.className = 'footnote';
+  sub.style.cssText = 'margin-bottom:12px;';
+  sub.innerHTML = CLV_PANEL_DEF;
+  appendDefIcon(h, CLV_PANEL_DEF);
+  container.appendChild(sub);
+
+  if(!all.n){
+    const empty = document.createElement('div');
+    empty.className = 'footnote';
+    empty.textContent = scored.length
+      ? `No closing lines matched yet for these ${scored.length} picks. The archive only captures `
+        + 'the six hours before tip, so a pick saved earlier needs the evening cron to have run.'
+      : 'No graded picks with closing lines yet.';
+    container.appendChild(empty);
+    return;
+  }
+
+  const headline = document.createElement('div');
+  const pp = v => `${v >= 0 ? '+' : ''}${(100*v).toFixed(2)}pp`;
+  const readable = all.n >= CLV_MIN_SAMPLE;
+  const positive = all.ci && all.ci[0] > 0;
+  const negative = all.ci && all.ci[1] < 0;
+  headline.style.cssText = 'font-size:15px;margin-bottom:10px;';
+  headline.innerHTML = `<b style="font-size:20px;">${pp(all.mean)}</b> mean CLV over `
+    + `<b>${all.n}</b> matched picks &nbsp;·&nbsp; beat the close <b>${Math.round(100*all.beat/all.n)}%</b> of the time`
+    + (all.ci ? `<div class="footnote">95% CI ${pp(all.ci[0])} to ${pp(all.ci[1])} — `
+        + (!readable ? `<b>too few picks to read yet</b> (${all.n} of ${CLV_MIN_SAMPLE} needed)`
+          : positive ? '<b>positive and distinguishable from zero</b>'
+          : negative ? '<b>negative and distinguishable from zero</b>'
+          : 'not yet distinguishable from zero') + '</div>' : '');
+  container.appendChild(headline);
+
+  const mkTable = (title, rows, keyLabel) => {
+    if(!rows.length) return;
+    const cap = document.createElement('div');
+    cap.style.cssText = 'font-weight:700;font-size:12px;margin:14px 0 4px;';
+    cap.textContent = title;
+    container.appendChild(cap);
+    const t = document.createElement('table');
+    t.innerHTML = `<thead><tr><th>${keyLabel}</th><th>n</th><th>Mean CLV</th><th>Beat close</th><th>95% CI</th></tr></thead>`;
+    const tb = document.createElement('tbody');
+    rows.filter(r => r.n > 0).sort((a,b)=>b.n-a.n).forEach(r=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${r.key}</td><td>${r.n}</td>`
+        + `<td><b>${pp(r.mean)}</b></td>`
+        + `<td>${Math.round(100*r.beat/r.n)}%</td>`
+        + `<td>${r.n >= CLV_MIN_SAMPLE && r.ci ? `${pp(r.ci[0])} to ${pp(r.ci[1])}` : '<span class="footnote">too few</span>'}</td>`;
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    container.appendChild(t);
+  };
+
+  mkTable('By board', clvGroupBy(scored, s => APP_TRACKER_SOURCE_LABEL[s.snapshotSource] || s.snapshotSource), 'Board');
+  mkTable('By price band', clvGroupBy(scored, s => {
+    const b = CLV_PRICE_BANDS.find(x => x.test(s.price));
+    return b ? b.label : null;
+  }), 'Price taken');
+  mkTable('By stat', clvGroupBy(scored, s => (typeof STAT_SHORT_LABEL !== 'undefined' && STAT_SHORT_LABEL[s.statKey]) || s.statKey), 'Stat');
+
+  const foot = document.createElement('div');
+  foot.className = 'footnote';
+  foot.style.cssText = 'margin-top:12px;';
+  foot.textContent = `${all.twoWay} of ${all.n} used a true two-way de-vig; the rest fell back to the `
+    + `fitted ${CLV_FALLBACK_OVERROUND} overround. `
+    + `${all.lineMoved} pick(s) had the line itself move and are excluded — a moved line is a different bet. `
+    + `${all.unmatched} had no archived close.`;
+  container.appendChild(foot);
+}
+
+const CLV_PANEL_DEF =
+  '<b>Closing line value</b> asks whether the market moved toward this app’s bets or away from '
+  + 'them between the moment they were saved and tip-off. It is measured in <b>probability points</b>, '
+  + 'after removing the bookmaker’s margin from both ends — using the real two-way de-vig where '
+  + 'the archive has both sides of a market, and a fitted ' + CLV_FALLBACK_OVERROUND + ' overround where '
+  + 'it has only one. <b>Why this and not hit rate:</b> a hit rate can be pushed to 60% by taking '
+  + 'favourites, which pays nothing; CLV cannot be gamed that way, and it answers in weeks rather than '
+  + 'seasons because it does not wait for results. <b>Positive mean CLV over 200+ bets is the first '
+  + 'real evidence of an edge this app could produce.</b> Picks whose line itself moved are excluded '
+  + 'rather than fudged: a different line is a different bet.';
+
 const BE_MINUTES_CEILING = 40;      // realistic per-game ceiling
 const BE_MINUTES_FLOOR_W = 4;       // every player keeps some chance at the spare minutes
 const BE_TEAM_MINUTES    = 200;     // player-minutes in a regulation WNBA game
@@ -9587,8 +9814,44 @@ function renderBettorsEyeTable(container, cachedFetch, liveGames, selectedBook, 
     appendDefIcon(thead.querySelector('.' + cls), BETTORS_EYE_COL_DEFS[cls]);
   });
   const tb = document.createElement('tbody');
+  tbl.appendChild(tb);
+  container.appendChild(tbl);
 
-  bets.forEach((b, i)=>{
+  // Click-to-sort, using the same helper the Standard, Advanced and Specials
+  // boards use -- one spec per header cell, in header order, null for the ones
+  // that are not sortable.
+  //
+  // Two of these need explaining. EDGE sorts by SIGNED value, not magnitude:
+  // the board ranks by |edge| because a large disagreement in either direction
+  // is worth seeing, but once a user asks to sort by Edge they want the biggest
+  // positive number at the top, which is a different question. And READ sorts
+  // priced rows below unpriced ones, because "the market has not caught up" is
+  // the state anyone sorting that column is looking for.
+  const beSortSpecs = [
+    {value: b => b.__beRank},                                  // #
+    {value: b => b.player || '', dir: 'asc'},                  // Player
+    {value: b => `${b.statKey}|${b.side}|${b.line}`, dir: 'asc'}, // Bet
+    {value: b => b.price},                                     // Price
+    {value: b => b.be.lineGap},                                // Line vs L10
+    {value: b => b.be.dMin},                                   // Minutes (change, not level)
+    {value: b => b.be.winProb},                                // Win Prob
+    {value: b => b.be.edgePP},                                 // Edge (signed)
+    {value: b => b.be.priced ? 0 : 1},                         // Read
+  ];
+  const beSort = attachTableSort(thead, beSortSpecs, ()=>paintRows());
+
+  function paintRows(){
+    tb.innerHTML = '';
+    beSort.updateArrows();
+    // Rank is frozen to the board's own selection order BEFORE any table sort,
+    // so re-sorting re-orders the rows without renumbering them -- the same
+    // convention as the Standard table's origRank and Specials' specialsRank.
+    bets.forEach((b, i)=>{ b.__beRank = i + 1; });
+    beSort.apply(bets).forEach(b => appendRow(b, b.__beRank));
+  }
+
+  function appendRow(b, rank){
+    const i = rank - 1;
     const e = b.be;
     const tr = document.createElement('tr');
     if(e.priced) tr.style.opacity = '0.72';
@@ -9625,10 +9888,9 @@ function renderBettorsEyeTable(container, cachedFetch, liveGames, selectedBook, 
           : `<b>The line still sits at her trailing average even though her role changed tonight.</b>`)
       + `</td>`;
     tb.appendChild(why);
-  });
+  }
 
-  tbl.appendChild(tb);
-  container.appendChild(tbl);
+  paintRows();
 }
 
 // Column definitions for the \u24d8 icons. Every number quoted here is one this
@@ -14350,6 +14612,7 @@ async function renderAppTrackerPage(){
   if(isAdminUser()) actionsRow.appendChild(deleteAllBtn);
   main.appendChild(actionsRow);
 
+  const clvDiv = document.createElement('div'); clvDiv.style.cssText='margin:18px 0;'; main.appendChild(clvDiv);
   const tableDiv = document.createElement('div'); main.appendChild(tableDiv);
 
   let bets = [];
@@ -14496,6 +14759,35 @@ async function renderAppTrackerPage(){
     renderSummary();
     renderTierAndRankStats();
     renderTable();
+    // CLV last and un-awaited: it needs one Worker round trip per snapshot date,
+    // and the table is what the page is for. A failure here must not take the
+    // rest of the page down with it.
+    refreshClvPanel();
+  }
+
+  // The archive only holds the six hours before tip, so only recent dates can
+  // ever match. Fourteen is enough to see a trend without making fourteen
+  // sequential fetches feel like a hang.
+  async function refreshClvPanel(){
+    if(!bets.length) return;
+    clvDiv.innerHTML = '<div class="footnote">Loading closing lines\u2026</div>';
+    const dates = [...new Set(bets.map(b => b.snapshotDate))].filter(Boolean).sort().slice(-14);
+    let scored = [], failed = 0;
+    for(const d of dates){
+      try{ scored = scored.concat(await computeClvForDate(d, bets)); }
+      catch(e){ failed++; console.warn('CLV: no closing lines for', d, e.message); }
+    }
+    try{
+      renderClvPanel(clvDiv, scored);
+      if(failed){
+        const note = document.createElement('div');
+        note.className = 'footnote';
+        note.textContent = `${failed} of ${dates.length} date(s) had no archive available.`;
+        clvDiv.appendChild(note);
+      }
+    }catch(e){
+      clvDiv.innerHTML = '<div class="footnote">CLV panel failed to render: ' + e.message + '</div>';
+    }
   }
 
   refreshBtn.addEventListener('click', async ()=>{
