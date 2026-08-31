@@ -20,12 +20,60 @@
   }
   *{box-sizing:border-box;}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;}
-  header{background:#000000;color:#fff;padding:16px 24px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;}
-  header h1{font-size:18px;margin:0;font-weight:800;text-transform:lowercase;}
+  /* ============ The app bar. One black row on EVERY page: sport dropdown left,
+     wordmark centred, search / menu / settings right. Previously the logo sat left
+     with a "Data through ..." tag beside it, and the search + hamburger lived inside
+     the Props screen's own first row -- which meant they existed on exactly one page.
+     Grid rather than flex so the wordmark is centred against the VIEWPORT, not against
+     whatever the two side groups happen to measure. ============ */
+  header{background:#000000;color:#fff;padding:10px 14px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;}
+  header h1{font-size:18px;margin:0;font-weight:800;text-transform:lowercase;grid-column:2;justify-self:center;white-space:nowrap;}
   header h1 .brand-bettors{color:#ffffff;}
   header h1 .brand-eye{color:var(--green);}
   header .tag{font-size:12px;color:#b9c4d9;}
-  .toplinks{display:flex;gap:6px;margin-left:auto;}
+  #hdrLeft{grid-column:1;justify-self:start;display:flex;align-items:center;gap:8px;min-width:0;}
+  #hdrRight{grid-column:3;justify-self:end;display:flex;align-items:center;gap:6px;}
+  #hdrLeft select{font-family:var(--sans);font-size:13px;font-weight:700;padding:7px 8px;border-radius:8px;
+    background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.3);color:#fff;min-height:38px;}
+  #hdrRight button.hdr-icon{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.3);color:#fff;
+    width:38px;height:38px;min-width:38px;min-height:38px;padding:0;border-radius:8px;cursor:pointer;
+    font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center;}
+  #hdrRight button.hdr-icon[aria-expanded="true"]{background:#fff;color:#000;}
+  #hdrSearchWrap{display:none;padding:8px 14px;background:var(--panel);border-bottom:1px solid var(--line);}
+  #hdrSearchWrap.open{display:block;}
+  /* The menu is a full-height drawer that slides in from the right, not a panel that drops
+     out of the top. A dropdown pushed the whole page down and, on a long menu, left the last
+     items below the fold on a phone; a drawer covers the screen, so the menu is the only
+     thing you are looking at while it is open.
+     Off-screen state is transform + visibility rather than display:none: display cannot be
+     transitioned (the panel would just appear), and a translated-but-visible element can
+     still be reached by the tab key, so visibility is what actually takes it out of play --
+     delayed by the length of the slide so the exit animation is still seen. */
+  #hdrMenuPanel{position:fixed;top:0;right:0;bottom:0;width:100%;max-width:460px;z-index:2000;
+    background:var(--panel);overflow-y:auto;-webkit-overflow-scrolling:touch;
+    padding:0 0 calc(18px + env(safe-area-inset-bottom, 0px));
+    box-shadow:-8px 0 30px rgba(0,0,0,.30);
+    transform:translateX(100%);visibility:hidden;
+    transition:transform .22s ease, visibility 0s linear .22s;}
+  #hdrMenuPanel.open{transform:translateX(0);visibility:visible;
+    transition:transform .22s ease, visibility 0s linear 0s;}
+  #hdrMenuOverlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1999;
+    opacity:0;pointer-events:none;transition:opacity .22s ease;}
+  #hdrMenuOverlay.open{opacity:1;pointer-events:auto;}
+  #hdrMenuHead{display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:calc(14px + env(safe-area-inset-top, 0px)) 16px 12px;
+    border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:1;}
+  #hdrMenuHead .menu-title{font-size:12px;font-weight:800;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--sub);}
+  #hdrMenuClose{background:none;border:1px solid var(--line);border-radius:8px;
+    width:40px;height:40px;min-width:40px;min-height:40px;padding:0;cursor:pointer;
+    font-size:20px;line-height:1;color:var(--ink);display:flex;align-items:center;justify-content:center;}
+  @media (prefers-reduced-motion: reduce){
+    #hdrMenuPanel, #hdrMenuOverlay{transition:none;}
+  }
+  /* The old page-nav row keeps working on a desktop-width screen, where there is room for it;
+     it drops to its own grid row so it never fights the three groups above. */
+  .toplinks{grid-column:1 / -1;grid-row:2;display:flex;gap:6px;justify-content:flex-end;}
   .toplinks button{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.25);color:#fff;padding:7px 14px;border-radius:6px;font-size:13px;cursor:pointer;font-family:var(--sans);}
   .toplinks button.active{background:#fff;color:var(--navy2);font-weight:700;}
   .layout{display:flex;min-height:calc(100vh - 58px);}
@@ -158,7 +206,10 @@
   body.compact-mode header{padding:14px 16px;gap:8px;}
   body.compact-mode header h1{font-size:20px;}
   body.compact-mode header .tag{font-size:13px;}
-  body.compact-mode .layout{flex-direction:column;min-height:0;padding-bottom:88px;} /* room for the fixed bottom tab bar */
+  /* The fixed bottom tab bar this 88px was reserving for is gone. What can still sit at the
+     bottom is the floating Props/Markets/My Radar menu -- but only on the screens that build
+     one, and each of those pads its own shell. A small buffer is all the shared layout owes. */
+  body.compact-mode .layout{flex-direction:column;min-height:0;padding-bottom:20px;}
   body.compact-mode nav{position:static;width:100%;flex:0 0 auto;max-height:none;border-right:none;border-bottom:1px solid var(--line);padding:6px 0;}
   body.compact-mode nav .group-label{padding:12px 16px 6px;font-size:13px;}
   body.compact-mode nav button.navbtn{padding:16px;font-size:17px;min-height:56px;}
@@ -193,32 +244,18 @@
   /* -- Layout mode toggle button itself, styled like the other header account controls -- */
   #layoutModeBtn{white-space:nowrap;}
 
-  /* ============ Compact-mode top header: logo + single Menu button, everything else moves
-     into the slide-down panel or the bottom tab bar. The old row of Home/Stats/Live Lines/etc
-     text buttons and the old row of Settings/Mode/Login buttons both disappear entirely in
-     Compact -- replaced by #compactMenuBtn (top) and #bottomTabBar (bottom). ============ */
-  body.compact-mode .toplinks > button{display:none;} /* the 5 page-nav buttons (Home/Stats/Live Lines/Bet Tracker/App Tracker) -- replaced by the bottom tab bar */
-  body.compact-mode #accountControls > *{display:none;} /* Mode/Settings/Login/Admin (buttons + the Mode dropdown wrapper div) -- replaced by the hamburger panel */
+  /* ============ Navigation on a phone. The old row of Home/Stats/Live Lines/... text
+     buttons and the old row of Settings/Mode/Login buttons are both hidden here; every
+     one of those destinations now lives in the app bar's hamburger, which is present on
+     every page. Two things this block used to style are gone entirely:
+       #compactMenuBtn / #compactMenuPanel -- a second hamburger holding only the account
+         items, which meant two hamburgers on one screen each with half the destinations;
+       #bottomTabBar -- a fixed bottom bar that, after the furlough, held two items and sat
+         underneath the floating Props/Markets/My Radar menu.
+     ============ */
+  body.compact-mode .toplinks{display:none;}
+  body.compact-mode #accountControls > *{display:none;} /* Mode/Settings/Login/Admin -- in the app bar menu now */
   body.compact-mode #accountControls{border-left:none;padding-left:0;margin-left:auto;}
-  body.full-mode #compactMenuBtn, body.full-mode #compactMenuPanel, body.full-mode #bottomTabBar{display:none !important;}
-
-  #compactMenuBtn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.3);color:#fff;padding:12px 18px;border-radius:8px;font-size:22px;cursor:pointer;min-height:52px;min-width:60px;}
-  #compactMenuPanel{display:none;position:fixed;top:0;right:0;bottom:0;width:82%;max-width:340px;background:#fff;z-index:2000;box-shadow:-4px 0 24px rgba(0,0,0,.3);overflow-y:auto;padding:18px;}
-  #compactMenuPanel.open{display:block;}
-  #compactMenuOverlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1999;}
-  #compactMenuOverlay.open{display:block;}
-  #compactMenuPanel .panel-close{width:100%;text-align:right;background:none;border:none;font-size:28px;color:var(--sub);cursor:pointer;padding:6px;margin-bottom:10px;}
-  #compactMenuPanel button.panel-item{display:block;width:100%;text-align:left;background:#f7f8fa;border:1px solid var(--line);border-radius:10px;padding:16px 18px;font-size:17px;font-weight:700;color:var(--ink);cursor:pointer;margin-bottom:10px;min-height:56px;}
-  #compactMenuPanel button.panel-item:active{background:#eef2fb;}
-
-  /* ============ Bottom tab bar: primary navigation, fixed, always visible in Compact mode.
-     The single most-used navigation pattern on a phone, and the reason for the layout padding
-     added to .compact-mode .layout above (so the last bit of real content is never hidden
-     behind this). ============ */
-  #bottomTabBar{position:fixed;left:0;right:0;bottom:0;z-index:900;display:flex;background:#000000;border-top:1px solid rgba(255,255,255,.15);padding:6px 2px calc(6px + env(safe-area-inset-bottom, 0px));}
-  #bottomTabBar button{flex:1 1 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;background:none;border:none;color:#b9c4d9;padding:8px 2px;font-size:11px;font-family:var(--sans);cursor:pointer;min-height:56px;border-radius:8px;}
-  #bottomTabBar button .tab-icon{font-size:22px;line-height:1;}
-  #bottomTabBar button.active{color:#ffffff;background:rgba(255,255,255,.1);}
   /* Compact-mode-only "Show All Details" toggle for wide tables that use compact-hide -- reveals
      the hidden columns back to table-cell display (not just block, since these are td/th). */
   body.compact-mode .compact-show-all .compact-hide{display:table-cell !important;}
@@ -238,10 +275,14 @@
 </head>
 <body class="compact-mode">
 <header>
+  <div id="hdrLeft"></div>
   <h1 id="logoHome" style="cursor:pointer;"><span class="brand-bettors">bettors</span><span class="brand-eye">eye</span></h1>
-  <div class="tag">Data through <span id="asOf"></span></div>
+  <div id="hdrRight"></div>
   <div class="toplinks" id="toplinks"></div>
 </header>
+<div id="hdrSearchWrap"></div>
+<div id="hdrMenuOverlay"></div>
+<div id="hdrMenuPanel"></div>
 <div class="layout">
   <nav id="nav"></nav>
   <main id="main"></main>
@@ -1225,10 +1266,9 @@ function renderStickyBottomBar(options, currentValue, onSelect){
   const bar = document.createElement('div');
   bar.id = 'gameWindowStickyBar';
   if(isCompact){
-    // Same height formula as #bottomTabBar itself (padding:6px top + 56px min button height +
-    // 6px bottom + safe-area-inset), so this sits flush above it on every device regardless of
-    // notch/home-indicator size, without needing to measure the actual rendered bar via JS.
-    bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px 8px 0 0;padding:8px 12px;position:fixed;left:0;right:0;bottom:calc(68px + env(safe-area-inset-bottom, 0px));z-index:850;box-shadow:0 -2px 10px rgba(0,0,0,.1);';
+    // It used to be offset by 68px to clear #bottomTabBar. That bar is retired, so this now sits
+    // flush on the bottom edge, above the home indicator on the devices that have one.
+    bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px 8px 0 0;padding:8px 12px;position:fixed;left:0;right:0;bottom:env(safe-area-inset-bottom, 0px);z-index:850;box-shadow:0 -2px 10px rgba(0,0,0,.1);';
   } else {
     bar.style.cssText = 'background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:16px;';
   }
@@ -1270,13 +1310,12 @@ function renderStickyBottomBar(options, currentValue, onSelect){
   const spacer = document.createElement('div');
   spacer.style.cssText = `height:68px;`;
   document.body.appendChild(bar);
-  // .layout's own CSS only reserves room for the bottom tab bar (88px) -- with this sticky bar
-  // also fixed above it, that's not enough room and the last row of whatever page content is
-  // showing ends up hidden underneath this bar. Extends that reservation for as long as this
-  // bar is showing; removeGameWindowStickyBar() (called at the top of every page's render
-  // function) puts it back to the CSS default the moment this bar goes away.
+  // .layout's own CSS reserves only a small buffer now that the bottom tab bar is retired --
+  // not enough room for this fixed bar, so the last row of page content would sit underneath
+  // it. Extends that reservation for as long as this bar is showing; removeGameWindowStickyBar()
+  // (called at the top of every page's render function) puts it back the moment it goes away.
   const layoutEl = document.querySelector('.layout');
-  if(layoutEl) layoutEl.style.paddingBottom = '156px';
+  if(layoutEl) layoutEl.style.paddingBottom = '88px';
   return spacer;
 }
 // ================= "Game window" period selector bar =================
@@ -3377,7 +3416,23 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   ));
   main.appendChild(selectorRow);
 
-  main.appendChild(renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderPlayerPage(playerName, team, returnTo, val, year, month); }));
+  // The Last 5 / Last 10 / Last 15 / Full Season selector. It drives the Production,
+  // Gamelogs, Vs. Opponent and Season tabs -- but NOT the Bets tab, which has its own
+  // timeline chips and its own date-range picker. Two competing period controls on one
+  // screen, one of which does nothing to what you are looking at, is worse than none,
+  // so it is hidden while Bets is showing and restored the moment you leave it.
+  const windowBarNode = renderGameWindowStickyBar(windowMode, (val)=>{ if(val!==windowMode) renderPlayerPage(playerName, team, returnTo, val, year, month); });
+  main.appendChild(windowBarNode);
+  function setWindowBarVisible(on){
+    // In compact mode the node in the flow is a SPACER and the real bar is fixed to
+    // <body>; in full mode they are the same element. Both cases are covered by
+    // toggling the node we hold plus whatever carries the id.
+    const barEl = document.getElementById('gameWindowStickyBar');
+    windowBarNode.style.display = on ? '' : 'none';
+    if(barEl && barEl !== windowBarNode) barEl.style.display = on ? '' : 'none';
+    const layoutEl = document.querySelector('.layout');
+    if(layoutEl && getLayoutMode()==='compact') layoutEl.style.paddingBottom = on ? '88px' : '';
+  }
 
   // Three tabs to cut down on scrolling: Production (teammate-out impact, height-tier analysis,
   // next opponent), Gamelogs (box score + advanced metrics, plus the year/month/window controls
@@ -3408,6 +3463,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
         tabButtons[i].style.background = d===def ? 'var(--navy2)' : 'var(--panel)';
         tabButtons[i].style.color = d===def ? '#fff' : 'var(--ink)';
       });
+      setWindowBarVisible(def.label !== 'Bets');
     });
     tabBar.appendChild(btn);
     return btn;
@@ -3439,6 +3495,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
       tabButtons[i].style.background = i===openAt ? 'var(--navy2)' : 'var(--panel)';
       tabButtons[i].style.color = i===openAt ? '#fff' : 'var(--ink)';
     });
+    setWindowBarVisible(TAB_DEFS[openAt].label !== 'Bets');
   }
 
   // The Bets tab. Built last so every helper it leans on is defined, and wrapped
@@ -3697,53 +3754,214 @@ function renderAccountControls(){
   if(adminBtn) container.appendChild(adminBtn);
   container.appendChild(authBtn);
 
-  // Compact-mode-only hamburger menu -- CSS hides every direct child of #accountControls in
-  // Compact mode (the desktop-style button row above), so this needs to live as a SIBLING of
-  // #accountControls rather than inside it, or the same hide-everything rule would catch it too.
-  buildCompactMenu(container, {settingsBtn, adminBtn, authBtn});
+  // There used to be a SECOND hamburger here -- a compact-mode-only slide-out holding
+  // Settings, Admin and Sign in/out, separate from the Props screen's own menu. Two
+  // hamburgers on one screen, each with half the destinations. The app bar has the only
+  // one now; these three buttons are published for it to drive, and they are rebuilt on
+  // every login/logout so the menu reflects the current state rather than a stale one.
+  window.__accountActions = {settingsBtn, adminBtn, authBtn};
+  ['compactMenuBtn','compactMenuPanel','compactMenuOverlay'].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.remove();
+  });
+  buildAppBar();
 }
-// Builds (once) the hamburger button + slide-out panel + overlay, appended as a sibling of
-// #accountControls rather than a child of it (see the comment at the call site for why).
-// Rebuilds the panel's contents fresh each call so it reflects current login/admin state.
-function buildCompactMenu(afterEl, actions){
-  let menuBtn = document.getElementById('compactMenuBtn');
-  let panel = document.getElementById('compactMenuPanel');
-  let overlay = document.getElementById('compactMenuOverlay');
-  if(!menuBtn){
-    menuBtn = document.createElement('button');
-    menuBtn.id = 'compactMenuBtn';
-    menuBtn.textContent = '\u2630';
-    afterEl.insertAdjacentElement('afterend', menuBtn);
-  }
-  if(!overlay){
-    overlay = document.createElement('div');
-    overlay.id = 'compactMenuOverlay';
-    document.body.appendChild(overlay);
-  }
-  if(!panel){
-    panel = document.createElement('div');
-    panel.id = 'compactMenuPanel';
-    document.body.appendChild(panel);
-  }
-  function closePanel(){ panel.classList.remove('open'); overlay.classList.remove('open'); }
-  function openPanel(){ panel.classList.add('open'); overlay.classList.add('open'); }
-  menuBtn.onclick = openPanel;
-  overlay.onclick = closePanel;
 
-  panel.innerHTML = '';
-  const closeBtn = document.createElement('button'); closeBtn.className = 'panel-close'; closeBtn.textContent = '\u2715';
-  closeBtn.addEventListener('click', closePanel);
-  panel.appendChild(closeBtn);
+// ================= The app bar =================
+// Sport dropdown | wordmark | search · menu · settings, on EVERY page.
+//
+// These three controls used to live inside the Props screen's own first row, which
+// meant that from a player profile, League Stats or Live Lines there was no way to
+// search, no way to reach the menu and no way to open Settings without going back
+// to Props first. Hoisting them into the black bar that was already on every page
+// costs one row of markup and removes that whole class of dead end.
+//
+// The search box is deliberately dual-purpose. A screen that owns a searchable list
+// (today: Props) registers a hook and typing filters that list in place; anywhere
+// else the same box is a player/team lookup. The hook carries the DOM node it
+// belongs to, so a stale hook left behind by a screen that has since been replaced
+// is ignored rather than silently swallowing keystrokes on the wrong page.
+window.__appSearchHook = null;
+function appSearchHook(){
+  const h = window.__appSearchHook;
+  if(!h || !h.node || !h.node.isConnected){ window.__appSearchHook = null; return null; }
+  return h.fn;
+}
+function buildAppBar(){
+  const left = document.getElementById('hdrLeft');
+  const right = document.getElementById('hdrRight');
+  const searchWrap = document.getElementById('hdrSearchWrap');
+  const menuPanel = document.getElementById('hdrMenuPanel');
+  if(!left || !right) return;
+  left.innerHTML = ''; right.innerHTML = ''; searchWrap.innerHTML = ''; menuPanel.innerHTML = '';
 
-  function panelItem(text, onClick){
-    const b = document.createElement('button'); b.className = 'panel-item'; b.textContent = text;
-    b.addEventListener('click', ()=>{ closePanel(); onClick(); });
-    panel.appendChild(b);
+  // ---- sport ----
+  const sportSel = document.createElement('select');
+  sportSel.id = 'hdrSport';
+  sportSel.setAttribute('aria-label', 'Sport');
+  (typeof PS_SPORTS !== 'undefined' ? PS_SPORTS : [{key:'wnba', label:'WNBA', active:true}])
+    .filter(s=>s.active).forEach(s=>{
+      const o = document.createElement('option'); o.value = s.key; o.textContent = s.label; sportSel.appendChild(o);
+    });
+  if(typeof PS_STATE !== 'undefined') sportSel.value = PS_STATE.sport;
+  sportSel.addEventListener('change', ()=>{
+    if(typeof PS_STATE !== 'undefined') PS_STATE.sport = sportSel.value;
+    if(typeof renderPropsScreen === 'function') renderPropsScreen();
+  });
+  left.appendChild(sportSel);
+
+  // ---- search ----
+  const searchInput = document.createElement('input');
+  searchInput.id = 'hdrSearchInput';
+  searchInput.placeholder = 'Search player or team…';
+  searchInput.style.cssText = 'width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;'
+    + 'font-family:var(--sans);font-size:14px;background:var(--panel);color:var(--ink);';
+  const results = document.createElement('div');
+  results.id = 'hdrSearchResults';
+  results.style.cssText = 'max-height:44vh;overflow-y:auto;margin-top:6px;';
+  searchWrap.appendChild(searchInput); searchWrap.appendChild(results);
+
+  function runSearch(){
+    const q = searchInput.value.trim().toLowerCase();
+    const hook = appSearchHook();
+    if(hook){ results.innerHTML = ''; hook(q); return; }
+    results.innerHTML = '';
+    if(q.length < 2) return;
+    const hits = [];
+    (typeof TEAM_NAMES !== 'undefined' ? TEAM_NAMES : []).forEach(t=>{
+      if((FULL_TEAM_NAME[t]||t).toLowerCase().includes(q) || t.toLowerCase().includes(q))
+        hits.push({label: FULL_TEAM_NAME[t] || t, sub: 'Team', fn: ()=>renderTeamPage(t)});
+    });
+    Object.keys((DATA && DATA.fullPlayerLogs) || {}).forEach(k=>{
+      const i = k.lastIndexOf('|');
+      const player = k.slice(0,i), team = k.slice(i+1);
+      if(player.toLowerCase().includes(q))
+        hits.push({label: player, sub: FULL_TEAM_NAME[team] || team, fn: ()=>goToPlayer(player, team)});
+    });
+    if(!hits.length){
+      const e = document.createElement('div');
+      e.className = 'footnote'; e.textContent = 'Nothing matches “' + searchInput.value.trim() + '”.';
+      results.appendChild(e); return;
+    }
+    hits.slice(0, 30).forEach(h=>{
+      const b = document.createElement('button');
+      b.style.cssText = 'display:block;width:100%;text-align:left;background:none;border:none;'
+        + 'border-bottom:1px solid var(--line);padding:10px 4px;cursor:pointer;font-family:var(--sans);';
+      b.innerHTML = `<span style="font-weight:700;color:var(--ink);">${h.label}</span>`
+        + `<span style="color:var(--sub);font-size:12px;margin-left:8px;">${h.sub}</span>`;
+      b.addEventListener('click', ()=>{ closeSearch(); h.fn(); });
+      results.appendChild(b);
+    });
+  }
+  searchInput.addEventListener('input', runSearch);
+
+  const mkIcon = (glyph, label, fn) => {
+    const b = document.createElement('button');
+    b.className = 'hdr-icon';
+    b.textContent = glyph;
+    b.title = label; b.setAttribute('aria-label', label);
+    b.setAttribute('aria-expanded', 'false');
+    b.addEventListener('click', fn);
+    right.appendChild(b);
     return b;
+  };
+  let searchBtn, menuBtn;
+  function closeSearch(){
+    searchWrap.classList.remove('open');
+    searchBtn.setAttribute('aria-expanded', 'false');
+    searchInput.value = '';
+    const hook = appSearchHook();
+    if(hook) hook('');
+    results.innerHTML = '';
   }
-  panelItem('\u2699\ufe0f Settings', ()=>actions.settingsBtn.click());
-  if(actions.adminBtn) panelItem('\ud83d\udee1\ufe0f Admin', ()=>actions.adminBtn.click());
-  panelItem(actions.authBtn.textContent, ()=>actions.authBtn.click());
+  // The drawer covers the screen, so the page behind it must not scroll under the finger --
+  // otherwise flicking the menu near its edge scrolls the page you cannot see.
+  const overlay = document.getElementById('hdrMenuOverlay');
+  function closeMenu(){
+    menuPanel.classList.remove('open');
+    if(overlay) overlay.classList.remove('open');
+    document.body.style.overflow = '';
+    menuBtn.setAttribute('aria-expanded', 'false');
+  }
+  function openMenu(){
+    menuPanel.classList.add('open');
+    if(overlay) overlay.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    menuBtn.setAttribute('aria-expanded', 'true');
+    const first = menuPanel.querySelector('button');
+    if(first) first.focus();
+  }
+  if(overlay) overlay.onclick = ()=>closeMenu();
+  searchBtn = mkIcon('⌕', 'Search', ()=>{
+    const open = searchWrap.classList.contains('open');
+    if(open){ closeSearch(); return; }
+    closeMenu();
+    searchWrap.classList.add('open');
+    searchBtn.setAttribute('aria-expanded', 'true');
+    searchInput.focus();
+  });
+  menuBtn = mkIcon('☰', 'Menu', ()=>{
+    if(menuPanel.classList.contains('open')){ closeMenu(); return; }
+    closeSearch();
+    openMenu();
+  });
+  mkIcon('⚙', 'Settings', ()=>{
+    closeMenu(); closeSearch();
+    if(typeof isLoggedIn === 'function' && !isLoggedIn()){
+      showLoginRequiredModal(()=>{ renderAccountControls(); renderSettingsPage(); });
+      return;
+    }
+    renderSettingsPage();
+  });
+  window.__appCloseMenus = ()=>{ closeMenu(); closeSearch(); };
+
+  // ---- menu ----
+  if(typeof psBuildMenu === 'function') psBuildMenu(menuPanel, ()=>closeMenu());
+  // Account items last, below a rule -- Settings, Admin and Sign in/out used to live in a
+  // second hamburger of their own. They are driven by clicking the real buttons in
+  // #accountControls so the login gating and the label ("Log in" vs "Log out") stay in
+  // exactly one place rather than being re-derived here.
+  const acts = window.__accountActions;
+  if(acts){
+    const hr = document.createElement('div');
+    hr.style.cssText = 'border-top:1px solid var(--line);margin:6px 0;';
+    menuPanel.appendChild(hr);
+    const addAcct = (label, src)=>{
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.style.cssText = 'display:block;width:100%;text-align:left;padding:12px 16px;background:none;'
+        + 'border:none;cursor:pointer;font-family:var(--sans);font-size:15px;color:var(--ink);font-weight:600;';
+      b.addEventListener('click', ()=>{ closeMenu(); src.click(); });
+      menuPanel.appendChild(b);
+    };
+    if(acts.adminBtn) addAcct('Admin', acts.adminBtn);
+    addAcct((acts.authBtn.textContent || 'Account').trim(), acts.authBtn);
+  }
+
+  // The drawer's own header, prepended after the items so psBuildMenu's innerHTML reset
+  // cannot wipe it. A full-screen drawer needs a visible way out that is not "guess that
+  // tapping the dimmed strip on the left closes it".
+  const head = document.createElement('div');
+  head.id = 'hdrMenuHead';
+  const title = document.createElement('div');
+  title.className = 'menu-title';
+  title.textContent = 'Menu';
+  const closeBtn = document.createElement('button');
+  closeBtn.id = 'hdrMenuClose';
+  closeBtn.textContent = '✕';
+  closeBtn.title = 'Close menu';
+  closeBtn.setAttribute('aria-label', 'Close menu');
+  closeBtn.addEventListener('click', ()=>{ closeMenu(); menuBtn.focus(); });
+  head.appendChild(title); head.appendChild(closeBtn);
+  menuPanel.insertBefore(head, menuPanel.firstChild);
+
+  // Escape closes whichever of the two is open. Bound once, not once per rebuild.
+  if(!window.__appBarEscBound){
+    window.__appBarEscBound = true;
+    document.addEventListener('keydown', (e)=>{
+      if(e.key !== 'Escape') return;
+      if(typeof window.__appCloseMenus === 'function') window.__appCloseMenus();
+    });
+  }
 }
 
 function buildTopLinks(){
@@ -3815,32 +4033,24 @@ function buildTopLinks(){
   // screen's menu, under a "Furloughed" heading. Re-adding them here is a
   // one-line change if they come back.
   tl.appendChild(explorerBtn); tl.appendChild(oddsBtn);
-  renderAccountControls();
+  renderAccountControls();   // ends by calling buildAppBar(), which is what mounts the app bar
   buildBottomTabBar(goHome, goExplorer, goOdds, goTracker, goAppTracker);
 }
 // Compact-mode-only fixed bottom tab bar -- the primary navigation pattern on a phone, replacing
 // the old top row of small text buttons entirely in Compact (see the CSS hiding .toplinks >
 // button in that mode). Rebuilt fresh each time buildTopLinks runs, same as the top bar is.
 function buildBottomTabBar(goHome, goExplorer, goOdds, goTracker, goAppTracker){
-  let bar = document.getElementById('bottomTabBar');
+  // RETIRED. After the furlough this bar held two items, Stats and Live Lines, and it
+  // sat underneath the floating Props/Markets/My Radar menu on every screen that has
+  // one -- two competing bottom bars, one of which was mostly empty. Both destinations
+  // now live in the app bar's hamburger, which is reachable from every page rather than
+  // only from the ones that showed this bar.
+  //
+  // The element is still removed rather than merely hidden: psLegacyBarHeight() and the
+  // sticky period selector both measure it, and a hidden-but-present bar is exactly the
+  // sort of thing that comes back as a mystery 68px gap.
+  const bar = document.getElementById('bottomTabBar');
   if(bar) bar.remove();
-  bar = document.createElement('div');
-  bar.id = 'bottomTabBar';
-  // The Props screen carries its own floating Props/Markets/Favorites bar, so
-  // this legacy tab bar only holds what is left after the furlough.
-  const TABS = [
-    {id:'tabExplorer', icon:'\ud83d\udcca', label:'Stats', fn:goExplorer},
-    {id:'tabOdds', icon:'\ud83d\udcc8', label:'Live Lines', fn:goOdds},
-  ];
-  TABS.forEach((t,i)=>{
-    const btn = document.createElement('button');
-    btn.id = t.id;
-    if(i===0) btn.classList.add('active');
-    btn.innerHTML = `<span class="tab-icon">${t.icon}</span><span>${t.label}</span>`;
-    btn.addEventListener('click', t.fn);
-    bar.appendChild(btn);
-  });
-  document.body.appendChild(bar);
 }
 // ================= Click tracking (admin-visible usage analytics) =================
 // Batches clicks in memory and flushes periodically rather than one network request per click
@@ -3935,7 +4145,11 @@ async function initApp(){
     console.error('Data load failed', err);
     return;
   }
-  document.getElementById('asOf').textContent = DATA.generatedThrough;
+  // The "Data through ..." tag is off the app bar -- the bar is now sport / wordmark / controls
+  // and nothing else. The freshness date is still worth having, so it moves to a title attribute
+  // on the wordmark rather than being thrown away.
+  const logoTitle = document.getElementById('logoHome');
+  if(logoTitle) logoTitle.title = 'Data through ' + DATA.generatedThrough;
   TEAM_NAMES = Object.keys(DATA.teams).sort();
   // Fire-and-forget: the page must not wait on the injury feed to render, and a failure must not
   // block anything -- teamInjuries() falls back to the baked-in snapshot until (and unless) this
@@ -9284,6 +9498,7 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
 // and it labels rows the market has already priced instead of hiding them.
 // ============================================================================
 
+// <<< MODULE props_screen.js
 // ============================================================================
 // THE PROPS SCREEN -- the new primary surface.
 //
@@ -9475,6 +9690,20 @@ const PS_MARKETS = [
   {key:'pa',  label:'Pts+Ast',    stats:['pa']},
   {key:'ra',  label:'Reb+Ast',    stats:['ra']},
 ];
+// The stat keys a set of selected market chips covers, or null for "no restriction".
+// 'all' present anywhere means all -- it is exclusive in the UI, but a saved state from
+// an older build could still contain it alongside others, and "All plus Points" can only
+// honestly mean all.
+function psMarketStats(markets){
+  const list = Array.isArray(markets) ? markets : [markets];
+  if(!list.length || list.includes('all')) return null;
+  const out = [];
+  list.forEach(k=>{
+    const m = PS_MARKETS.find(x=>x.key===k);
+    if(m && m.stats) m.stats.forEach(s=>{ if(!out.includes(s)) out.push(s); });
+  });
+  return out.length ? out : null;
+}
 
 // ---- favourites ------------------------------------------------------------
 // Per-device, in localStorage. Deliberately not on the Worker yet: a favourite
@@ -9557,13 +9786,21 @@ async function psLoadPool(force){
 // ============================================================================
 // RENDERING
 // ============================================================================
-const PS_STATE = {sport:'wnba', metric:'l10', market:'all', screen:'props', search:'', limit:PS_PAGE_SIZE};
+// `markets` is a LIST, not a single key -- the category row is multi-select. `market`
+// is kept as a read-only mirror of the first entry so anything still reading the old
+// single-value field gets something sane rather than undefined.
+const PS_STATE = {sport:'wnba', metric:'l10', markets:['all'], market:'all', screen:'props', search:'', limit:PS_PAGE_SIZE};
 
 // Returns the row with an update(activeKey) method. Restyling in place rather
 // than rebuilding matters: these rows scroll horizontally, and tearing them down
 // on every tap resets the scroll position -- so a user who scrolls right to
 // reach "vs. Size" would be thrown back to the start the moment they picked it.
-function psChipRow(items, activeKey, onPick){
+// `active` is a key, or -- with opts.multi -- a list of keys. Multi-select rows are
+// marked aria-multiselectable so the chips read as a checkbox group rather than as a
+// radio group where several answers are somehow lit at once.
+function psChipRow(items, active, onPick, opts){
+  opts = opts || {};
+  const isOn = (key)=> Array.isArray(active) ? active.includes(key) : key === active;
   const wrap = document.createElement('div');
   // Horizontal scroll rather than shrinking the type. Momentum scrolling on
   // iOS, no visible scrollbar, and the row keeps a comfortable tap target.
@@ -9571,11 +9808,12 @@ function psChipRow(items, activeKey, onPick){
     + '-webkit-overflow-scrolling:touch;scrollbar-width:none;border-bottom:1px solid var(--line);'
     + 'background:var(--panel);white-space:nowrap;';
   wrap.className = 'ps-chiprow';
+  if(opts.multi) wrap.setAttribute('aria-multiselectable', 'true');
   items.forEach(it=>{
     const b = document.createElement('button');
     b.textContent = it.label;
     b.dataset.key = it.key;
-    const on = it.key === activeKey;
+    const on = isOn(it.key);
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
     b.style.cssText = 'flex:0 0 auto;padding:7px 14px;border-radius:999px;font-size:13px;'
       + 'font-weight:700;cursor:pointer;font-family:var(--sans);border:1px solid '
@@ -9584,9 +9822,12 @@ function psChipRow(items, activeKey, onPick){
     b.addEventListener('click', ()=>onPick(it.key));
     wrap.appendChild(b);
   });
-  wrap.update = (key)=>{
+  // Restyles in place rather than rebuilding the row, so the horizontal scroll
+  // position survives a tap -- rebuilding snapped it back to the left every time.
+  wrap.update = (next)=>{
+    const test = (key)=> Array.isArray(next) ? next.includes(key) : key === next;
     [...wrap.children].forEach(b=>{
-      const on = b.dataset.key === key;
+      const on = test(b.dataset.key);
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
       b.style.borderColor = on ? 'var(--navy2)' : 'var(--line)';
       b.style.background  = on ? 'var(--navy2)' : 'var(--panel)';
@@ -9722,55 +9963,14 @@ async function renderPropsScreen(){
   shell.style.cssText = 'padding-bottom:78px;';   // clear the floating bar
   main.appendChild(shell);
 
-  // ---- row 1 ---------------------------------------------------------------
-  const row1 = document.createElement('div');
-  row1.style.cssText = 'display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;'
-    + 'padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel);';
-  const sportSel = document.createElement('select');
-  sportSel.style.cssText = 'font-family:var(--sans);font-size:13px;font-weight:700;padding:6px 8px;'
-    + 'border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);justify-self:start;';
-  PS_SPORTS.filter(s=>s.active).forEach(s=>{
-    const o = document.createElement('option'); o.value = s.key; o.textContent = s.label; sportSel.appendChild(o);
-  });
-  sportSel.value = PS_STATE.sport;
-  sportSel.addEventListener('change', ()=>{ PS_STATE.sport = sportSel.value; renderPropsScreen(); });
-  const logo = document.createElement('div');
-  logo.textContent = 'Bettor’s Eye';
-  logo.style.cssText = 'font-weight:800;font-size:16px;letter-spacing:-.01em;color:var(--ink);justify-self:center;white-space:nowrap;';
-  const icons = document.createElement('div');
-  icons.style.cssText = 'display:flex;gap:6px;justify-self:end;';
-  const mkIcon = (glyph, title, fn) => {
-    const b = document.createElement('button');
-    b.textContent = glyph; b.title = title; b.setAttribute('aria-label', title);
-    b.style.cssText = 'background:none;border:1px solid var(--line);border-radius:8px;width:34px;height:34px;'
-      + 'cursor:pointer;font-size:15px;color:var(--ink);line-height:1;';
-    b.addEventListener('click', fn);
-    return b;
-  };
-  const searchWrap = document.createElement('div');
-  searchWrap.style.cssText = 'display:none;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel);';
-  const searchInput = document.createElement('input');
-  searchInput.placeholder = 'Search player or team…';
-  searchInput.style.cssText = 'width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;'
-    + 'font-family:var(--sans);font-size:14px;background:var(--panel);color:var(--ink);';
-  searchInput.addEventListener('input', ()=>{ PS_STATE.search = searchInput.value.trim().toLowerCase();
-    PS_STATE.limit = PS_PAGE_SIZE; paint(); });
-  searchWrap.appendChild(searchInput);
-  icons.appendChild(mkIcon('⌕', 'Search', ()=>{
-    const showing = searchWrap.style.display !== 'none';
-    searchWrap.style.display = showing ? 'none' : '';
-    if(!showing) searchInput.focus();
-    else { searchInput.value = ''; PS_STATE.search = ''; paint(); }
-  }));
-  icons.appendChild(mkIcon('☰', 'Menu', ()=>psToggleMenu(menuPanel)));
-  row1.appendChild(sportSel); row1.appendChild(logo); row1.appendChild(icons);
-  shell.appendChild(row1);
-
-  // The menu is where the furloughed pages live -- out of the main navigation,
-  // still one tap away, nothing deleted.
-  const menuPanel = psBuildMenu();
-  shell.appendChild(menuPanel);
-  shell.appendChild(searchWrap);
+  // ---- row 1 lives in the app bar now --------------------------------------
+  // The sport dropdown, the wordmark, the search box and the menu used to be built
+  // here, which meant they existed on this screen and nowhere else. They are part of
+  // the black app bar now (see buildAppBar), so this screen starts at the chip rows.
+  // The one thing it still owns is what typing in that box DOES here: filter the
+  // board. The hook carries this screen's own list node, so once this screen is
+  // replaced the app bar falls back to its global player/team lookup by itself.
+  PS_STATE.search = '';
 
   // ---- rows 2 and 3 --------------------------------------------------------
   const metricItems = PS_METRICS.map(m => Object.assign({}, m, {
@@ -9787,9 +9987,22 @@ async function renderPropsScreen(){
     PS_STATE.metric = k; psF('props').sortBy = k; psSaveFilters();
     PS_STATE.limit = PS_PAGE_SIZE; row2.update(k); paint();
   });
-  const row3 = psChipRow(PS_MARKETS, PS_STATE.market, k=>{
-    PS_STATE.market = k; PS_STATE.limit = PS_PAGE_SIZE; row3.update(k); paint();
-  });
+  // Row 3 takes more than one category at a time. "All" is exclusive both ways:
+  // picking it clears everything else, and picking any category clears All. And the
+  // set can never empty out -- unticking the last remaining category falls back to
+  // All rather than showing a blank board, which is what "nothing selected" would
+  // otherwise mean.
+  const row3 = psChipRow(PS_MARKETS, PS_STATE.markets, k=>{
+    const cur = new Set(PS_STATE.markets);
+    if(k === 'all'){
+      PS_STATE.markets = ['all'];
+    } else {
+      cur.delete('all');
+      cur.has(k) ? cur.delete(k) : cur.add(k);
+      PS_STATE.markets = cur.size ? [...cur] : ['all'];
+    }
+    PS_STATE.limit = PS_PAGE_SIZE; row3.update(PS_STATE.markets); paint();
+  }, {multi:true});
   row2Holder.appendChild(row2); row3Holder.appendChild(row3);
 
   // ---- body ----------------------------------------------------------------
@@ -9804,13 +10017,20 @@ async function renderPropsScreen(){
 
   shell.appendChild(psBottomBar('props', ()=>psFilterSheet('props', ()=>renderPropsScreen())));
 
+  // The app bar's search box drives this board while this board is on screen.
+  window.__appSearchHook = {node: list, fn: (q)=>{
+    PS_STATE.search = (q || '').trim().toLowerCase();
+    PS_STATE.limit = PS_PAGE_SIZE;
+    paint();
+  }};
+
   let pool = [];
   const favs = psLoadFavs();
 
   function filtered(){
-    const mk = PS_MARKETS.find(m=>m.key===PS_STATE.market);
     let rows = (typeof psApplyFilters === 'function') ? psApplyFilters(pool, 'props') : pool;
-    if(mk && mk.stats) rows = rows.filter(l => mk.stats.includes(l.statKey));
+    const keys = psMarketStats(PS_STATE.markets);
+    if(keys) rows = rows.filter(l => keys.includes(l.statKey));
     if(PS_STATE.search){
       const q = PS_STATE.search;
       rows = rows.filter(l => (l.player||'').toLowerCase().includes(q)
@@ -9954,8 +10174,10 @@ function psBottomBar(active, onFilter){
   items.forEach(it=>{
     const b = document.createElement('button');
     const on = it.key === active;
-    b.style.cssText = 'display:flex;align-items:center;gap:6px;padding:9px 16px;border-radius:999px;'
+    b.style.cssText = 'display:flex;align-items:center;gap:6px;padding:9px 15px;border-radius:999px;'
       + 'border:none;cursor:pointer;font-family:var(--sans);font-size:13px;font-weight:700;'
+      + 'white-space:nowrap;'   // "My Radar" was wrapping onto two lines and heightening the bar
+
       + (on ? 'background:var(--navy2);color:#fff;' : 'background:transparent;color:var(--sub);');
     const g = document.createElement('span'); g.textContent = it.glyph; g.style.fontSize = '14px';
     const l = document.createElement('span'); l.textContent = it.label;
@@ -9976,8 +10198,14 @@ function psBottomBar(active, onFilter){
     fb.title = nActive ? `${nActive} filter(s) active` : 'Filters';
     fb.style.cssText = 'width:46px;height:46px;border-radius:50%;cursor:pointer;position:relative;'
       + 'background:var(--panel);border:1px solid ' + (nActive ? 'var(--navy2)' : 'var(--line)') + ';'
-      + 'box-shadow:0 6px 20px rgba(0,0,0,.16);font-size:17px;color:var(--ink);';
-    fb.innerHTML = '⚙'
+      + 'box-shadow:0 6px 20px rgba(0,0,0,.16);font-size:17px;color:var(--ink);'
+      + 'display:flex;align-items:center;justify-content:center;padding:0;min-height:46px;';
+    // A FUNNEL, not a cog. The app bar's settings gear is now on every page, and two
+    // identical ⚙ glyphs a few hundred pixels apart -- one opening app settings, one
+    // opening board filters -- is the kind of collision you only see once it is on screen.
+    fb.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true" fill="none" '
+      + 'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+      + '<path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>'
       + (nActive ? `<span style="position:absolute;top:-3px;right:-3px;background:var(--navy2);color:#fff;`
           + `border-radius:999px;min-width:17px;height:17px;font-size:10px;font-weight:800;`
           + `display:flex;align-items:center;justify-content:center;padding:0 4px;">${nActive}</span>` : '');
@@ -9996,22 +10224,34 @@ function psBottomBar(active, onFilter){
 }
 
 // ---- the menu (where furloughed pages live) --------------------------------
-function psToggleMenu(panel){ panel.style.display = panel.style.display === 'none' ? '' : 'none'; }
-function psBuildMenu(){
-  const panel = document.createElement('div');
-  panel.style.cssText = 'display:none;border-bottom:1px solid var(--line);background:var(--panel);padding:6px 0;';
+// Fills the app bar's own panel rather than building a detached one. It used to be
+// mounted inside the Props screen, so League Stats, Live Lines and the furloughed
+// pages were only reachable from Props; now the hamburger holds it on every page,
+// and Stats / Live Lines land here after the bottom tab bar was retired.
+function psToggleMenu(panel){ panel.classList.toggle('open'); }
+function psBuildMenu(panel, onPick){
+  panel = panel || document.getElementById('hdrMenuPanel');
+  if(!panel) return null;
+  panel.innerHTML = '';
+  const close = onPick || (()=>panel.classList.remove('open'));
   const add = (label, fn, muted)=>{
     const b = document.createElement('button');
     b.textContent = label;
-    b.style.cssText = 'display:block;width:100%;text-align:left;padding:10px 16px;background:none;'
-      + 'border:none;cursor:pointer;font-family:var(--sans);font-size:14px;'
+    b.style.cssText = 'display:block;width:100%;text-align:left;padding:12px 16px;background:none;'
+      + 'border:none;cursor:pointer;font-family:var(--sans);font-size:15px;'
       + (muted ? 'color:var(--sub);' : 'color:var(--ink);font-weight:600;');
-    b.addEventListener('click', ()=>{ panel.style.display='none'; fn(); });
+    b.addEventListener('click', ()=>{ close(); fn(); });
     panel.appendChild(b);
   };
-  add('League Stats', ()=>renderLeagueStatsPage());
+  add('Props', ()=>renderPropsScreen());
+  add('Markets', ()=>renderMarketsScreen());
+  add('My Radar', ()=>renderMyRadarScreen());
+  const hr0 = document.createElement('div');
+  hr0.style.cssText = 'border-top:1px solid var(--line);margin:6px 0;';
+  panel.appendChild(hr0);
+  // The two destinations the retired bottom tab bar used to carry.
+  add('Stats', ()=>renderLeagueStatsPage());
   add('Live Lines', ()=>renderOddsPage());
-  add('Settings', ()=>renderSettingsPage());
   const hr = document.createElement('div');
   hr.style.cssText = 'border-top:1px solid var(--line);margin:6px 0;';
   panel.appendChild(hr);
@@ -10025,7 +10265,9 @@ function psBuildMenu(){
   if(typeof isAdminUser === 'function' && isAdminUser()) add('App Tracker (old)', ()=>renderAppTrackerPage(), true);
   return panel;
 }
+// >>> END MODULE props_screen.js
 
+// <<< MODULE location.js
 // ============================================================================
 // LOCATION SIGNAL
 //
@@ -10301,7 +10543,9 @@ function locSettingsSection(){
   paint();
   return sec;
 }
+// >>> END MODULE location.js
 
+// <<< MODULE player_bets.js
 // ============================================================================
 // THE BETS TAB -- the new landing tab on a player profile.
 //
@@ -10332,7 +10576,19 @@ const PB_TIMELINES = [
   {key:'l5',  label:'L5'},  {key:'l10', label:'L10'},
   {key:'l15', label:'L15'}, {key:'l30', label:'L30'},
 ];
-const PB_STATE = {stat:'pts', timeline:'l10', venue:null, tier:null};
+// `from`/`to` are ISO dates from the calendar picker. When either is set the timeline
+// becomes 'custom' and no chip is lit -- a date range and "L10" are two answers to the
+// same question, so exactly one of them is ever in force.
+const PB_STATE = {stat:'pts', timeline:'l10', venue:null, tier:null, from:null, to:null};
+
+// Today, in the same YYYY-MM-DD form the game logs use, so it can cap the pickers by
+// simple string comparison. Prior seasons are fair game; a date that has not happened
+// yet is not.
+function pbToday(){
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
 
 // A circular action button. Three of them sit under the position line.
 function pbCircleBtn(inner, title, fn, opts){
@@ -10401,6 +10657,11 @@ function pbGamesFor(player, team, opponent){
   if(PB_STATE.timeline === 'h2h'){
     games = opponent ? games.filter(g => g.opp === opponent) : [];
   }
+  // The explicit date range, when one is set. Applied before the rolling-window cut for
+  // the same reason the venue and tier filters are: "her home games in July" is the
+  // useful reading, not "the home games among a window chosen some other way".
+  if(PB_STATE.from) games = games.filter(g => g.date >= PB_STATE.from);
+  if(PB_STATE.to)   games = games.filter(g => g.date <= PB_STATE.to);
   if(PB_STATE.venue) games = games.filter(g => (g.homeAway === 'home') === (PB_STATE.venue === 'home'));
   if(PB_STATE.tier){
     // THE TIER KEYS ARE LOWERCASE. computeHeightTierData tags each game
@@ -10681,12 +10942,115 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   });
   statHolder.appendChild(statRow);
 
+  // ---- timeline row: calendar first, then the preset chips -----------------
   const tlItems = PB_TIMELINES.map(t => Object.assign({}, t,
     {label: t.label || psSeasonLabel(PS_STATE.sport)}));
   const tlRow = psChipRow(tlItems, PB_STATE.timeline, k=>{
-    PB_STATE.timeline = k; tlRow.update(k); repaint();
+    // Picking a preset clears the custom range -- the two are alternatives.
+    PB_STATE.from = null; PB_STATE.to = null;
+    PB_STATE.timeline = k; tlRow.update(k); paintCal(); repaint();
   });
-  timelineHolder.appendChild(tlRow);
+  tlRow.style.borderBottom = 'none';
+  tlRow.style.flex = '1 1 auto';
+  tlRow.style.minWidth = '0';
+
+  const tlBar = document.createElement('div');
+  tlBar.style.cssText = 'display:flex;align-items:stretch;border-bottom:1px solid var(--line);'
+    + 'background:var(--panel);';
+  const calBtn = document.createElement('button');
+  calBtn.dataset.pbCal = 'toggle';
+  calBtn.setAttribute('aria-label', 'Custom date range');
+  calBtn.style.cssText = 'flex:0 0 auto;margin:8px 0 8px 14px;padding:7px 12px;border-radius:999px;'
+    + 'font-size:13px;font-weight:700;cursor:pointer;font-family:var(--sans);line-height:1.2;';
+  tlBar.appendChild(calBtn);
+  tlBar.appendChild(tlRow);
+  timelineHolder.appendChild(tlBar);
+
+  // The picker itself, collapsed until the calendar is tapped.
+  const calPanel = document.createElement('div');
+  calPanel.id = 'pbCalPanel';
+  calPanel.style.cssText = 'display:none;padding:10px 14px;background:var(--panel);'
+    + 'border-bottom:1px solid var(--line);';
+  const allDates = ((DATA.fullPlayerLogs[playerName+'|'+team] || {}).log || [])
+    .filter(g=>!g.dnp).map(g=>g.date).sort();
+  const mkDate = (id, label, val) => {
+    const w = document.createElement('label');
+    w.style.cssText = 'display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--sub);'
+      + 'font-weight:700;text-transform:uppercase;letter-spacing:.05em;flex:1 1 0;min-width:0;';
+    const i = document.createElement('input');
+    i.type = 'date'; i.id = id; i.value = val || '';
+    // Prior seasons are selectable; a future date is not. `max` is today rather than the
+    // last logged game, so a range that runs to "now" is expressible even mid-season.
+    i.max = pbToday();
+    if(allDates.length) i.min = allDates[0];
+    i.style.cssText = 'padding:8px 9px;border:1px solid var(--line);border-radius:8px;'
+      + 'font-family:var(--sans);font-size:14px;background:var(--panel);color:var(--ink);width:100%;';
+    w.appendChild(document.createTextNode(label));
+    w.appendChild(i);
+    return {wrap: w, input: i};
+  };
+  const fromF = mkDate('pbDateFrom', 'Start', PB_STATE.from);
+  const toF   = mkDate('pbDateTo',   'End',   PB_STATE.to);
+  const fields = document.createElement('div');
+  fields.style.cssText = 'display:flex;gap:10px;align-items:flex-end;';
+  fields.appendChild(fromF.wrap); fields.appendChild(toF.wrap);
+  calPanel.appendChild(fields);
+  const calMsg = document.createElement('div');
+  calMsg.className = 'footnote';
+  calMsg.style.cssText = 'margin-top:6px;';
+  calPanel.appendChild(calMsg);
+  const calActions = document.createElement('div');
+  calActions.style.cssText = 'display:flex;gap:8px;margin-top:10px;';
+  const mkAct = (label, id, primary, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label; b.id = id;
+    b.style.cssText = 'flex:1 1 0;padding:10px;border-radius:8px;cursor:pointer;font-weight:700;'
+      + 'font-family:var(--sans);font-size:13.5px;border:1px solid '
+      + (primary ? 'var(--navy2);background:var(--navy2);color:#fff;' : 'var(--line);background:var(--panel);color:var(--ink);');
+    b.addEventListener('click', fn);
+    return b;
+  };
+  calActions.appendChild(mkAct('Clear', 'pbDateClear', false, ()=>{
+    PB_STATE.from = null; PB_STATE.to = null;
+    fromF.input.value = ''; toF.input.value = '';
+    PB_STATE.timeline = PB_STATE.timeline === 'custom' ? 'l10' : PB_STATE.timeline;
+    tlRow.update(PB_STATE.timeline);
+    calMsg.textContent = '';
+    paintCal(); repaint();
+  }));
+  calActions.appendChild(mkAct('Apply', 'pbDateApply', true, ()=>{
+    const a = fromF.input.value || null, b = toF.input.value || null;
+    if(!a && !b){ calMsg.textContent = 'Pick a start date, an end date, or both.'; return; }
+    if(a && b && a > b){ calMsg.textContent = 'The start date is after the end date.'; return; }
+    const today = pbToday();
+    if((a && a > today) || (b && b > today)){ calMsg.textContent = 'That date has not happened yet.'; return; }
+    PB_STATE.from = a; PB_STATE.to = b;
+    PB_STATE.timeline = 'custom';
+    tlRow.update('custom');            // no preset is in force any more
+    calMsg.textContent = '';
+    calPanel.style.display = 'none';
+    paintCal(); repaint();
+  }));
+  calPanel.appendChild(calActions);
+  timelineHolder.appendChild(calPanel);
+
+  // The button carries the active range in its own label, so a date filter is never
+  // silently in force while the chip row shows nothing selected.
+  function paintCal(){
+    const on = !!(PB_STATE.from || PB_STATE.to);
+    const short = d => d ? d.slice(5).replace('-', '/') : '';
+    calBtn.textContent = on
+      ? `📅 ${short(PB_STATE.from) || 'start'}–${short(PB_STATE.to) || 'now'}`
+      : '📅';
+    calBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    calBtn.style.border = '1px solid ' + (on ? 'var(--navy2)' : 'var(--line)');
+    calBtn.style.background = on ? 'var(--navy2)' : 'var(--panel)';
+    calBtn.style.color = on ? '#fff' : 'var(--sub)';
+  }
+  calBtn.addEventListener('click', ()=>{
+    calPanel.style.display = calPanel.style.display === 'none' ? '' : 'none';
+  });
+  paintCal();
 
   // Chart filters: venue and height tier, each a single-choice group that can
   // be cleared back to "all".
@@ -10733,7 +11097,9 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
     sub.className = 'footnote';
     sub.style.cssText = 'margin-bottom:6px;';
     sub.textContent = `${games.length} game(s) · oldest left, most recent right`
-      + (PB_STATE.timeline === 'h2h' && opponent ? ` · vs ${psAbbr(opponent)} only` : '');
+      + (PB_STATE.timeline === 'h2h' && opponent ? ` · vs ${psAbbr(opponent)} only` : '')
+      + ((PB_STATE.from || PB_STATE.to)
+          ? ` · ${PB_STATE.from || 'first game'} to ${PB_STATE.to || 'today'}` : '');
     chartHolder.appendChild(title); chartHolder.appendChild(sub);
     chartHolder.appendChild(pbChart(games, PB_STATE.stat, line));
     buildFilters();
@@ -10811,7 +11177,8 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
     paintOdds();
   })();
 }
-
+// >>> END MODULE player_bets.js
+// <<< MODULE markets_filters.js
 // ============================================================================
 // FILTERS, MARKETS, MY RADAR
 //
@@ -11491,6 +11858,7 @@ function psMarketRow(leg, rank, note){
   row.addEventListener('click', ()=>psRecordResearch(leg));
   return row;
 }
+// >>> END MODULE markets_filters.js
 
 // ---- fitted constants ------------------------------------------------------
 // Minutes allocation. shortfall is spread across players in proportion to
