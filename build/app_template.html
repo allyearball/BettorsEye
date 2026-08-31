@@ -10646,13 +10646,17 @@ function psBottomBar(active, onFilter){
   const items = [
     {key:'props',   label:'Props',     glyph:'▤', fn:renderPropsScreen},
     {key:'markets', label:'Markets',   glyph:'◫', fn:renderMarketsScreen},
+    {key:'teams',   label:'Stats',     glyph:'▦', fn:renderTeamsScreen},
     {key:'radar',   label:'My Radar',  glyph:'☆', fn:renderMyRadarScreen},
   ];
   items.forEach(it=>{
     const b = document.createElement('button');
     const on = it.key === active;
-    b.style.cssText = 'display:flex;align-items:center;gap:6px;padding:9px 15px;border-radius:999px;'
-      + 'border:none;cursor:pointer;font-family:var(--sans);font-size:13px;font-weight:700;'
+    // Padding tightened when Stats became a fourth destination: at 15px the row
+    // measured 451px against a 430px viewport and ran off both edges. Measured,
+    // not eyeballed -- the harness asserts the bar stays inside the screen.
+    b.style.cssText = 'display:flex;align-items:center;gap:5px;padding:9px 9px;border-radius:999px;'
+      + 'border:none;cursor:pointer;font-family:var(--sans);font-size:12.5px;font-weight:700;'
       + 'white-space:nowrap;'   // "My Radar" was wrapping onto two lines and heightening the bar
 
       + (on ? 'background:var(--navy2);color:#fff;' : 'background:transparent;color:var(--sub);');
@@ -10722,12 +10726,15 @@ function psBuildMenu(panel, onPick){
   };
   add('Props', ()=>renderPropsScreen());
   add('Markets', ()=>renderMarketsScreen());
+  add('Stats', ()=>renderTeamsScreen());
   add('My Radar', ()=>renderMyRadarScreen());
   const hr0 = document.createElement('div');
   hr0.style.cssText = 'border-top:1px solid var(--line);margin:6px 0;';
   panel.appendChild(hr0);
-  // The two destinations the retired bottom tab bar used to carry.
-  add('Stats', ()=>renderLeagueStatsPage());
+  // The two destinations the retired bottom tab bar used to carry. Note this is
+  // LEAGUE Stats -- the league-wide stat tables -- not the team/roster directory
+  // that now sits on the bottom bar under the name Stats.
+  add('League Stats', ()=>renderLeagueStatsPage());
   add('Live Lines', ()=>renderOddsPage());
   const hr = document.createElement('div');
   hr.style.cssText = 'border-top:1px solid var(--line);margin:6px 0;';
@@ -11056,6 +11063,89 @@ const PB_TIMELINES = [
 // same question, so exactly one of them is ever in force.
 const PB_STATE = {stat:'pts', timeline:'l10', venue:null, tier:null, from:null, to:null};
 
+// ---- the companion box under each bar --------------------------------------
+// The number behind the number: what she was doing to produce the bar.
+//
+// A NOTE ON POTENTIAL ASSISTS, which is what Jon asked for on the assists chart.
+// It is a player-TRACKING stat (passes that would have been assists had the shot
+// gone in), produced by the optical/Second Spectrum feed. It is not in an ESPN
+// box score and it is not in this pipeline -- the log rows carry min, pts, fgm,
+// fga, fgPct, tpm, tpa, tpPct, ftm, fta, ftPct, oreb, dreb, reb, ast, stl, blk,
+// to, pf, plusMinus and nothing else. Rather than invent it or silently show
+// something else under an "assists opportunity" label, the assists chart shows
+// MINUTES, labelled as minutes, and the chart says so. Getting real potential
+// assists means a tracking feed (Sportradar carries it for the WNBA; SportsDataIO
+// does not expose it on the standard tier).
+const PB_COMPANION = {
+  // pts has no companion box: it gets the dual-axis series selector instead (see
+  // PB_PCT below), which is a fuller version of the same idea -- a second series
+  // with its own axis rather than a labelled number under the bar.
+  tpm: {key:'tpa',   label:'3PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  reb: {key:'oreb',  label:'OREB', fmt: v => v === null || v === undefined ? '—' : String(v)},
+  ast: {key:'min',   label:'MIN',  fmt: v => v === null || v === undefined ? '—' : String(Math.round(v)),
+        note:'potential assists needs a player-tracking feed, which this pipeline does not carry — minutes shown instead'},
+  pra: {key:'min',   label:'MIN',  fmt: v => v === null || v === undefined ? '—' : String(Math.round(v))},
+  pr:  {key:'min',   label:'MIN',  fmt: v => v === null || v === undefined ? '—' : String(Math.round(v))},
+  pa:  {key:'min',   label:'MIN',  fmt: v => v === null || v === undefined ? '—' : String(Math.round(v))},
+  ra:  {key:'min',   label:'MIN',  fmt: v => v === null || v === undefined ? '—' : String(Math.round(v))},
+};
+const pbCompanion = (statKey) => PB_COMPANION[statKey] || null;
+
+// ---- the points chart's second series --------------------------------------
+// Points can be charted against any ONE of three shooting percentages, on its own
+// right-hand axis: two-point, three-point, or total.
+//
+// TWO-POINT PERCENTAGE IS NOT IN THE DATA and has to be backed out, because a box
+// score carries total field goals and threes but not twos. Twos made = fgm - tpm,
+// twos attempted = fga - tpa. Worth stating because it is the one of the three
+// that is derived rather than read, and because it is undefined in a game where
+// every attempt was a three -- which happens, and must show as a gap rather than
+// as 0%.
+const PB_PCT = {
+  fg2:   {label:'FG% 2PT', of: g => pbRatio((g.fgm||0) - (g.tpm||0), (g.fga||0) - (g.tpa||0))},
+  fg3:   {label:'FG% 3PT', of: g => pbRatio(g.tpm, g.tpa)},
+  fgTot: {label:'FG% Tot', of: g => pbRatio(g.fgm, g.fga)},
+};
+function pbRatio(made, att){
+  if(made === null || made === undefined || att === null || att === undefined) return null;
+  if(!(att > 0)) return null;          // no attempts is not 0%, it is no answer
+  return made / att;
+}
+// Which percentage series is showing, and whether the points bars are showing at
+// all. Points and one percentage may be on together -- that is the whole point of
+// the second axis -- and at least one of the two must always be on, or the chart
+// would have nothing to draw.
+const PB_SERIES = {pts: true, pct: null};
+
+// ---- centre and spread lines ------------------------------------------------
+// Mean, median and mode over the games actually on screen, so they move with the
+// timeline and the filters rather than describing some other set of games.
+//
+// MODE IS NOT ALWAYS MEANINGFUL and pretending otherwise would be the easy
+// mistake here. On a points chart of ten games the values are often all distinct,
+// in which case every value is a "mode" and the line would sit on an arbitrary
+// one. So: a mode is only drawn when some value actually repeats, and when
+// several tie for most frequent the lowest is used and the label says how many
+// games sit there.
+function pbCentres(vals){
+  const v = (vals || []).filter(x => x !== null && x !== undefined && isFinite(x));
+  if(!v.length) return null;
+  const sorted = v.slice().sort((a,b)=>a-b);
+  const mean = v.reduce((a,b)=>a+b,0) / v.length;
+  const mid = Math.floor(sorted.length/2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid-1] + sorted[mid]) / 2;
+  const counts = new Map();
+  v.forEach(x => counts.set(x, (counts.get(x) || 0) + 1));
+  let best = 0;
+  counts.forEach(c => { if(c > best) best = c; });
+  let mode = null, modeN = 0, modeTies = 0;
+  if(best > 1){
+    const tied = [...counts.entries()].filter(([, c]) => c === best).map(([x]) => x).sort((a,b)=>a-b);
+    mode = tied[0]; modeN = best; modeTies = tied.length;
+  }
+  return {mean, median, mode, modeN, modeTies, n: v.length};
+}
+
 // Today, in the same YYYY-MM-DD form the game logs use, so it can cap the pickers by
 // simple string comparison. Prior seasons are fair game; a date that has not happened
 // yet is not.
@@ -11183,14 +11273,30 @@ function pbChart(games, statKey, line){
     return wrap;
   }
 
-  const W = 720, H = 260, PAD_L = 34, PAD_R = 10, PAD_T = 14, PAD_B = 46;
+  // PAD_B grew by the height of the companion row: the boxes sit in reserved
+  // space beneath the axis, not on top of the bars, so a tall bar can never
+  // cover the number that explains it.
+  const comp = pbCompanion(statKey);
+  const COMP_H = comp ? 26 : 0;
+  // The percentage series only exists on the points chart.
+  const pctKey = statKey === 'pts' ? PB_SERIES.pct : null;
+  const pctDef = pctKey ? PB_PCT[pctKey] : null;
+  const showBars = statKey !== 'pts' || PB_SERIES.pts;
+  // Right axis reserves room only when a percentage is actually on.
+  const PAD_R = pctDef ? 36 : 10;
+  const W = 720, H = 260 + COMP_H, PAD_L = 34, PAD_T = 14, PAD_B = 46 + COMP_H;
   const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
   const vals = games.map(g => beStatValue(g, statKey));
+  const pctVals = pctDef ? games.map(g => pctDef.of(g)) : [];
   const maxV = Math.max(1, ...vals, line ? line + 1 : 0);
   // A round top tick reads better than a max that lands on 17.
   const step = maxV <= 6 ? 2 : maxV <= 15 ? 5 : maxV <= 30 ? 10 : 20;
   const top = Math.ceil(maxV / step) * step;
   const y = v => PAD_T + plotH - (v / top) * plotH;
+  // The right axis is always the full 0-100%, not scaled to the data: a shooting
+  // percentage read against a floating axis is unreadable across games, and 40%
+  // has to sit at the same height on every chart or the series is decorative.
+  const yPct = p => PAD_T + plotH - (p) * plotH;
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
@@ -11212,6 +11318,16 @@ function pbChart(games, statKey, line){
     svg.appendChild(t);
   }
 
+  // The right-hand percentage axis, when a percentage series is on.
+  if(pctDef){
+    for(let p = 0; p <= 1.0001; p += 0.25){
+      const t = el('text', {x: W - PAD_R + 7, y: yPct(p) + 4, 'text-anchor':'start',
+        'font-size':11, fill:'var(--ink)', 'font-family':'var(--sans)'});
+      t.textContent = `${Math.round(p*100)}%`;
+      svg.appendChild(t);
+    }
+  }
+
   // 2px of surface between neighbours, per the mark spec.
   const slot = plotW / games.length;
   const bw = Math.max(3, Math.min(34, slot - 2));
@@ -11220,12 +11336,16 @@ function pbChart(games, statKey, line){
     + 'background:var(--ink);color:var(--panel);font-size:11.5px;padding:6px 9px;border-radius:6px;'
     + 'white-space:nowrap;z-index:5;font-family:var(--sans);font-weight:600;';
 
-  games.forEach((g, i)=>{
+  if(showBars) games.forEach((g, i)=>{
     const v = beStatValue(g, statKey);
     const x = PAD_L + i*slot + (slot - bw)/2;
     const h = Math.max(v > 0 ? 2 : 0, plotH - (y(v) - PAD_T));
     const cleared = line === null || line === undefined ? null : v >= (Number.isInteger(line) ? line+1 : Math.ceil(line));
     const bar = el('rect', {x, y: y(v), width: bw, height: h,
+      // Tagged so a bar can be counted without guessing from its fill: the chart
+      // now also emits an outlined companion rect per game, and every harness
+      // that counted `svg rect` was silently counting both.
+      'data-pb-bar': i,
       rx: Math.min(4, bw/2), ry: Math.min(4, bw/2),
       fill: cleared === null ? 'var(--navy2)' : (cleared ? 'var(--green)' : 'var(--sub)'),
       opacity: cleared === false ? .5 : 1});
@@ -11245,6 +11365,116 @@ function pbChart(games, statKey, line){
     svg.appendChild(bar);
   });
 
+  // ---- the percentage series ------------------------------------------------
+  // Outlined, unfilled rectangles rather than a line: the two series are measured
+  // on different axes, and a line implies a continuity between games that a bar
+  // does not. Empty rather than filled so the green points bars stay dominant --
+  // points is what the bet is on; the percentage is why.
+  //
+  // Each rectangle spans from the baseline to the percentage, so it reads against
+  // the right axis the same way the bars read against the left.
+  if(pctDef){
+    // Narrower than the points bars and centred inside them, so when both series
+    // are on neither hides the other -- at equal width the outline sat flush on
+    // the bar edge and the two read as one muddy shape.
+    const pw = Math.max(3, Math.min(34, slot - 2) * (showBars ? 0.58 : 1));
+    games.forEach((g, i)=>{
+      const p = pctVals[i];
+      const x = PAD_L + i*slot + (slot - pw)/2;
+      if(p === null || p === undefined){
+        // No attempts of this kind. A gap, explicitly -- not a zero.
+        const t = el('text', {x: x + pw/2, y: PAD_T + plotH - 4, 'text-anchor':'middle',
+          'font-size':10, fill:'var(--sub)', 'font-family':'var(--sans)'});
+        t.textContent = '–';
+        svg.appendChild(t);
+        return;
+      }
+      const ry = yPct(p);
+      const rect = el('rect', {x, y: ry, width: pw, height: Math.max(1.5, PAD_T + plotH - ry),
+        'data-pb-pct': i, fill: 'none', stroke: 'var(--ink)', 'stroke-width': 1.6, rx: 2, ry: 2});
+      rect.style.cursor = 'pointer';
+      const lab = `${g.date} — ${pctDef.label} ${(p*100).toFixed(1)}%`;
+      const title = el('title', {}); title.textContent = lab; rect.appendChild(title);
+      rect.addEventListener('mouseenter', ()=>{
+        tip.textContent = lab; tip.style.opacity = '1';
+        const pc = (x + pw/2) / W;
+        tip.style.left = `calc(${(pc*100).toFixed(2)}% - ${tip.offsetWidth/2}px)`;
+        tip.style.top = '-4px';
+      });
+      rect.addEventListener('mouseleave', ()=>{ tip.style.opacity = '0'; });
+      svg.appendChild(rect);
+    });
+  }
+
+  // ---- the companion box under each bar ------------------------------------
+  // Outlined, unfilled, so it reads as annotation rather than as a second series
+  // competing with the bars for the same visual weight.
+  if(comp){
+    const cy = PAD_T + plotH + 6;
+    const bh = 17;
+    const cbw = Math.max(3, Math.min(34, slot - 3));
+    games.forEach((g, i)=>{
+      const raw = g[comp.key];
+      const x = PAD_L + i*slot + (slot - cbw)/2;
+      svg.appendChild(el('rect', {x, y: cy, width: cbw, height: bh, rx: 3, ry: 3,
+        fill: 'none', stroke: 'var(--ink)', 'stroke-width': 1, opacity: .75}));
+      if(cbw >= 16){
+        const t = el('text', {x: x + cbw/2, y: cy + bh - 5, 'text-anchor':'middle',
+          'font-size': cbw >= 22 ? 10.5 : 9, fill:'var(--ink)',
+          'font-family':'var(--sans)', 'font-weight':600});
+        t.textContent = comp.fmt(raw);
+        svg.appendChild(t);
+      }
+    });
+    const cl = el('text', {x: PAD_L - 7, y: cy + bh - 5, 'text-anchor':'end',
+      'font-size':10, fill:'var(--sub)', 'font-family':'var(--sans)', 'font-weight':700});
+    cl.textContent = comp.label;
+    svg.appendChild(cl);
+  }
+
+  // ---- mean, median and mode ------------------------------------------------
+  // Three different dash patterns rather than three colours: the chart already
+  // spends colour on cleared-versus-missed and on the betting line, and a fourth
+  // and fifth hue would compete with the thing the reader is actually here for.
+  // Long dash = mean, fine dot = median, dash-dot = mode, which is also the order
+  // of how much they are usually trusted.
+  // WHICH SERIES THE CENTRES DESCRIBE. Points when it is showing, otherwise the
+  // percentage -- six lines for two series would bury the chart, and the centres
+  // of the thing you are betting on are the ones that matter. The label carries
+  // the units so there is never a question which axis they belong to.
+  const onPct = !showBars && pctDef;
+  const centreVals = onPct ? pctVals.filter(v => v !== null && v !== undefined) : vals;
+  const centreY = onPct ? yPct : y;
+  const centreTop = onPct ? 1 : top;
+  const fmtC = onPct ? (v => `${(v*100).toFixed(1)}%`) : (v => v % 1 ? v.toFixed(1) : String(v));
+  const centres = pbCentres(centreVals);
+  if(centres){
+    const marks = [
+      {v: centres.mean,   dash: '10 5', label: `mean ${fmtC(centres.mean)}`},
+      {v: centres.median, dash: '2 4',  label: `median ${fmtC(centres.median)}`},
+    ];
+    if(centres.mode !== null){
+      marks.push({v: centres.mode, dash: '12 4 2 4',
+        label: `mode ${fmtC(centres.mode)}${centres.modeTies > 1 ? ` (${centres.modeTies} tied)` : ''} ×${centres.modeN}`});
+    }
+    // Drawn before nothing else moves them; stacked labels are nudged apart so
+    // two centres a hair apart do not print on top of each other.
+    const used = [];
+    marks.forEach(mk=>{
+      if(!(mk.v >= 0) || mk.v > centreTop) return;
+      svg.appendChild(el('line', {x1:PAD_L, x2:W-PAD_R, y1:centreY(mk.v), y2:centreY(mk.v),
+        'data-pb-centre': mk.dash,
+        stroke:'var(--ink)', 'stroke-width':1.5, 'stroke-dasharray':mk.dash, opacity:.62}));
+      let ly = centreY(mk.v) - 4;
+      while(used.some(u => Math.abs(u - ly) < 11)) ly -= 11;
+      used.push(ly);
+      const t = el('text', {x: PAD_L + 4, y: ly, 'text-anchor':'start',
+        'font-size':10, fill:'var(--ink)', 'font-weight':700, 'font-family':'var(--sans)', opacity:.78});
+      t.textContent = mk.label;
+      svg.appendChild(t);
+    });
+  }
+
   // Tonight's line, drawn across so the bars can be read against it.
   if(line !== null && line !== undefined){
     svg.appendChild(el('line', {x1:PAD_L, x2:W-PAD_R, y1:y(line), y2:y(line),
@@ -11262,10 +11492,13 @@ function pbChart(games, statKey, line){
   [...new Set(idxs)].forEach(i=>{
     const g = games[i];
     const cx = PAD_L + i*slot + slot/2;
-    const d = el('text', {x:cx, y:H-PAD_B+18, 'text-anchor':'middle',
+    // Offset past the companion row. H and PAD_B both grew by COMP_H, so
+    // H-PAD_B is unchanged -- without this the date labels print on top of the
+    // boxes rather than below them.
+    const d = el('text', {x:cx, y:H-PAD_B+18+COMP_H, 'text-anchor':'middle',
       'font-size':10.5, fill:'var(--sub)', 'font-family':'var(--sans)'});
     d.textContent = g.date.slice(5).replace('-','/');
-    const m = el('text', {x:cx, y:H-PAD_B+31, 'text-anchor':'middle',
+    const m = el('text', {x:cx, y:H-PAD_B+31+COMP_H, 'text-anchor':'middle',
       'font-size':10.5, fill:'var(--sub)', 'font-weight':700, 'font-family':'var(--sans)'});
     m.textContent = (g.homeAway === 'home' ? '' : '@') + psAbbr(g.opp);
     svg.appendChild(d); svg.appendChild(m);
@@ -11552,6 +11785,40 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
     lab.style.cssText = 'margin-bottom:5px;';
     lab.textContent = 'Chart filters';
     filterHolder.appendChild(lab);
+    // ---- points-only: which series are charted ----------------------------
+    // Points and one shooting percentage can be on together, on two axes. The
+    // guard that matters: turning off the last visible series would leave an
+    // empty chart, so the click is refused rather than obeyed -- switching points
+    // off requires a percentage to already be on, and vice versa.
+    if(PB_STATE.stat === 'pts'){
+      const srow = document.createElement('div');
+      srow.style.cssText = 'margin-bottom:8px;';
+      const sl = document.createElement('div');
+      sl.className = 'footnote';
+      sl.style.cssText = 'margin-bottom:5px;';
+      sl.textContent = 'Series — points on the left axis, shooting % on the right';
+      srow.appendChild(sl);
+      const ptsBtn = mk('Pts', PB_SERIES.pts, ()=>{
+        if(PB_SERIES.pts && !PB_SERIES.pct) return;   // would empty the chart
+        PB_SERIES.pts = !PB_SERIES.pts; repaint();
+      }, 'series-pts');
+      ptsBtn.dataset.pbSeries = 'pts';
+      srow.appendChild(ptsBtn);
+      Object.entries(PB_PCT).forEach(([k, d])=>{
+        const b = mk(d.label, PB_SERIES.pct === k, ()=>{
+          // Only ONE percentage at a time -- three series on one axis with no
+          // colour left to distinguish them would be unreadable.
+          const turningOff = PB_SERIES.pct === k;
+          if(turningOff && !PB_SERIES.pts) return;    // would empty the chart
+          PB_SERIES.pct = turningOff ? null : k;
+          repaint();
+        }, 'series-' + k);
+        b.dataset.pbSeries = k;
+        srow.appendChild(b);
+      });
+      filterHolder.appendChild(srow);
+    }
+
     filterHolder.appendChild(mk('All', !PB_STATE.venue && !PB_STATE.tier,
       ()=>{ PB_STATE.venue = null; PB_STATE.tier = null; repaint(); }, 'all'));
     filterHolder.appendChild(mk('Home', PB_STATE.venue === 'home',
@@ -11571,7 +11838,10 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
     const title = document.createElement('div');
     title.style.cssText = 'font-weight:800;font-size:14px;margin-bottom:2px;';
     const statLabel = (pbStats.find(s=>s.key===PB_STATE.stat)||{}).label;
-    title.textContent = `${statLabel} by game`;
+    const pctLabel = PB_STATE.stat === 'pts' && PB_SERIES.pct ? PB_PCT[PB_SERIES.pct].label : null;
+    title.textContent = PB_STATE.stat === 'pts'
+      ? [PB_SERIES.pts ? statLabel : null, pctLabel].filter(Boolean).join(' and ') + ' by game'
+      : `${statLabel} by game`;
     const sub = document.createElement('div');
     sub.className = 'footnote';
     sub.style.cssText = 'margin-bottom:6px;';
@@ -11579,6 +11849,21 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
       + (PB_STATE.timeline === 'h2h' && opponent ? ` · vs ${psAbbr(opponent)} only` : '')
       + ((PB_STATE.from || PB_STATE.to)
           ? ` · ${PB_STATE.from || 'first game'} to ${PB_STATE.to || 'today'}` : '');
+    // Where the companion box is a substitute for what was actually asked for,
+    // the chart says so rather than leaving the reader to assume the label means
+    // what they wanted it to mean.
+    const cmp = pbCompanion(PB_STATE.stat);
+    if(cmp && cmp.note){
+      const cn = document.createElement('div');
+      cn.className = 'footnote';
+      cn.dataset.pbCompanionNote = PB_STATE.stat;
+      cn.style.cssText = 'margin-bottom:6px;';
+      cn.textContent = cmp.note;
+      chartHolder.appendChild(title); chartHolder.appendChild(sub); chartHolder.appendChild(cn);
+      chartHolder.appendChild(pbChart(games, PB_STATE.stat, line));
+      buildFilters();
+      return;
+    }
     chartHolder.appendChild(title); chartHolder.appendChild(sub);
     chartHolder.appendChild(pbChart(games, PB_STATE.stat, line));
     buildFilters();
@@ -11657,6 +11942,224 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   })();
 }
 // >>> END MODULE player_bets.js
+// <<< MODULE teams_screen.js
+// ============================================================================
+// THE STATS SCREEN -- every team, expandable to its full roster for the season.
+//
+// A directory rather than a leaderboard: the question it answers is "who plays
+// for this team, and how do I get to her page", which the app previously had no
+// answer to except searching by name.
+//
+// WHO COUNTS AS STILL ON THE TEAM. A season roster and a current roster are not
+// the same list. A player traded in June still has June games logged against her
+// old team, and showing her in black alongside the current rotation misstates
+// who is available tonight. The app already had this problem once, in the team
+// height tables: a per-player window kept a traded player topping her old team's
+// rotation indefinitely, and the fix was to anchor the window to the TEAM'S last
+// five games instead. The same anchor decides the colour here.
+//
+// But "no appearance in the team's last five" catches two different people: the
+// player who was traded away, and the player who is injured. Greying an injured
+// starter as though she had left the franchise would be wrong, so the injury
+// list is consulted and those players stay in normal weight with their status
+// shown. What is left in grey is genuinely "not with this team any more, as far
+// as the game logs can tell" -- which is stated on the screen rather than
+// implied, because a game log cannot actually see a transaction.
+// ============================================================================
+
+const TS_ROSTER_WINDOW = 5;    // same anchor the team-height tables use
+const TS_OPEN_KEY = 'be_teams_open_v1';
+
+function tsLoadOpen(){
+  try{ return new Set(JSON.parse(localStorage.getItem(TS_OPEN_KEY) || '[]')); }
+  catch(e){ return new Set(); }
+}
+function tsSaveOpen(s){
+  try{ localStorage.setItem(TS_OPEN_KEY, JSON.stringify([...s])); }catch(e){}
+}
+
+// Every player with a logged game for this team this season, with the roster
+// status the colour depends on.
+function tsRoster(team){
+  const rec = DATA.teams[team];
+  if(!rec || !rec.summaryFull) return [];
+  const recent = new Set(teamRecentGameDates(team, TS_ROSTER_WINDOW));
+  const teamHasEnoughGames = recent.size >= Math.min(TS_ROSTER_WINDOW, 3);
+  let injured = [];
+  try{ injured = (typeof teamInjuries === 'function' ? teamInjuries(team) : []) || []; }catch(e){ injured = []; }
+  const injuredBy = {};
+  injured.forEach(i=>{ if(i && i.player) injuredBy[i.player] = i.status || 'Out'; });
+
+  return (rec.summaryFull.totals || []).map(r=>{
+    const log = (DATA.fullPlayerLogs[r.player + '|' + team] || {}).log || [];
+    const played = log.filter(g => !g.dnp && (g.min || 0) > 0);
+    const appearedRecently = played.some(g => recent.has(g.date));
+    const lastPlayed = played.length ? played[played.length - 1].date : null;
+    const status = injuredBy[r.player] || null;
+    // Only claim someone has left once the team has actually played enough games
+    // for the absence to mean anything.
+    const departed = teamHasEnoughGames && !appearedRecently && !status;
+    return {
+      player: r.player, team,
+      pos: (typeof getPlayerPosition === 'function' ? getPlayerPosition(r.player, team) : null) || '—',
+      gp: r.gp || 0,
+      mpg: r.gp ? (r.min || 0) / r.gp : 0,
+      ppg: r.gp ? (r.pts || 0) / r.gp : 0,
+      rpg: r.gp ? (r.reb || 0) / r.gp : 0,
+      apg: r.gp ? (r.ast || 0) / r.gp : 0,
+      departed, status, lastPlayed,
+    };
+  }).sort((a,b)=>{
+    // Current players first, then by minutes -- a departed player sorting above
+    // the starting five because she had a big season elsewhere would defeat the
+    // point of marking her at all.
+    if(a.departed !== b.departed) return a.departed ? 1 : -1;
+    return b.mpg - a.mpg;
+  });
+}
+
+function tsPlayerRow(p){
+  const row = document.createElement('button');
+  row.dataset.tsPlayer = p.player;
+  if(p.departed) row.dataset.tsDeparted = '1';
+  row.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;text-align:left;'
+    + 'padding:10px 14px 10px 18px;background:none;border:none;border-top:1px solid var(--line);'
+    + 'cursor:pointer;font-family:var(--sans);';
+  row.appendChild(psAvatar(p.player, p.team, 30));
+
+  const name = document.createElement('div');
+  name.style.cssText = 'flex:1 1 auto;min-width:0;';
+  const n1 = document.createElement('div');
+  // The one visual difference Jon asked for: departed players in a dark grey
+  // rather than the ink black everyone else gets.
+  n1.style.cssText = 'font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;'
+    + 'text-overflow:ellipsis;color:' + (p.departed ? '#6b7280' : 'var(--ink)') + ';';
+  n1.textContent = p.player;
+  const n2 = document.createElement('div');
+  n2.style.cssText = 'font-size:11.5px;color:var(--sub);margin-top:1px;';
+  n2.textContent = p.pos + ' · ' + p.gp + ' GP'
+    + (p.departed ? ` · last played ${p.lastPlayed || 'unknown'}` : '')
+    + (p.status ? ` · ${p.status}` : '');
+  name.appendChild(n1); name.appendChild(n2);
+  row.appendChild(name);
+
+  const stats = document.createElement('div');
+  stats.style.cssText = 'display:flex;gap:10px;flex:0 0 auto;'
+    + 'color:' + (p.departed ? '#6b7280' : 'var(--ink)') + ';';
+  [['PTS', p.ppg], ['REB', p.rpg], ['AST', p.apg], ['MIN', p.mpg]].forEach(([lab, v])=>{
+    const b = document.createElement('div');
+    b.style.cssText = 'text-align:center;min-width:34px;';
+    b.innerHTML = `<div style="font-size:9.5px;letter-spacing:.06em;color:var(--sub);">${lab}</div>`
+      + `<div style="font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;">${v.toFixed(1)}</div>`;
+    stats.appendChild(b);
+  });
+  row.appendChild(stats);
+  row.addEventListener('click', ()=>goToPlayer(p.player, p.team));
+  return row;
+}
+
+function renderTeamsScreen(){
+  lastRender = () => renderTeamsScreen();
+  main.innerHTML = '';
+  if(typeof removeGameWindowStickyBar === 'function') removeGameWindowStickyBar();
+  const shell = document.createElement('div');
+  shell.style.cssText = 'padding:14px 0 86px;';
+  const head = document.createElement('div');
+  head.style.cssText = 'padding:0 14px;';
+  const h = document.createElement('h2');
+  h.textContent = 'Stats';
+  h.style.cssText = 'margin:0 0 2px;';
+  head.appendChild(h);
+  shell.appendChild(head);
+
+  if(!sportHasData(PS_STATE.sport)){
+    shell.appendChild(sportEmptyState(PS_STATE.sport));
+    main.appendChild(shell);
+    main.appendChild(psBottomBar('teams', null));
+    return;
+  }
+
+  const sub = document.createElement('div');
+  sub.className = 'footnote';
+  sub.style.cssText = 'margin-bottom:12px;';
+  sub.innerHTML = `Every team, and every player with a logged game this season. Tap a team to `
+    + `expand it, or a player to open her profile. Names in <span style="color:#6b7280;font-weight:700;">grey</span> `
+    + `have not appeared in that team's last ${TS_ROSTER_WINDOW} games and are not on its injury `
+    + `report — most likely traded or released, though a game log cannot see a transaction directly.`;
+  head.appendChild(sub);
+
+  const open = tsLoadOpen();
+  const list = document.createElement('div');
+  list.style.cssText = 'border-top:1px solid var(--line);';
+  shell.appendChild(list);
+
+  (TEAM_NAMES || []).slice().sort().forEach(team=>{
+    const roster = tsRoster(team);
+    const nDeparted = roster.filter(p=>p.departed).length;
+
+    const hdr = document.createElement('button');
+    hdr.dataset.tsTeam = team;
+    hdr.setAttribute('aria-expanded', open.has(team) ? 'true' : 'false');
+    hdr.style.cssText = 'display:flex;align-items:center;gap:11px;width:100%;text-align:left;'
+      + 'padding:12px 14px;background:var(--panel);border:none;border-bottom:1px solid var(--line);'
+      + 'cursor:pointer;font-family:var(--sans);';
+    const badge = document.createElement('div');
+    badge.style.cssText = `width:34px;height:34px;min-width:34px;border-radius:50%;flex:0 0 34px;`
+      + `background:${psColor(team)};color:#fff;display:flex;align-items:center;justify-content:center;`
+      + `font-weight:800;font-size:11px;letter-spacing:.02em;`;
+    badge.textContent = psAbbr(team);
+    const label = document.createElement('div');
+    label.style.cssText = 'flex:1 1 auto;min-width:0;';
+    label.innerHTML = `<div style="font-weight:800;font-size:15px;">${FULL_TEAM_NAME[team] || team}</div>`
+      + `<div style="font-size:11.5px;color:var(--sub);">${roster.length} player(s) this season`
+      + (nDeparted ? ` · ${nDeparted} no longer on the roster` : '') + `</div>`;
+    const caret = document.createElement('span');
+    caret.style.cssText = 'font-size:13px;color:var(--sub);flex:0 0 auto;';
+    caret.textContent = open.has(team) ? '▴' : '▾';
+    hdr.appendChild(badge); hdr.appendChild(label); hdr.appendChild(caret);
+
+    const body = document.createElement('div');
+    body.dataset.tsBody = team;
+    body.style.display = open.has(team) ? '' : 'none';
+    // Built once, on first expand, rather than for all fifteen teams up front.
+    let built = false;
+    const build = ()=>{
+      if(built) return;
+      built = true;
+      if(!roster.length){
+        const e = document.createElement('div');
+        e.className = 'footnote';
+        e.style.cssText = 'padding:12px 18px;';
+        e.textContent = 'No logged games for this team yet.';
+        body.appendChild(e);
+        return;
+      }
+      roster.forEach(p => body.appendChild(tsPlayerRow(p)));
+    };
+    if(open.has(team)) build();
+
+    hdr.addEventListener('click', ()=>{
+      const nowOpen = body.style.display === 'none';
+      if(nowOpen) build();
+      body.style.display = nowOpen ? '' : 'none';
+      caret.textContent = nowOpen ? '▴' : '▾';
+      hdr.setAttribute('aria-expanded', nowOpen ? 'true' : 'false');
+      // Which teams are open survives leaving and coming back -- on a fifteen-team
+      // list, re-expanding your team every visit is the whole friction.
+      const s = tsLoadOpen();
+      nowOpen ? s.add(team) : s.delete(team);
+      tsSaveOpen(s);
+    });
+
+    list.appendChild(hdr);
+    list.appendChild(body);
+  });
+
+  main.appendChild(shell);
+  main.appendChild(psBottomBar('teams', null));
+}
+// >>> END MODULE teams_screen.js
+
 // <<< MODULE markets_filters.js
 // ============================================================================
 // FILTERS, MARKETS, MY RADAR
