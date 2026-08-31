@@ -9516,6 +9516,212 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
 // and it labels rows the market has already priced instead of hiding them.
 // ============================================================================
 
+// <<< MODULE countmodel.js
+// ============================================================================
+// THE COUNT MODEL -- turning a projected mean into an over/under probability
+// without pretending a box-score line is a continuous symmetric quantity.
+//
+// WHAT WAS THERE BEFORE. psEdge and beWinProbability took the projection, took
+// the standard deviation of the last ten games, and read a normal CDF. For a
+// points line of 18.5 on a mean of 17 that is defensible. For a threes line of
+// 1.5 on a mean of 0.9 it is not: 89% of WNBA player-games produce 0, 1 or 2
+// threes, so the quantity being modelled has eleven possible values and the
+// normal spreads mass across the gaps and below zero.
+//
+// WHAT THE DATA SAID (dispersion.py and countfit.py, 18,871 real player-games
+// across 2024-2026; dispersion fitted on 2024-25, evaluated out of sample on
+// 2026). Two findings, and the second is the one that matters:
+//
+//   1. GIVEN MINUTES, THE EVENT STATS ARE POISSON. Pearson dispersion for
+//      rebounds 1.02, assists 0.93, threes 0.97, steals 0.97, blocks 0.96 --
+//      all within noise of 1. Their game-to-game spread is entirely explained by
+//      how long she was on the floor. That is what licenses the rate x
+//      opportunity form below, and it is the same form baseball needs with
+//      plate appearances in place of minutes.
+//
+//   2. POINTS IS NOT, AND NEITHER IS PRA. Dispersion 2.08 and 1.68 even after
+//      conditioning on minutes. This is not extra randomness -- it is that
+//      points is a COMPOUND sum, 2*FG + 1*FT + 3*3PM, so one made three moves it
+//      by three. Value-weighted sums are overdispersed relative to a count of
+//      events by construction. Applying a Poisson to points makes it markedly
+//      WORSE than the normal it replaced (log score 3.57 vs 3.17).
+//
+// So there is no single right distribution, and the per-stat choice below is
+// taken from measurement rather than from the fact that these are all integers.
+// Out-of-sample log loss on P(over) at half-integer lines within +/-1.5 of the
+// projection, count model vs the incumbent normal:
+//
+//      blocks  +6.07%      rebounds +1.40%       points  -0.57%
+//      steals  +5.29%      assists  +1.88%       PRA     -0.48%
+//      threes  +3.82%
+//
+// The gain grows as the mean falls, which is exactly the regime MLB lives in:
+// home runs average ~0.15 a game. It also tells us which baseball markets get
+// which treatment -- TOTAL BASES is baseball's points, a value-weighted compound
+// sum (1B=1 ... HR=4), so it takes the overdispersed branch, while hits, runs,
+// RBI, walks and strikeouts are pure event counts and take the Poisson branch.
+// Reaching for Poisson across the board because "baseball props are counts"
+// would have repeated the points mistake on the single most-bet MLB market.
+// ============================================================================
+
+// Per stat: how the count is distributed once the mean is known.
+//   'poisson'  -- variance equals the mean; k is infinite
+//   'nb'       -- negative binomial, var = mu + mu^2/k, k fitted below
+//   'normal'   -- keep the incumbent; the count model measured WORSE out of sample
+// `k` is the fitted dispersion from countfit.py. A stat marked 'normal' still
+// carries its k so the choice can be revisited against new data without refitting.
+const CM_DIST = {
+  // --- basketball ---
+  pts: {dist:'normal',  k: 8.2,  note:'compound sum; normal wins out of sample'},
+  reb: {dist:'poisson', k: null, note:'dispersion 1.02'},
+  ast: {dist:'poisson', k: null, note:'dispersion 0.93'},
+  tpm: {dist:'poisson', k: null, note:'dispersion 0.97; 89% of games are 0-2'},
+  stl: {dist:'poisson', k: null, note:'dispersion 0.97'},
+  blk: {dist:'poisson', k: null, note:'dispersion 0.96'},
+  pra: {dist:'normal',  k: 21.7, note:'contains points; normal wins out of sample'},
+  pr:  {dist:'normal',  k: 21.7, note:'contains points'},
+  pa:  {dist:'normal',  k: 21.7, note:'contains points'},
+  ra:  {dist:'poisson', k: null, note:'two event counts, no value weighting'},
+
+  // --- baseball ---
+  // Declared from the same reasoning, to be refitted against real MLB logs when
+  // the ingest lands. Anything value-weighted takes the overdispersed branch.
+  hits_bat:     {dist:'poisson', k: null, note:'event count, mean ~1'},
+  runs:         {dist:'poisson', k: null, note:'event count'},
+  rbi:          {dist:'nb',      k: 6,    note:'clustered by opportunity; provisional'},
+  hr:           {dist:'poisson', k: null, note:'event count, mean ~0.15'},
+  bb:           {dist:'poisson', k: null, note:'event count'},
+  so_bat:       {dist:'poisson', k: null, note:'event count'},
+  sb:           {dist:'poisson', k: null, note:'event count'},
+  total_bases:  {dist:'nb',      k: 4,    note:'VALUE-WEIGHTED (1B..HR=4) — baseball’s points; provisional'},
+  hrr:          {dist:'nb',      k: 8,    note:'sum of three correlated counts; provisional'},
+  so_pit:       {dist:'poisson', k: null, note:'event count, mean ~5'},
+  outs:         {dist:'nb',      k: 12,   note:'bounded by the hook; provisional'},
+  er:           {dist:'nb',      k: 3,    note:'heavily clustered — blow-up innings; provisional'},
+  hits_allowed: {dist:'poisson', k: null, note:'event count'},
+  bb_pit:       {dist:'poisson', k: null, note:'event count'},
+};
+
+function cmDistFor(statKey){
+  return CM_DIST[statKey] || {dist:'normal', k:null, note:'unmapped stat'};
+}
+
+// ---- the distributions -----------------------------------------------------
+// Written as direct summations rather than via a special-function library: the
+// means here are small (0.1 to ~30) so the series converges in a few dozen terms,
+// and shipping a gamma/beta implementation for this would be more code and more
+// to get wrong. Log-space throughout so a mean of 30 does not overflow.
+
+function cmLogGamma(z){
+  // Lanczos. Needed for the negative binomial's binomial coefficient at
+  // non-integer k, which is the whole point of fitting k as a real number.
+  const g = 7, C = [0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+    771.32342877765313, -176.61502916214059, 12.507343278686905,
+    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if(z < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * z)) - cmLogGamma(1 - z);
+  z -= 1;
+  let x = C[0];
+  for(let i = 1; i < g + 2; i++) x += C[i] / (z + i);
+  const t = z + g + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+}
+
+// P(X = x) for a Poisson with the given mean.
+function cmPoissonPmf(x, mu){
+  if(x < 0 || !Number.isInteger(x) || mu <= 0) return x === 0 && mu <= 0 ? 1 : 0;
+  return Math.exp(-mu + x * Math.log(mu) - cmLogGamma(x + 1));
+}
+
+// P(X = x) for a negative binomial with mean mu and var = mu + mu^2/k.
+function cmNegBinPmf(x, mu, k){
+  if(x < 0 || !Number.isInteger(x) || mu <= 0 || !(k > 0) || !isFinite(k)) return cmPoissonPmf(x, mu);
+  const p = k / (k + mu);
+  return Math.exp(cmLogGamma(x + k) - cmLogGamma(k) - cmLogGamma(x + 1)
+    + k * Math.log(p) + x * Math.log(1 - p));
+}
+
+function cmPmf(x, mu, spec){
+  return spec.dist === 'nb' && spec.k ? cmNegBinPmf(x, mu, spec.k) : cmPoissonPmf(x, mu);
+}
+
+// P(X >= threshold). Summed from zero and subtracted, which is stable here
+// because the means are small; capped so a pathological mean cannot spin.
+function cmSfAtLeast(threshold, mu, spec){
+  if(threshold <= 0) return 1;
+  const cap = Math.max(60, Math.ceil(mu + 12 * Math.sqrt(mu + 1)));
+  let below = 0;
+  for(let x = 0; x < Math.min(threshold, cap + 1); x++) below += cmPmf(x, mu, spec);
+  return Math.max(0, Math.min(1, 1 - below));
+}
+
+// ---- the thing the product asks for ----------------------------------------
+// P(over), P(under) and -- the part the normal could never express -- P(push).
+//
+// A HALF-INTEGER LINE has no push: X > 2.5 is X >= 3, and the two sides sum to 1.
+// AN INTEGER LINE DOES: on "over 2", a 2 is a push, and P(over) + P(under) < 1.
+// The app has already shipped one push bug (the tracker graded a push as a loss),
+// and the normal CDF cannot represent a push at all -- it assigns zero mass to any
+// single value. Handling it here is not a refinement; it is the difference between
+// a correct number and a wrong one on every integer line.
+function cmProbs(mu, line, statKey){
+  const spec = cmDistFor(statKey);
+  if(!(mu > 0) || line === null || line === undefined) return null;
+  const isInteger = Math.abs(line - Math.round(line)) < 1e-9;
+  if(isInteger){
+    const L = Math.round(line);
+    const push = cmPmf(L, mu, spec);
+    const over = cmSfAtLeast(L + 1, mu, spec);
+    return {over, push, under: Math.max(0, 1 - over - push), dist: spec.dist, exact: true};
+  }
+  const over = cmSfAtLeast(Math.ceil(line), mu, spec);
+  return {over, push: 0, under: 1 - over, dist: spec.dist, exact: true};
+}
+
+// The normal fallback, kept for the stats where it measured better. Same shape of
+// return so callers never branch on which model answered.
+function cmProbsNormal(mu, sd, line){
+  if(!(mu > 0) || !(sd > 0) || line === null || line === undefined) return null;
+  const z = (line - mu) / sd;
+  const cdf = 0.5 * (1 + cmErf(z / Math.SQRT2));
+  return {over: 1 - cdf, push: 0, under: cdf, dist: 'normal', exact: false};
+}
+function cmErf(x){
+  const s = x < 0 ? -1 : 1; x = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * x);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return s * y;
+}
+
+// THE ENTRY POINT. Routes per stat to whichever model measured better, and falls
+// back to the normal when a count model is selected but the caller could not
+// supply a usable mean. `sd` is only consulted on the normal branch.
+function cmProbOver(mu, line, statKey, sd){
+  const spec = cmDistFor(statKey);
+  if(spec.dist === 'normal'){
+    const r = cmProbsNormal(mu, sd, line);
+    return r || cmProbs(mu, line, statKey);
+  }
+  return cmProbs(mu, line, statKey) || cmProbsNormal(mu, sd, line);
+}
+
+// ---- rate x opportunity ----------------------------------------------------
+// The mean the distributions above take. Basketball supplies a per-minute rate
+// and projected minutes; baseball will supply a per-plate-appearance rate and
+// projected plate appearances from the lineup slot. Identical arithmetic, which
+// is the point -- the minutes model the WNBA app already has is structurally the
+// same object as the PA model MLB needs, so only the opportunity term is new.
+function cmMean(rate, opportunity){
+  // Number.isFinite rather than a comparison, because `null >= 0` is TRUE in
+  // JavaScript -- null coerces to 0 -- so a missing rate passed the guard and
+  // came back as a mean of exactly 0 instead of "no projection". A zero mean is
+  // a real answer (she never does this), and silently conflating it with missing
+  // data is how a player with no history acquires a confident 0% over.
+  if(!Number.isFinite(rate) || !Number.isFinite(opportunity)) return null;
+  if(rate < 0 || opportunity <= 0) return null;
+  return rate * opportunity;
+}
+// >>> END MODULE countmodel.js
+
 // <<< MODULE sports.js
 // ============================================================================
 // THE SPORT REGISTRY -- the client-side twin of the D1 `sport` table.
@@ -9888,11 +10094,22 @@ function psEdge(leg){
   const m = vals.reduce((a,b)=>a+b,0)/vals.length;
   const sd = Math.sqrt(vals.reduce((a,v)=>a+(v-m)*(v-m),0)/(vals.length-1));
   if(!(sd>0)) return null;
-  const z = (p.proj - leg.line)/sd;
-  const pOver = 0.5*(1+beErf(z/Math.SQRT2));
-  const prob = leg.side==='under' ? 1-pOver : pOver;
+  // The projection is unchanged; only the distribution it is read through is.
+  // cmProbOver routes per stat to whatever measured better out of sample --
+  // Poisson for the low-count event stats, the incumbent normal for points and
+  // the combos that contain it. See countmodel.js for the measurements.
+  const r = (typeof cmProbOver === 'function')
+    ? cmProbOver(p.proj, leg.line, leg.statKey, sd) : null;
+  if(!r) return null;
+  // A push is not a win. On an integer line the two sides no longer sum to 1, so
+  // the edge is taken against the probability of actually WINNING the bet, with
+  // the push mass excluded from both sides rather than quietly credited to one.
+  const prob = leg.side==='under' ? r.under : r.over;
   const pp = 100*(prob - beNoVig(leg.price));
-  return {text:`${pp>=0?'+':''}${pp.toFixed(1)}`, sort:pp, sub:'pp vs no-vig'};
+  const sub = r.push > 0.005
+    ? `pp vs no-vig · ${Math.round(r.push*100)}% push`
+    : 'pp vs no-vig';
+  return {text:`${pp>=0?'+':''}${pp.toFixed(1)}`, sort:pp, sub};
 }
 
 // Her record against opposing position groups of this height tier. Reuses the
