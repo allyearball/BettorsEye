@@ -3385,11 +3385,13 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
   // existing section's own internal logic is untouched -- this only changes which container it
   // gets appended to and which one is visible at a time.
   const tabBar = document.createElement('div'); tabBar.className = 'compact-only'; tabBar.style.cssText = 'display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;';
+  const betsTabContent = document.createElement('div');
   const prodTabContent = document.createElement('div');
   const gamelogTabContent = document.createElement('div');
   const vsOppTabContent = document.createElement('div');
   const seasonTabContent = document.createElement('div');
   const TAB_DEFS = [
+    {label:'Bets', content: betsTabContent},
     {label:'Production', content: prodTabContent},
     {label:'Gamelogs', content: gamelogTabContent},
     {label:'Vs. Opponent', content: vsOppTabContent},
@@ -3421,12 +3423,31 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     // Opens on whichever tab was last used, not always the first -- so Back from a box score
     // or a tier page returns you to the tab you left. Clamped in case the remembered index is
     // from a page with more tabs than this one.
-    const openAt = Math.min(LAST_TAB.player, TAB_DEFS.length - 1);
+    // TWO BEHAVIOURS THAT LOOK LIKE ONE, AND BOTH MATTER.
+    //
+    // Bets is the LANDING tab: arriving at a player from anywhere opens on it,
+    // because it is the summary the other tabs elaborate on, and a user who once
+    // clicked Gamelogs should not be permanently barred from ever seeing it.
+    //
+    // But the remembered tab exists for a real case -- opening a box score from
+    // Gamelogs and pressing Back should return to Gamelogs, not dump you on Bets.
+    // navReplaying is already set while a popstate-driven render runs, so it is
+    // exactly the signal for "this is a Back, not an arrival".
+    const openAt = navReplaying ? Math.min(LAST_TAB.player, TAB_DEFS.length - 1) : 0;
     TAB_DEFS.forEach((d,i)=>{
       d.content.style.display = i===openAt ? '' : 'none';
       tabButtons[i].style.background = i===openAt ? 'var(--navy2)' : 'var(--panel)';
       tabButtons[i].style.color = i===openAt ? '#fff' : 'var(--ink)';
     });
+  }
+
+  // The Bets tab. Built last so every helper it leans on is defined, and wrapped
+  // because a failure here must not take the rest of the profile down with it.
+  try{
+    buildPlayerBetsTab(betsTabContent, playerName, team, pbNextOpponent(team), bio);
+  }catch(e){
+    betsTabContent.innerHTML = '<div class="footnote">Bets view unavailable: ' + e.message + '</div>';
+    console.warn('Bets tab', e);
   }
 
   // Teammate-out impact -- for every teammate currently listed as officially out, how this
@@ -9894,14 +9915,33 @@ function renderMyRadarScreen(){
 }
 
 // ---- the floating bar ------------------------------------------------------
+// How much room the legacy bottom tab bar is taking, or 0 when it is not shown.
+function psLegacyBarHeight(){
+  const el = document.getElementById('bottomTabBar');
+  if(!el) return 0;
+  const cs = getComputedStyle(el);
+  if(cs.display === 'none' || cs.visibility === 'hidden') return 0;
+  return el.offsetHeight || 0;
+}
+
 function psBottomBar(active, onFilter){
   const old = document.getElementById('psBottomBar');
   if(old) old.remove();
   const wrap = document.createElement('div');
   wrap.id = 'psBottomBar';
-  wrap.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:60;'
+  // ABOVE the legacy #bottomTabBar, which is position:fixed at bottom:0 with
+  // z-index:900 in compact mode. At z-index 60 and bottom:14px this bar was
+  // sitting underneath "Stats" and "Live Lines". The offset is measured rather
+  // than hardcoded because that bar is hidden entirely in full mode, and a fixed
+  // 70px gap would leave the menu floating in space there.
+  // offsetParent is null for ANY position:fixed element, visible or not -- using
+  // it here reported the legacy bar as hidden every single time, which is exactly
+  // the overlap this code exists to prevent. Computed display is the real test.
+  const legacyH = psLegacyBarHeight();
+  wrap.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);z-index:950;'
+    + `bottom:${legacyH ? legacyH + 12 : 14}px;`
     + 'display:flex;gap:8px;align-items:center;'
-    + 'padding-bottom:env(safe-area-inset-bottom, 0px);';
+    + (legacyH ? '' : 'padding-bottom:env(safe-area-inset-bottom, 0px);');
   const bar = document.createElement('div');
   bar.id = 'psBottomBarPills';
   bar.style.cssText = 'display:flex;gap:4px;padding:5px;border-radius:999px;background:var(--panel);'
@@ -9944,6 +9984,14 @@ function psBottomBar(active, onFilter){
     fb.addEventListener('click', onFilter);
     wrap.appendChild(fb);
   }
+  // The layout mode can flip on resize, which shows or hides the legacy bar --
+  // so the offset is recomputed rather than frozen at first paint.
+  const reflow = ()=>{
+    const h = psLegacyBarHeight();
+    wrap.style.bottom = (h ? h + 12 : 14) + 'px';
+  };
+  window.addEventListener('resize', reflow);
+  setTimeout(reflow, 0);
   return wrap;
 }
 
@@ -9976,6 +10024,492 @@ function psBuildMenu(){
   add('Bet Tracker (old)', ()=>renderBetTrackerPage(), true);
   if(typeof isAdminUser === 'function' && isAdminUser()) add('App Tracker (old)', ()=>renderAppTrackerPage(), true);
   return panel;
+}
+
+// ============================================================================
+// THE BETS TAB -- the new landing tab on a player profile.
+//
+//   stat chips        Pts Reb Ast 3PM P+R+A P+R P+A R+A   (defaults to Pts)
+//   identity          name / team / position  |  photo
+//   actions           team badge · My Radar · Send
+//   chart             one bar per game, with tonight's line drawn across it
+//   timeline chips    2026 H2H L5 L10 L15 L30
+//   chart filters     Home Away · vs Tallest/Middle/Shortest
+//   odds table        Book | Over | Under
+//
+// CHART DECISIONS, briefly. One series, so no legend -- the title names it.
+// Bars start at zero because a truncated baseline misrepresents magnitude, which
+// is the whole job of a bar. Where a live line exists it is drawn as a dashed
+// reference and the bars are tinted by whether they cleared it; the line itself
+// carries that meaning, so the colour is reinforcement rather than the only cue.
+// Five x labels rather than one per bar, because forty date labels is noise.
+// ============================================================================
+
+const PB_STATS = [
+  {key:'pts', label:'Pts'},   {key:'reb', label:'Reb'},   {key:'ast', label:'Ast'},
+  {key:'tpm', label:'3PM'},   {key:'pra', label:'P+R+A'}, {key:'pr',  label:'P+R'},
+  {key:'pa',  label:'P+A'},   {key:'ra',  label:'R+A'},
+];
+const PB_TIMELINES = [
+  {key:'season', label:null},          // labelled per sport at render
+  {key:'h2h',    label:'H2H'},
+  {key:'l5',  label:'L5'},  {key:'l10', label:'L10'},
+  {key:'l15', label:'L15'}, {key:'l30', label:'L30'},
+];
+const PB_STATE = {stat:'pts', timeline:'l10', venue:null, tier:null};
+
+// A circular action button. Three of them sit under the position line.
+function pbCircleBtn(inner, title, fn, opts){
+  opts = opts || {};
+  const b = document.createElement('button');
+  b.title = title;
+  b.setAttribute('aria-label', title);
+  b.dataset.pbBtn = opts.id || title;
+  b.innerHTML = inner;
+  // SIZED TO THE APP'S OWN TAP TARGET, not to a number I picked. The stylesheet
+  // carries `body.compact-mode button{min-height:52px}` -- a deliberate mobile
+  // tap-target floor -- so a 44px square button rendered as a 44x52 ellipse.
+  // Matching 52 keeps these circular AND keeps them the same size as every other
+  // control on a phone; overriding the floor would have made them the smallest
+  // targets on the page.
+  const D = 52;
+  b.style.cssText = `width:${D}px;height:${D}px;min-width:${D}px;min-height:${D}px;`
+    + 'box-sizing:border-box;padding:0;'
+    + 'border-radius:50%;cursor:pointer;display:flex;'
+    + 'align-items:center;justify-content:center;font-size:17px;line-height:1;'
+    + `border:1px solid ${opts.border || 'var(--line)'};`
+    + `background:${opts.bg || 'var(--panel)'};color:${opts.color || 'var(--ink)'};`
+    + `font-weight:800;flex:0 0 ${D}px;`;
+  if(fn) b.addEventListener('click', fn);
+  return b;
+}
+
+// My Radar holds bets keyed player|team|stat|side|line. A PLAYER is a two-part
+// key, which is how both kinds coexist in one store without a schema change.
+const pbPlayerKey = (player, team) => `${player}|${team}`;
+
+// Native share where the platform has it -- iOS Safari and Android Chrome both
+// implement navigator.share, which is the AirDrop / Messages / WhatsApp sheet.
+// Desktop browsers mostly do not, so there the honest fallback is the clipboard.
+async function pbShare(player, team){
+  const url = location.href;
+  const payload = {title: `${player} — Bettor's Eye`,
+                   text: `${player} (${psAbbr(team)}) betting profile`, url};
+  if(navigator.share){
+    try{ await navigator.share(payload); return 'shared'; }
+    catch(e){ if(e && e.name === 'AbortError') return 'cancelled'; }
+  }
+  try{ await navigator.clipboard.writeText(url); return 'copied'; }
+  catch(e){ return 'failed'; }
+}
+
+// Tonight's opponent, taken from the board rather than the schedule -- on a
+// betting page "H2H" means the team she is about to play, and the board is the
+// only thing that knows tonight's slate. Null on a day she is not playing, in
+// which case the H2H timeline shows its empty state rather than a wrong team.
+function pbNextOpponent(team){
+  const pool = (typeof _psPool !== 'undefined' && _psPool) ? _psPool : [];
+  const hit = pool.find(l => l.team === team && l.opponent);
+  return hit ? hit.opponent : null;
+}
+
+// ---- the games behind the chart --------------------------------------------
+// Timeline and the two filters are applied in that order, then the result is
+// cut to the window. Filtering BEFORE the cut is deliberate: "last 10 home
+// games" is the useful reading of L10 + Home, not "home games among her last 10".
+function pbGamesFor(player, team, opponent){
+  const pl = DATA.fullPlayerLogs[player+'|'+team];
+  if(!pl) return [];
+  let games = (pl.log||[]).filter(g=>!g.dnp);
+
+  if(PB_STATE.timeline === 'h2h'){
+    games = opponent ? games.filter(g => g.opp === opponent) : [];
+  }
+  if(PB_STATE.venue) games = games.filter(g => (g.homeAway === 'home') === (PB_STATE.venue === 'home'));
+  if(PB_STATE.tier){
+    let td = null;
+    try{ td = cachedHeightTierData(player, team); }catch(e){ td = null; }
+    if(td && td.allGames){
+      const want = {tallest:'Tallest', middle:'Middle', shortest:'Shortest'}[PB_STATE.tier];
+      const dates = new Set(td.allGames.filter(g => g.tier === want).map(g => g.date));
+      games = games.filter(g => dates.has(g.date));
+    } else {
+      games = [];
+    }
+  }
+  const w = {l5:5, l10:10, l15:15, l30:30}[PB_STATE.timeline];
+  if(w) games = games.slice(-w);
+  return games;
+}
+
+// ---- the chart -------------------------------------------------------------
+function pbChart(games, statKey, line){
+  const wrap = document.createElement('div');
+  wrap.dataset.pbChart = statKey;
+  wrap.style.cssText = 'position:relative;margin:6px 0 4px;';
+  if(!games.length){
+    const e = document.createElement('div');
+    e.className = 'footnote';
+    e.style.cssText = 'padding:26px 0;text-align:center;';
+    e.textContent = 'No games match this timeline and filter combination.';
+    wrap.appendChild(e);
+    return wrap;
+  }
+
+  const W = 720, H = 260, PAD_L = 34, PAD_R = 10, PAD_T = 14, PAD_B = 46;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  const vals = games.map(g => beStatValue(g, statKey));
+  const maxV = Math.max(1, ...vals, line ? line + 1 : 0);
+  // A round top tick reads better than a max that lands on 17.
+  const step = maxV <= 6 ? 2 : maxV <= 15 ? 5 : maxV <= 30 ? 10 : 20;
+  const top = Math.ceil(maxV / step) * step;
+  const y = v => PAD_T + plotH - (v / top) * plotH;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('width','100%');
+  svg.setAttribute('role','img');
+  svg.setAttribute('aria-label',
+    `${games.length} games of ${statKey}, most recent on the right`);
+  svg.style.cssText = 'display:block;overflow:visible;';
+  const el = (t, a) => { const n = document.createElementNS('http://www.w3.org/2000/svg', t);
+    Object.entries(a).forEach(([k,v])=>n.setAttribute(k, v)); return n; };
+
+  // Recessive gridlines and a y label per step.
+  for(let v = 0; v <= top; v += step){
+    svg.appendChild(el('line', {x1:PAD_L, x2:W-PAD_R, y1:y(v), y2:y(v),
+      stroke:'var(--line)', 'stroke-width': v===0 ? 1.5 : 1, opacity: v===0 ? 1 : .55}));
+    const t = el('text', {x:PAD_L-7, y:y(v)+4, 'text-anchor':'end',
+      'font-size':11, fill:'var(--sub)', 'font-family':'var(--sans)'});
+    t.textContent = v;
+    svg.appendChild(t);
+  }
+
+  // 2px of surface between neighbours, per the mark spec.
+  const slot = plotW / games.length;
+  const bw = Math.max(3, Math.min(34, slot - 2));
+  const tip = document.createElement('div');
+  tip.style.cssText = 'position:absolute;pointer-events:none;opacity:0;transition:opacity .1s;'
+    + 'background:var(--ink);color:var(--panel);font-size:11.5px;padding:6px 9px;border-radius:6px;'
+    + 'white-space:nowrap;z-index:5;font-family:var(--sans);font-weight:600;';
+
+  games.forEach((g, i)=>{
+    const v = beStatValue(g, statKey);
+    const x = PAD_L + i*slot + (slot - bw)/2;
+    const h = Math.max(v > 0 ? 2 : 0, plotH - (y(v) - PAD_T));
+    const cleared = line === null || line === undefined ? null : v >= (Number.isInteger(line) ? line+1 : Math.ceil(line));
+    const bar = el('rect', {x, y: y(v), width: bw, height: h,
+      rx: Math.min(4, bw/2), ry: Math.min(4, bw/2),
+      fill: cleared === null ? 'var(--navy2)' : (cleared ? 'var(--green)' : 'var(--sub)'),
+      opacity: cleared === false ? .5 : 1});
+    bar.style.cursor = 'pointer';
+    const label = `${g.date} ${g.homeAway === 'home' ? 'vs' : '@'} ${psAbbr(g.opp)} — ${v}`
+      + (g.min !== null && g.min !== undefined ? ` in ${g.min} min` : '')
+      + (cleared === null ? '' : (cleared ? ' · cleared' : ' · missed'));
+    bar.addEventListener('mouseenter', ()=>{
+      tip.textContent = label;
+      tip.style.opacity = '1';
+      const pct = (x + bw/2) / W;
+      tip.style.left = `calc(${(pct*100).toFixed(2)}% - ${tip.offsetWidth/2}px)`;
+      tip.style.top = '-4px';
+    });
+    bar.addEventListener('mouseleave', ()=>{ tip.style.opacity = '0'; });
+    const title = el('title', {}); title.textContent = label; bar.appendChild(title);
+    svg.appendChild(bar);
+  });
+
+  // Tonight's line, drawn across so the bars can be read against it.
+  if(line !== null && line !== undefined){
+    svg.appendChild(el('line', {x1:PAD_L, x2:W-PAD_R, y1:y(line), y2:y(line),
+      stroke:'var(--red)', 'stroke-width':2, 'stroke-dasharray':'6 4'}));
+    const lt = el('text', {x:W-PAD_R, y:y(line)-6, 'text-anchor':'end',
+      'font-size':11, fill:'var(--red)', 'font-weight':700, 'font-family':'var(--sans)'});
+    lt.textContent = `line ${line}`;
+    svg.appendChild(lt);
+  }
+
+  // Five x labels: date above, matchup below. One per bar would be unreadable.
+  const nLab = Math.min(5, games.length);
+  const idxs = nLab === 1 ? [0]
+    : Array.from({length:nLab}, (_,k)=> Math.round(k*(games.length-1)/(nLab-1)));
+  [...new Set(idxs)].forEach(i=>{
+    const g = games[i];
+    const cx = PAD_L + i*slot + slot/2;
+    const d = el('text', {x:cx, y:H-PAD_B+18, 'text-anchor':'middle',
+      'font-size':10.5, fill:'var(--sub)', 'font-family':'var(--sans)'});
+    d.textContent = g.date.slice(5).replace('-','/');
+    const m = el('text', {x:cx, y:H-PAD_B+31, 'text-anchor':'middle',
+      'font-size':10.5, fill:'var(--sub)', 'font-weight':700, 'font-family':'var(--sans)'});
+    m.textContent = (g.homeAway === 'home' ? '' : '@') + psAbbr(g.opp);
+    svg.appendChild(d); svg.appendChild(m);
+  });
+
+  wrap.appendChild(tip);
+  wrap.appendChild(svg);
+
+  // A summary line under the chart, because a bar chart answers "how much" and
+  // a bettor's actual question is "how often".
+  if(line !== null && line !== undefined){
+    const th = Number.isInteger(line) ? line+1 : Math.ceil(line);
+    const hits = vals.filter(v => v >= th).length;
+    const s = document.createElement('div');
+    s.className = 'footnote';
+    s.style.cssText = 'text-align:center;margin-top:2px;';
+    s.textContent = `${hits} of ${vals.length} cleared ${line} (${Math.round(100*hits/vals.length)}%)`;
+    wrap.appendChild(s);
+  }
+  return wrap;
+}
+
+// ---- odds table ------------------------------------------------------------
+// Every book the feed carries for this player and stat, both sides.
+function pbOddsRows(player, statKey, cachedFetch){
+  const rows = [];
+  (cachedFetch||[]).forEach(({ev, detail})=>{
+    const sources = [ev, detail].filter(Boolean);
+    sources.forEach(src=>{
+      (src.bookmakers||[]).forEach(book=>{
+        (book.markets||[]).forEach(mk=>{
+          const sk = PROP_MARKET_TO_STAT[mk.key];
+          if(sk !== statKey) return;
+          if(/_alternate$/.test(mk.key)) return;      // alt ladders belong on the board, not here
+          const mine = (mk.outcomes||[]).filter(o => o.description === player);
+          if(!mine.length) return;
+          const over = mine.find(o => o.name === 'Over');
+          const under = mine.find(o => o.name === 'Under');
+          const point = (over || under || {}).point;
+          if(point === undefined || point === null) return;
+          const key = `${book.key}|${point}`;
+          if(rows.some(r => r.key === key)) return;
+          rows.push({key, book: book.title || book.key, point,
+                     over: over ? over.price : null, under: under ? under.price : null});
+        });
+      });
+    });
+  });
+  return rows.sort((a,b)=> a.book.localeCompare(b.book) || a.point - b.point);
+}
+
+// ============================================================================
+function buildPlayerBetsTab(container, playerName, team, opponent, bio){
+  container.innerHTML = '';
+  PB_STATE.stat = PB_STATE.stat || 'pts';
+
+  // ---- stat chips, above everything ---------------------------------------
+  const statHolder = document.createElement('div');
+  container.appendChild(statHolder);
+
+  // ---- identity + photo ----------------------------------------------------
+  const head = document.createElement('div');
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin:14px 0 0;';
+  const idBlock = document.createElement('div');
+  const nm = document.createElement('div');
+  nm.textContent = playerName;
+  nm.style.cssText = 'font-size:22px;font-weight:800;line-height:1.15;';
+  const tm = document.createElement('div');
+  tm.textContent = FULL_TEAM_NAME[team] || team;
+  tm.style.cssText = 'font-size:14px;color:var(--ink);margin-top:3px;';
+  const pos = document.createElement('div');
+  const position = (bio && bio.pos) || getPlayerPosition(playerName, team) || '—';
+  pos.textContent = position;
+  pos.style.cssText = 'font-size:13px;color:var(--sub);margin-top:2px;font-weight:700;';
+  idBlock.appendChild(nm); idBlock.appendChild(tm); idBlock.appendChild(pos);
+
+  // ---- the three circular actions -----------------------------------------
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:10px;margin-top:12px;align-items:center;';
+  // No logo images ship with the app, so the badge is the abbreviation on the
+  // team's colour -- deliberate rather than a broken <img>.
+  actions.appendChild(pbCircleBtn(
+    `<span style="font-size:12px;letter-spacing:.02em;">${psAbbr(team)}</span>`,
+    FULL_TEAM_NAME[team] || team,
+    ()=>renderTeamPage(team),
+    {id:'team', bg: psColor(team), color:'#fff', border: psColor(team)}));
+
+  const favs = psLoadFavs();
+  const pKey = pbPlayerKey(playerName, team);
+  const radarBtn = pbCircleBtn(favs.has(pKey) ? '★' : '☆', 'My Radar', null, {id:'radar'});
+  const paintRadar = ()=>{
+    const on = psLoadFavs().has(pKey);
+    radarBtn.innerHTML = on ? '★' : '☆';
+    radarBtn.style.color = on ? '#E8A33D' : 'var(--ink)';
+    radarBtn.style.borderColor = on ? '#E8A33D' : 'var(--line)';
+    radarBtn.title = on ? 'On My Radar — tap to remove' : 'Add to My Radar';
+  };
+  radarBtn.addEventListener('click', ()=>{
+    const f = psLoadFavs();
+    f.has(pKey) ? f.delete(pKey) : f.add(pKey);
+    psSaveFavs(f); paintRadar();
+  });
+  paintRadar();
+  actions.appendChild(radarBtn);
+
+  const sendBtn = pbCircleBtn('⇪', 'Share', null, {id:'send'});
+  sendBtn.addEventListener('click', async ()=>{
+    const r = await pbShare(playerName, team);
+    if(r === 'copied' || r === 'failed'){
+      const was = sendBtn.innerHTML;
+      sendBtn.innerHTML = r === 'copied' ? '✓' : '!';
+      sendBtn.title = r === 'copied' ? 'Link copied' : 'Could not share';
+      setTimeout(()=>{ sendBtn.innerHTML = was; sendBtn.title = 'Share'; }, 1400);
+    }
+  });
+  actions.appendChild(sendBtn);
+  idBlock.appendChild(actions);
+
+  head.appendChild(idBlock);
+  const photo = psAvatar(playerName, team, 74);
+  photo.style.flex = '0 0 74px';
+  head.appendChild(photo);
+  container.appendChild(head);
+
+  // ---- chart, timeline, filters, odds -------------------------------------
+  const chartHolder = document.createElement('div');
+  chartHolder.style.cssText = 'margin-top:16px;';
+  container.appendChild(chartHolder);
+  const timelineHolder = document.createElement('div');
+  container.appendChild(timelineHolder);
+  const filterHolder = document.createElement('div');
+  filterHolder.style.cssText = 'margin:10px 0 4px;';
+  container.appendChild(filterHolder);
+  const oddsHolder = document.createElement('div');
+  oddsHolder.style.cssText = 'margin-top:20px;';
+  container.appendChild(oddsHolder);
+
+  // The line to draw: whatever today's board has for this player and stat.
+  function currentLine(){
+    const pool = (typeof _psPool !== 'undefined' && _psPool) ? _psPool : [];
+    const hit = pool.find(l => l.player === playerName && l.team === team
+      && l.statKey === PB_STATE.stat && l.betType === 'player_prop');
+    return hit ? hit.line : null;
+  }
+
+  const statRow = psChipRow(PB_STATS, PB_STATE.stat, k=>{
+    PB_STATE.stat = k; statRow.update(k); repaint();
+    if(typeof window.__pbRepaintOdds === 'function') window.__pbRepaintOdds();
+  });
+  statHolder.appendChild(statRow);
+
+  const tlItems = PB_TIMELINES.map(t => Object.assign({}, t,
+    {label: t.label || psSeasonLabel(PS_STATE.sport)}));
+  const tlRow = psChipRow(tlItems, PB_STATE.timeline, k=>{
+    PB_STATE.timeline = k; tlRow.update(k); repaint();
+  });
+  timelineHolder.appendChild(tlRow);
+
+  // Chart filters: venue and height tier, each a single-choice group that can
+  // be cleared back to "all".
+  function buildFilters(){
+    filterHolder.innerHTML = '';
+    const mk = (label, active, fn, id) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.dataset.pbFilter = id;
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+      b.style.cssText = 'padding:5px 12px;border-radius:999px;font-size:12px;font-weight:700;'
+        + 'cursor:pointer;font-family:var(--sans);margin:0 6px 6px 0;border:1px solid '
+        + (active ? 'var(--navy2)' : 'var(--line)') + ';'
+        + (active ? 'background:var(--navy2);color:#fff;' : 'background:var(--panel);color:var(--sub);');
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const lab = document.createElement('div');
+    lab.className = 'footnote';
+    lab.style.cssText = 'margin-bottom:5px;';
+    lab.textContent = 'Chart filters';
+    filterHolder.appendChild(lab);
+    filterHolder.appendChild(mk('All', !PB_STATE.venue && !PB_STATE.tier,
+      ()=>{ PB_STATE.venue = null; PB_STATE.tier = null; repaint(); }, 'all'));
+    filterHolder.appendChild(mk('Home', PB_STATE.venue === 'home',
+      ()=>{ PB_STATE.venue = PB_STATE.venue === 'home' ? null : 'home'; repaint(); }, 'home'));
+    filterHolder.appendChild(mk('Away', PB_STATE.venue === 'away',
+      ()=>{ PB_STATE.venue = PB_STATE.venue === 'away' ? null : 'away'; repaint(); }, 'away'));
+    [['tallest','vs Tall'],['middle','vs Med'],['shortest','vs Short']].forEach(([k,l])=>{
+      filterHolder.appendChild(mk(l, PB_STATE.tier === k,
+        ()=>{ PB_STATE.tier = PB_STATE.tier === k ? null : k; repaint(); }, k));
+    });
+  }
+
+  function repaint(){
+    const games = pbGamesFor(playerName, team, opponent);
+    const line = currentLine();
+    chartHolder.innerHTML = '';
+    const title = document.createElement('div');
+    title.style.cssText = 'font-weight:800;font-size:14px;margin-bottom:2px;';
+    const statLabel = (PB_STATS.find(s=>s.key===PB_STATE.stat)||{}).label;
+    title.textContent = `${statLabel} by game`;
+    const sub = document.createElement('div');
+    sub.className = 'footnote';
+    sub.style.cssText = 'margin-bottom:6px;';
+    sub.textContent = `${games.length} game(s) · oldest left, most recent right`
+      + (PB_STATE.timeline === 'h2h' && opponent ? ` · vs ${psAbbr(opponent)} only` : '');
+    chartHolder.appendChild(title); chartHolder.appendChild(sub);
+    chartHolder.appendChild(pbChart(games, PB_STATE.stat, line));
+    buildFilters();
+  }
+  repaint();
+
+  // ---- odds table ----------------------------------------------------------
+  (async ()=>{
+    oddsHolder.innerHTML = '<div class="footnote">Loading odds…</div>';
+    let cached = [];
+    try{
+      const events = await fetchCachedOddsEvents();
+      const todayStr = new Date().toDateString();
+      const todays = (events||[]).filter(ev => new Date(ev.commence_time).toDateString() === todayStr);
+      for(const ev of todays){
+        let d = null; try{ d = await fetchCachedOddsDetail(ev.id); }catch(e){}
+        cached.push({ev, detail: d});
+      }
+    }catch(e){
+      oddsHolder.innerHTML = `<div class="footnote">Couldn’t load odds: ${e.message}</div>`;
+      return;
+    }
+    const paintOdds = ()=>{
+      oddsHolder.innerHTML = '';
+      const h = document.createElement('div');
+      h.style.cssText = 'font-weight:800;font-size:14px;margin-bottom:2px;';
+      h.textContent = `${(PB_STATS.find(s=>s.key===PB_STATE.stat)||{}).label} — every book`;
+      oddsHolder.appendChild(h);
+      const rows = pbOddsRows(playerName, PB_STATE.stat, cached);
+      if(!rows.length){
+        const e = document.createElement('div');
+        e.className = 'footnote';
+        e.textContent = 'No book is posting this market for her today.';
+        oddsHolder.appendChild(e);
+        return;
+      }
+      const t = document.createElement('table');
+      t.dataset.pbOdds = '1';
+      t.innerHTML = '<thead><tr><th>Book</th><th>Line</th><th>Over</th><th>Under</th></tr></thead>';
+      const tb = document.createElement('tbody');
+      const bestOver = Math.max(...rows.map(r => r.over === null ? -Infinity : r.over));
+      const bestUnder = Math.max(...rows.map(r => r.under === null ? -Infinity : r.under));
+      rows.forEach(r=>{
+        const tr = document.createElement('tr');
+        const fmt = (p, best) => p === null ? '—'
+          : `<span${p === best ? ' style="font-weight:800;color:var(--green);"' : ''}>${p>0?'+':''}${p}</span>`;
+        tr.innerHTML = `<td>${r.book}</td><td>${r.point}</td>`
+          + `<td>${fmt(r.over, bestOver)}</td><td>${fmt(r.under, bestUnder)}</td>`;
+        tb.appendChild(tr);
+      });
+      t.appendChild(tb);
+      oddsHolder.appendChild(t);
+      const n = document.createElement('div');
+      n.className = 'footnote';
+      n.style.cssText = 'margin-top:6px;';
+      // Being straight about this: the feed is requested for the US region as a
+      // whole. Narrowing to the books legal in the viewer's own state needs a
+      // location signal the app does not have yet.
+      n.innerHTML = 'Best price on each side is highlighted. <b>These are every US book the feed '
+        + 'carries</b> — not yet narrowed to the books licensed in your state, which needs a '
+        + 'location signal the app does not collect.';
+      oddsHolder.appendChild(n);
+    };
+    // Changing the stat chip has to move the odds table with it.
+    window.__pbRepaintOdds = paintOdds;
+    paintOdds();
+  })();
 }
 
 // ============================================================================
