@@ -3804,7 +3804,25 @@ function buildAppBar(){
     });
   if(typeof PS_STATE !== 'undefined') sportSel.value = PS_STATE.sport;
   sportSel.addEventListener('change', ()=>{
-    if(typeof PS_STATE !== 'undefined') PS_STATE.sport = sportSel.value;
+    if(typeof PS_STATE !== 'undefined'){
+      PS_STATE.sport = sportSel.value;
+      // Selections do not survive a sport change, because they cannot: 'pts' is not
+      // a market MLB offers and 'size' is not a metric it has. Anything carried over
+      // would either render an empty board or throw. Reset to the new sport's own
+      // defaults rather than trying to map between them.
+      PS_STATE.markets = ['all'];
+      PS_STATE.limit = PS_PAGE_SIZE;
+      PS_STATE.search = '';
+      const metrics = sportMetrics(PS_STATE.sport).map(m=>m.key);
+      if(!metrics.includes(PS_STATE.metric)) PS_STATE.metric = metrics.includes('l10') ? 'l10' : metrics[0];
+      // The saved filters are per-page, not per-sport, and their Prop Type list holds
+      // stat keys from whichever sport wrote them. Clearing just that one field keeps
+      // the odds range and the rest of the user's filter intact.
+      if(typeof psF === 'function'){
+        ['props','radar'].forEach(p=>{ const f = psF(p); if(f){ f.propTypes = null; f.sortBy = PS_STATE.metric; } });
+        if(typeof psSaveFilters === 'function') psSaveFilters();
+      }
+    }
     if(typeof renderPropsScreen === 'function') renderPropsScreen();
   });
   left.appendChild(sportSel);
@@ -9498,6 +9516,259 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
 // and it labels rows the market has already priced instead of hiding them.
 // ============================================================================
 
+// <<< MODULE sports.js
+// ============================================================================
+// THE SPORT REGISTRY -- the client-side twin of the D1 `sport` table.
+//
+// WHY THIS EXISTS. The sport dropdown shipped before anything behind it was
+// sport-aware: PS_STATE.sport was read in exactly five places, all of them
+// season LABELS. Every market list, metric, stat key and short label was a
+// basketball literal, and DATA was a single WNBA blob. Selecting MLB would have
+// relabelled the season and then shown WNBA players under it -- which is worse
+// than not offering MLB at all, because it looks like it worked.
+//
+// So the rule this file establishes: anything that differs between leagues and
+// is not data lives here as a row, and adding a sport is an entry in SPORT_DEFS
+// rather than a branch somewhere in the rendering code. That is deliberately
+// the same shape as the `sport` and `season` tables in db/schema.sql, so when
+// the client moves to D1 these definitions are fetched instead of declared and
+// nothing else changes.
+//
+// STAT KEYS ARE THE D1 COLUMN NAMES. `hits_bat`, `total_bases`, `so_pit` and so
+// on are spelled exactly as they are in player_game, not prettified. The point
+// is that the eventual swap from the baked-in blob to a D1 query is a change of
+// source, not a translation layer.
+// ============================================================================
+
+const SPORT_DEFS = {
+
+  // ---- WNBA ---------------------------------------------------------------
+  // The shipped sport. Every value here was previously a literal somewhere in
+  // the file; moving them has to be behaviour-preserving, which is what the
+  // sportsreg harness checks.
+  wnba: {
+    key: 'wnba', label: 'WNBA', family: 'basketball',
+    season: 2026, splitYear: false, active: true, dataLoaded: true,
+    oddsSportKey: 'basketball_wnba',
+    // From db/seed.sql: a 44-game season supports a 10-game form window.
+    formWindow: 10, priorWeightGames: 12, thinDataGames: 5,
+
+    // The row-2 metric chips, in order.
+    metrics: [
+      {key:'h2h',    label:'H2H'},
+      {key:'l5',     label:'L5'},
+      {key:'l10',    label:'L10'},
+      {key:'l15',    label:'L15'},
+      {key:'l30',    label:'L30'},
+      {key:'season', label:null},          // labelled per sport at render
+      {key:'dvp',    label:'DvP'},
+      {key:'edge',   label:'Edge'},
+      {key:'prior',  label:null},
+      {key:'size',   label:'vs. Size'},
+    ],
+
+    // The row-3 category chips. `stats` is the set of stat keys the chip covers.
+    markets: [
+      {key:'all', label:'All',         stats:null},
+      {key:'pts', label:'Points',      stats:['pts']},
+      {key:'reb', label:'Rebounds',    stats:['reb']},
+      {key:'ast', label:'Assists',     stats:['ast']},
+      {key:'tpm', label:'3PM',         stats:['tpm']},
+      {key:'pra', label:'Pts+Reb+Ast', stats:['pra']},
+      {key:'pr',  label:'Pts+Reb',     stats:['pr']},
+      {key:'pa',  label:'Pts+Ast',     stats:['pa']},
+      {key:'ra',  label:'Reb+Ast',     stats:['ra']},
+    ],
+
+    // The player-profile stat chips (the Bets tab), and their short labels.
+    profileStats: [
+      {key:'pts', label:'Pts'},   {key:'reb', label:'Reb'},   {key:'ast', label:'Ast'},
+      {key:'tpm', label:'3PM'},   {key:'pra', label:'P+R+A'}, {key:'pr',  label:'P+R'},
+      {key:'pa',  label:'P+A'},   {key:'ra',  label:'R+A'},
+    ],
+    statLabels: {pts:'PTS', reb:'REB', ast:'AST', tpm:'3PM', pra:'PRA', pr:'P+R', pa:'P+A', ra:'R+A'},
+    combos: {pra:['pts','reb','ast'], pr:['pts','reb'], pa:['pts','ast'], ra:['reb','ast']},
+
+    // The Odds API market key -> our stat key.
+    propMarkets: {
+      player_points:'pts', player_rebounds:'reb', player_assists:'ast', player_threes:'tpm',
+      player_points_rebounds_assists:'pra', player_points_rebounds:'pr',
+      player_points_assists:'pa', player_rebounds_assists:'ra',
+    },
+    propMarketLabels: {
+      pts:'Points', reb:'Rebounds', ast:'Assists', tpm:'Threes',
+      pra:'Pts+Reb+Ast', pr:'Pts+Reb', pa:'Pts+Ast', ra:'Reb+Ast',
+    },
+  },
+
+  // ---- MLB ----------------------------------------------------------------
+  // Defined in full BEFORE the data exists, on purpose: the ingest and the model
+  // now have a written target to satisfy rather than a shape invented later and
+  // retro-fitted. `dataLoaded:false` is what keeps the app honest in the
+  // meantime -- the sport is selectable, and every surface says plainly that
+  // there is nothing behind it yet instead of showing WNBA rows.
+  //
+  // THE TWO METRICS THAT ARE NOT PORTS. `dvp` (defence vs position) has no
+  // baseball analogue: the matchup variable is the opposing STARTING PITCHER,
+  // an individual who changes every game, so it is replaced by `pitcher`.
+  // `size` (opponent height tiers) is meaningless here and is replaced by
+  // `hand` -- the batter's record against left- and right-handed pitching,
+  // which is the real platoon split and the closest thing baseball has to a
+  // standing matchup edge.
+  mlb: {
+    key: 'mlb', label: 'MLB', family: 'baseball',
+    season: 2026, splitYear: false, active: true, dataLoaded: false,
+    oddsSportKey: 'baseball_mlb',
+    // From db/seed.sql: a 162-game season, so a longer form window and a much
+    // heavier prior -- a batter's 15 games say far less about him than a
+    // basketball player's 10 say about her.
+    formWindow: 15, priorWeightGames: 45, thinDataGames: 12,
+
+    metrics: [
+      {key:'h2h',     label:'H2H'},
+      {key:'l5',      label:'L5'},
+      {key:'l10',     label:'L10'},
+      {key:'l15',     label:'L15'},
+      {key:'l30',     label:'L30'},
+      {key:'season',  label:null},
+      {key:'pitcher', label:'vs SP'},      // replaces DvP
+      {key:'edge',    label:'Edge'},
+      {key:'prior',   label:null},
+      {key:'hand',    label:'vs L/R'},     // replaces vs. Size
+    ],
+
+    markets: [
+      {key:'all',    label:'All',        stats:null},
+      // batters
+      {key:'hits',   label:'Hits',       stats:['hits_bat']},
+      {key:'tb',     label:'Total Bases',stats:['total_bases']},
+      {key:'hr',     label:'Home Runs',  stats:['hr']},
+      {key:'rbi',    label:'RBIs',       stats:['rbi']},
+      {key:'runs',   label:'Runs',       stats:['runs']},
+      {key:'hrr',    label:'H+R+RBI',    stats:['hrr']},
+      {key:'bb',     label:'Walks',      stats:['bb']},
+      {key:'so_bat', label:'Batter Ks',  stats:['so_bat']},
+      {key:'sb',     label:'Stolen Bases', stats:['sb']},
+      // pitchers
+      {key:'so_pit', label:'Pitcher Ks', stats:['so_pit']},
+      {key:'outs',   label:'Outs',       stats:['outs']},
+      {key:'er',     label:'Earned Runs',stats:['er']},
+      {key:'hits_allowed', label:'Hits Allowed', stats:['hits_allowed']},
+    ],
+
+    profileStats: [
+      {key:'hits_bat',    label:'H'},    {key:'total_bases', label:'TB'},
+      {key:'hr',          label:'HR'},   {key:'rbi',         label:'RBI'},
+      {key:'runs',        label:'R'},    {key:'hrr',         label:'H+R+RBI'},
+      {key:'bb',          label:'BB'},   {key:'so_bat',      label:'K'},
+    ],
+    statLabels: {
+      hits_bat:'H', total_bases:'TB', hr:'HR', rbi:'RBI', runs:'R', hrr:'H+R+RBI',
+      bb:'BB', so_bat:'K', sb:'SB',
+      so_pit:'K', outs:'OUTS', er:'ER', hits_allowed:'H ALW', bb_pit:'BB ALW',
+    },
+    // H+R+RBI is a real and heavily-bet market with no single column behind it.
+    // Same treatment as PRA in basketball: derived, never stored twice.
+    combos: {hrr:['hits_bat','runs','rbi']},
+
+    propMarkets: {
+      batter_hits:'hits_bat', batter_total_bases:'total_bases', batter_home_runs:'hr',
+      batter_rbis:'rbi', batter_runs_scored:'runs', batter_hits_runs_rbis:'hrr',
+      batter_walks:'bb', batter_strikeouts:'so_bat', batter_stolen_bases:'sb',
+      pitcher_strikeouts:'so_pit', pitcher_outs:'outs', pitcher_earned_runs:'er',
+      pitcher_hits_allowed:'hits_allowed', pitcher_walks:'bb_pit',
+    },
+    propMarketLabels: {
+      hits_bat:'Hits', total_bases:'Total Bases', hr:'Home Runs', rbi:'RBIs',
+      runs:'Runs', hrr:'H+R+RBI', bb:'Walks', so_bat:'Batter Ks', sb:'Stolen Bases',
+      so_pit:'Pitcher Ks', outs:'Outs', er:'Earned Runs',
+      hits_allowed:'Hits Allowed', bb_pit:'Walks Allowed',
+    },
+  },
+};
+
+// The remaining leagues are declared but not active, so the dropdown does not
+// imply them. They stay here rather than in a comment because the season-label
+// logic (split-year vs single-year) is already right for them and is tested.
+const SPORT_INACTIVE = [
+  {key:'nba', label:'NBA', family:'basketball', season:2026, splitYear:true,  active:false, dataLoaded:false},
+  {key:'nhl', label:'NHL', family:'hockey',     season:2026, splitYear:true,  active:false, dataLoaded:false},
+  {key:'nfl', label:'NFL', family:'football',   season:2026, splitYear:false, active:false, dataLoaded:false},
+];
+SPORT_INACTIVE.forEach(s=>{ if(!SPORT_DEFS[s.key]) SPORT_DEFS[s.key] = s; });
+
+// ---- accessors -------------------------------------------------------------
+// Everything below takes an optional sport key and falls back to the current
+// selection, so call sites read as `sportMarkets()` rather than threading the
+// sport through every function signature.
+
+function sportDef(sport){
+  const key = sport || (typeof PS_STATE !== 'undefined' ? PS_STATE.sport : 'wnba');
+  return SPORT_DEFS[key] || SPORT_DEFS.wnba;
+}
+function sportList(){ return Object.values(SPORT_DEFS).filter(s=>s.active); }
+function sportMarkets(sport){ return sportDef(sport).markets || []; }
+function sportMetrics(sport){ return sportDef(sport).metrics || []; }
+function sportProfileStats(sport){ return sportDef(sport).profileStats || []; }
+function sportCombos(sport){ return sportDef(sport).combos || {}; }
+function sportStatLabel(statKey, sport){
+  return (sportDef(sport).statLabels || {})[statKey] || String(statKey || '').toUpperCase();
+}
+function sportMarketLabel(statKey, sport){
+  return (sportDef(sport).propMarketLabels || {})[statKey] || sportStatLabel(statKey, sport);
+}
+// Whether there is actually data behind a sport. The one thing the whole file
+// exists to make checkable.
+function sportHasData(sport){ return !!sportDef(sport).dataLoaded; }
+
+// A season inside one calendar year reads "2026"; one straddling two reads
+// "26/27". Basketball and hockey straddle; the WNBA, MLB and NFL do not.
+function sportSeasonLabel(sport, season){
+  const s = sportDef(sport);
+  const y = season || s.season;
+  return s.splitYear ? `${String(y).slice(2)}/${String(y+1).slice(2)}` : String(y);
+}
+
+// The stat keys a set of selected category chips covers, or null for "all".
+// 'all' anywhere means all: it is exclusive in the UI, but a state persisted by
+// an older build could hold it alongside others, and "All plus Hits" can only
+// honestly mean all.
+function sportMarketStats(markets, sport){
+  const list = Array.isArray(markets) ? markets : [markets];
+  if(!list.length || list.includes('all')) return null;
+  const defs = sportMarkets(sport);
+  const out = [];
+  list.forEach(k=>{
+    const m = defs.find(x=>x.key===k);
+    if(m && m.stats) m.stats.forEach(s=>{ if(!out.includes(s)) out.push(s); });
+  });
+  return out.length ? out : null;
+}
+
+// The banner every surface shows when a sport is selected but has no data yet.
+// Deliberately specific about WHY and WHAT IS MISSING rather than a generic
+// "coming soon" -- the reader should be able to tell this is a build order, not
+// an outage.
+function sportEmptyState(sport){
+  const s = sportDef(sport);
+  const wrap = document.createElement('div');
+  wrap.dataset.sportEmpty = s.key;
+  wrap.style.cssText = 'margin:18px 14px;padding:18px;border:1px solid var(--line);'
+    + 'border-radius:12px;background:var(--panel);';
+  const h = document.createElement('div');
+  h.style.cssText = 'font-weight:800;font-size:15px;margin-bottom:6px;';
+  h.textContent = `${s.label} isn’t loaded yet`;
+  const p = document.createElement('div');
+  p.className = 'footnote';
+  p.style.cssText = 'line-height:1.55;';
+  p.innerHTML = `The ${s.label} markets, metrics and stat lines are defined, but no `
+    + `${s.label} game data has been ingested, so there is nothing honest to show here. `
+    + `Switch back to <b>WNBA</b> in the dropdown above for a live board.`;
+  wrap.appendChild(h); wrap.appendChild(p);
+  return wrap;
+}
+// >>> END MODULE sports.js
+
 // <<< MODULE props_screen.js
 // ============================================================================
 // THE PROPS SCREEN -- the new primary surface.
@@ -9523,22 +9794,12 @@ const PS_PAGE_SIZE = 40;            // rows rendered per batch; the pool is 300-
 const PS_FAVS_KEY = 'be_favs_v1';
 
 // ---- sports ----------------------------------------------------------------
-// Only WNBA is live. The others sit here so the dropdown is real rather than a
-// stub, and so the season label logic below has something to be right about.
-const PS_SPORTS = [
-  {key:'wnba', label:'WNBA', season:2026, splitYear:false, active:true},
-  {key:'nba',  label:'NBA',  season:2026, splitYear:true,  active:false},
-  {key:'nhl',  label:'NHL',  season:2026, splitYear:true,  active:false},
-  {key:'mlb',  label:'MLB',  season:2026, splitYear:false, active:false},
-  {key:'nfl',  label:'NFL',  season:2026, splitYear:false, active:false},
-];
-// A season inside one calendar year reads "2026"; one that straddles two reads
-// "26/27". Basketball and hockey straddle; the WNBA, MLB and NFL do not.
-function psSeasonLabel(sport, season){
-  const s = PS_SPORTS.find(x=>x.key===sport) || PS_SPORTS[0];
-  const y = season || s.season;
-  return s.splitYear ? `${String(y).slice(2)}/${String(y+1).slice(2)}` : String(y);
-}
+// The list and the season labelling both come from the registry in sports.js
+// now. These two names are kept because a dozen call sites use them, but they
+// are thin: PS_SPORTS is whatever the registry says is active, and the label
+// rule lives in one place rather than being reimplemented per screen.
+const PS_SPORTS = sportList();
+const psSeasonLabel = (sport, season) => sportSeasonLabel(sport, season);
 
 // ---- team identity ---------------------------------------------------------
 // Abbreviation and colour per franchise. Neither exists anywhere else in the
@@ -9581,18 +9842,10 @@ function psAvatar(player, team, size){
 // ---- row 2: the metric chips ----------------------------------------------
 // Each returns {text, sort} for a leg. sort is what the list orders by; null
 // means "no data" and always sinks to the bottom rather than sorting as zero.
-const PS_METRICS = [
-  {key:'h2h',    label:'H2H'},
-  {key:'l5',     label:'L5'},
-  {key:'l10',    label:'L10'},
-  {key:'l15',    label:'L15'},
-  {key:'l30',    label:'L30'},
-  {key:'season', label:'SEASON'},          // relabelled per sport at render time
-  {key:'dvp',    label:'DvP'},
-  {key:'edge',   label:'Edge'},
-  {key:'prior',  label:'PRIOR'},           // relabelled per sport at render time
-  {key:'size',   label:'vs. Size'},
-];
+// Per sport, from the registry: WNBA's row ends DvP / Edge / prior / vs. Size,
+// MLB's ends vs SP / Edge / prior / vs L/R, because neither DvP nor a height
+// tier means anything in baseball.
+const PS_METRICS_FOR = (sport) => sportMetrics(sport);
 const PS_WINDOWS = {l5:5, l10:10, l15:15, l30:30, season:'all'};
 const psPct = r => (r && r.gp) ? {text:`${Math.round(r.rate*100)}%`, sort:r.rate, sub:`${r.hits}/${r.gp}`} : null;
 
@@ -9679,30 +9932,25 @@ function psMetricValue(leg, key){
 }
 
 // ---- row 3: the market chips ----------------------------------------------
-const PS_MARKETS = [
-  {key:'all', label:'All',        stats:null},
-  {key:'pts', label:'Points',     stats:['pts']},
-  {key:'reb', label:'Rebounds',   stats:['reb']},
-  {key:'ast', label:'Assists',    stats:['ast']},
-  {key:'tpm', label:'3PM',        stats:['tpm']},
-  {key:'pra', label:'Pts+Reb+Ast',stats:['pra']},
-  {key:'pr',  label:'Pts+Reb',    stats:['pr']},
-  {key:'pa',  label:'Pts+Ast',    stats:['pa']},
-  {key:'ra',  label:'Reb+Ast',    stats:['ra']},
-];
-// The stat keys a set of selected market chips covers, or null for "no restriction".
-// 'all' present anywhere means all -- it is exclusive in the UI, but a saved state from
-// an older build could still contain it alongside others, and "All plus Points" can only
-// honestly mean all.
-function psMarketStats(markets){
-  const list = Array.isArray(markets) ? markets : [markets];
-  if(!list.length || list.includes('all')) return null;
-  const out = [];
-  list.forEach(k=>{
-    const m = PS_MARKETS.find(x=>x.key===k);
-    if(m && m.stats) m.stats.forEach(s=>{ if(!out.includes(s)) out.push(s); });
-  });
-  return out.length ? out : null;
+// Per sport, from the registry. WNBA is Points/Rebounds/Assists/3PM and the four
+// combos; MLB is Hits/Total Bases/HR/RBI/Runs/H+R+RBI/Walks/Ks/SB plus the four
+// pitcher markets. Both functions delegate so there is exactly one definition of
+// what a category covers.
+const PS_MARKETS_FOR = (sport) => sportMarkets(sport);
+const psMarketStats = (markets, sport) => sportMarketStats(markets, sport);
+
+// The metric chips with their two per-sport labels resolved. `season` and `prior`
+// carry no fixed label in the registry -- they render as the actual years -- and
+// this was duplicated in the Props screen and the filter sheet, which is how the
+// sheet ended up able to disagree with the row it is meant to mirror.
+function psMetricItems(sport){
+  const key = sport || PS_STATE.sport;
+  const def = sportDef(key);
+  return sportMetrics(key).map(m => Object.assign({}, m, {
+    label: m.key === 'season' ? sportSeasonLabel(key)
+         : m.key === 'prior'  ? sportSeasonLabel(key, def.season - 1)
+         : m.label,
+  }));
 }
 
 // ---- favourites ------------------------------------------------------------
@@ -9941,11 +10189,11 @@ function psCard(leg, favs, onToggleFav){
   strip.className = 'ps-strip';
   strip.style.cssText = 'display:flex;gap:6px;overflow-x:auto;margin-top:10px;padding-bottom:2px;'
     + '-webkit-overflow-scrolling:touch;scrollbar-width:none;';
-  const boxes = [
-    ['season', psSeasonLabel(PS_STATE.sport)],
-    ['h2h', 'H2H'], ['l5','L5'], ['l10','L10'], ['l15','L15'], ['l30','L30'],
-    ['dvp','DvP'], ['edge','Edge'], ['size','vs. Size'],
-  ];
+  // The strip shows every metric the row-2 chips offer, minus `prior` (no prior-season
+  // data is loaded, so it would be a column of dashes). Driven off the registry so a
+  // sport whose metrics differ -- MLB swaps DvP for vs SP and vs. Size for vs L/R --
+  // gets the right boxes without this list being edited.
+  const boxes = psMetricItems().filter(m => m.key !== 'prior').map(m => [m.key, m.label]);
   boxes.forEach(([key, label])=>{
     strip.appendChild(psStatBox(label, psMetricValue(leg, key), key === PS_STATE.metric, key));
   });
@@ -9963,6 +10211,16 @@ async function renderPropsScreen(){
   shell.style.cssText = 'padding-bottom:78px;';   // clear the floating bar
   main.appendChild(shell);
 
+  // A sport with no data behind it says so and stops. The alternative -- falling
+  // through to the WNBA blob, which every helper below reads unconditionally --
+  // would render WNBA players under an MLB heading, which is worse than an empty
+  // screen because it looks like it worked.
+  if(!sportHasData(PS_STATE.sport)){
+    shell.appendChild(sportEmptyState(PS_STATE.sport));
+    shell.appendChild(psBottomBar('props', null));
+    return;
+  }
+
   // ---- row 1 lives in the app bar now --------------------------------------
   // The sport dropdown, the wordmark, the search box and the menu used to be built
   // here, which meant they existed on this screen and nowhere else. They are part of
@@ -9973,11 +10231,7 @@ async function renderPropsScreen(){
   PS_STATE.search = '';
 
   // ---- rows 2 and 3 --------------------------------------------------------
-  const metricItems = PS_METRICS.map(m => Object.assign({}, m, {
-    label: m.key === 'season' ? psSeasonLabel(PS_STATE.sport)
-         : m.key === 'prior'  ? psSeasonLabel(PS_STATE.sport, (PS_SPORTS.find(s=>s.key===PS_STATE.sport)||{}).season - 1)
-         : m.label,
-  }));
+  const metricItems = psMetricItems();
   const row2Holder = document.createElement('div');
   const row3Holder = document.createElement('div');
   shell.appendChild(row2Holder); shell.appendChild(row3Holder);
@@ -9992,7 +10246,7 @@ async function renderPropsScreen(){
   // set can never empty out -- unticking the last remaining category falls back to
   // All rather than showing a blank board, which is what "nothing selected" would
   // otherwise mean.
-  const row3 = psChipRow(PS_MARKETS, PS_STATE.markets, k=>{
+  const row3 = psChipRow(PS_MARKETS_FOR(PS_STATE.sport), PS_STATE.markets, k=>{
     const cur = new Set(PS_STATE.markets);
     if(k === 'all'){
       PS_STATE.markets = ['all'];
@@ -10098,6 +10352,12 @@ function renderMyRadarScreen(){
   h.textContent = 'My Radar';
   h.style.cssText = 'margin:0 0 10px;';
   shell.appendChild(h);
+  if(!sportHasData(PS_STATE.sport)){
+    shell.appendChild(sportEmptyState(PS_STATE.sport));
+    main.appendChild(shell);
+    main.appendChild(psBottomBar('radar', null));
+    return;
+  }
   const favs = psLoadFavs();
   if(!favs.size){
     const e = document.createElement('div');
@@ -10565,11 +10825,9 @@ function locSettingsSection(){
 // Five x labels rather than one per bar, because forty date labels is noise.
 // ============================================================================
 
-const PB_STATS = [
-  {key:'pts', label:'Pts'},   {key:'reb', label:'Reb'},   {key:'ast', label:'Ast'},
-  {key:'tpm', label:'3PM'},   {key:'pra', label:'P+R+A'}, {key:'pr',  label:'P+R'},
-  {key:'pa',  label:'P+A'},   {key:'ra',  label:'R+A'},
-];
+// Per sport, from the registry: Pts/Reb/Ast/3PM and the combos for basketball,
+// H/TB/HR/RBI/R/H+R+RBI/BB/K for baseball.
+const PB_STATS_FOR = (sport) => sportProfileStats(sport);
 const PB_TIMELINES = [
   {key:'season', label:null},          // labelled per sport at render
   {key:'h2h',    label:'H2H'},
@@ -10845,7 +11103,6 @@ function pbOddsRows(player, statKey, cachedFetch){
 // ============================================================================
 function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   container.innerHTML = '';
-  PB_STATE.stat = PB_STATE.stat || 'pts';
 
   // ---- stat chips, above everything ---------------------------------------
   const statHolder = document.createElement('div');
@@ -10936,7 +11193,12 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
     return hit ? hit.line : null;
   }
 
-  const statRow = psChipRow(PB_STATS, PB_STATE.stat, k=>{
+  const pbStats = PB_STATS_FOR(PS_STATE.sport);
+  // A stat remembered from another sport is meaningless here -- 'pts' has no
+  // column in a baseball log -- so the default is re-taken from the registry
+  // whenever the current selection is not one this sport offers.
+  if(!pbStats.some(s=>s.key === PB_STATE.stat)) PB_STATE.stat = (pbStats[0]||{}).key;
+  const statRow = psChipRow(pbStats, PB_STATE.stat, k=>{
     PB_STATE.stat = k; statRow.update(k); repaint();
     if(typeof window.__pbRepaintOdds === 'function') window.__pbRepaintOdds();
   });
@@ -11091,7 +11353,7 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
     chartHolder.innerHTML = '';
     const title = document.createElement('div');
     title.style.cssText = 'font-weight:800;font-size:14px;margin-bottom:2px;';
-    const statLabel = (PB_STATS.find(s=>s.key===PB_STATE.stat)||{}).label;
+    const statLabel = (pbStats.find(s=>s.key===PB_STATE.stat)||{}).label;
     title.textContent = `${statLabel} by game`;
     const sub = document.createElement('div');
     sub.className = 'footnote';
@@ -11136,7 +11398,7 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
       oddsHolder.innerHTML = '';
       const h = document.createElement('div');
       h.style.cssText = 'font-weight:800;font-size:14px;margin-bottom:2px;';
-      h.textContent = `${(PB_STATS.find(s=>s.key===PB_STATE.stat)||{}).label} — every book`;
+      h.textContent = `${(pbStats.find(s=>s.key===PB_STATE.stat)||{}).label} — every book`;
       oddsHolder.appendChild(h);
       const rows = pbOddsRows(playerName, PB_STATE.stat, cached);
       if(!rows.length){
@@ -11489,10 +11751,9 @@ function psFilterSheet(page, onApply){
   // control in two places.
   const s3 = section('Sort By');
   const sortWrap = document.createElement('div');
-  const sortItems = PS_METRICS.map(m => ({key: m.key,
-    label: m.key==='season' ? psSeasonLabel(PS_STATE.sport)
-         : m.key==='prior'  ? psSeasonLabel(PS_STATE.sport, (PS_SPORTS.find(s=>s.key===PS_STATE.sport)||{}).season - 1)
-         : m.label}));
+  // Same list, same labels, one definition -- see psMetricItems. This used to be a
+  // second copy of the season/prior labelling and could disagree with row 2.
+  const sortItems = psMetricItems();
   sortItems.forEach(it=>{
     const b = pill(it.label, f.sortBy === it.key, ()=>{
       f.sortBy = it.key;
@@ -11558,7 +11819,7 @@ function psFilterSheet(page, onApply){
   // ---- 5. prop type --------------------------------------------------------
   const s5 = section('Prop Type');
   const typeWrap = document.createElement('div');
-  const typeItems = PS_MARKETS.filter(m => m.key !== 'all');
+  const typeItems = PS_MARKETS_FOR(PS_STATE.sport).filter(m => m.key !== 'all');
   const allTypes = pill('All', !f.propTypes || !f.propTypes.length, ()=>{ f.propTypes = null; repaintTypes(); });
   typeWrap.appendChild(allTypes);
   typeItems.forEach(m=>{
@@ -11708,6 +11969,12 @@ async function renderMarketsScreen(){
   sub.style.cssText = 'margin-bottom:12px;';
   sub.textContent = `Every list uses the same ${PS_MIN_PRICE} price floor as the Props board.`;
   shell.appendChild(h); shell.appendChild(sub);
+  if(!sportHasData(PS_STATE.sport)){
+    shell.appendChild(sportEmptyState(PS_STATE.sport));
+    main.appendChild(shell);
+    main.appendChild(psBottomBar('markets', null));
+    return;
+  }
   const body = document.createElement('div');
   shell.appendChild(body);
   main.appendChild(shell);
