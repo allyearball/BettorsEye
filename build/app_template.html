@@ -10027,6 +10027,282 @@ function psBuildMenu(){
 }
 
 // ============================================================================
+// LOCATION SIGNAL
+//
+// The odds table on a player's Bets tab lists every US book the feed carries.
+// Which of those a person can actually bet with depends on the state they are
+// in, and the app has had no way to know that. This adds one.
+//
+// THE RULES THIS FOLLOWS, and why:
+//
+//  * ASK FIRST, ALWAYS. Nothing calls the browser geolocation API until the
+//    person has said yes to our own prompt. Firing the browser's permission
+//    dialog unannounced is how apps get denied permanently -- the OS remembers
+//    a "block" far longer than the user does.
+//
+//  * EXPLAIN THE TRADE BEFORE ASKING. The prompt says what it is for and what
+//    is stored. A permission request with no reason attached is the single most
+//    declined pattern there is.
+//
+//  * STORE THE STATE, NOT THE COORDINATES. A two-letter state code is all the
+//    odds filter needs. Keeping a lat/long is keeping a person's home address
+//    to two decimal places for no product reason, and it is the difference
+//    between a location signal and a location history.
+//
+//  * ASK ONCE. Once answered -- granted OR declined -- the answer sticks and
+//    the prompt never reappears. It is changed in Settings and nowhere else.
+//
+//  * NEVER BLOCK. Every screen works with the signal absent. The state is used
+//    to annotate the odds table, not to gate it.
+// ============================================================================
+
+const LOC_KEY = 'be_location_v1';
+
+// { decision: 'granted'|'declined', state: 'NY'|null, at: ISO, source: 'gps'|'manual' }
+function locLoad(){
+  try{ return JSON.parse(localStorage.getItem(LOC_KEY) || 'null'); }catch(e){ return null; }
+}
+function locSave(v){
+  try{ localStorage.setItem(LOC_KEY, JSON.stringify(v)); }catch(e){}
+}
+function locState(){ const v = locLoad(); return (v && v.decision === 'granted') ? (v.state || null) : null; }
+function locAnswered(){ const v = locLoad(); return !!(v && v.decision); }
+function locClear(){ try{ localStorage.removeItem(LOC_KEY); }catch(e){} }
+
+// US states with legal online sportsbooks, as of the 2026 season. Used to tell
+// someone their state has no legal online books rather than showing them a book
+// list that means nothing where they are.
+const LOC_LEGAL_ONLINE = new Set(['AZ','CO','CT','DC','IL','IN','IA','KS','KY','LA','ME','MD',
+  'MA','MI','NH','NJ','NY','NC','OH','OR','PA','RI','TN','VT','VA','WV','WY']);
+// States that ban NCAA player props outright -- already researched for the
+// launch brief, and the same signal answers both questions.
+const LOC_NCAA_PROP_BAN = new Set(['AZ','CO','FL','IL','LA','MD','MA','NY','OH','PA','VA']);
+
+const LOC_STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL','IN','IA',
+  'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND',
+  'OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'];
+
+// Coordinates -> state. Done through a reverse-geocode call rather than a
+// bounding-box table, because bounding boxes get borders wrong and a person on
+// the wrong side of one is exactly the case this exists to get right.
+async function locResolveState(lat, lon){
+  try{
+    const r = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=json&zoom=5&lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}`,
+      {headers: {'Accept': 'application/json'}});
+    if(!r.ok) return null;
+    const d = await r.json();
+    const st = d && d.address && (d.address['ISO3166-2-lvl4'] || '');
+    const m = /^US-([A-Z]{2})$/.exec(st);
+    return m ? m[1] : null;
+  }catch(e){ return null; }
+}
+
+// The browser call. Only ever reached after our own prompt was accepted.
+function locRequestFromBrowser(){
+  return new Promise(resolve=>{
+    if(!navigator.geolocation) return resolve({error:'unsupported'});
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({lat: p.coords.latitude, lon: p.coords.longitude}),
+      e => resolve({error: e && e.code === 1 ? 'denied' : 'unavailable'}),
+      // Low accuracy is the right setting: a state is a very coarse target, and
+      // asking for high accuracy costs battery and wakes the GPS for nothing.
+      {enableHighAccuracy:false, timeout:9000, maximumAge:12*3600*1000});
+  });
+}
+
+// ---- the prompt ------------------------------------------------------------
+function locPrompt(onDone){
+  const back = document.createElement('div');
+  back.id = 'locPrompt';
+  back.style.cssText = 'position:fixed;inset:0;z-index:1200;background:rgba(0,0,0,.5);'
+    + 'display:flex;align-items:center;justify-content:center;padding:22px;';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--panel);max-width:400px;width:100%;border-radius:14px;'
+    + 'padding:22px;box-shadow:0 10px 40px rgba(0,0,0,.3);';
+  card.innerHTML =
+    '<div style="font-weight:800;font-size:17px;margin-bottom:8px;">Show odds for your state?</div>'
+    + '<div style="font-size:14px;line-height:1.5;color:var(--sub);">'
+    + 'Sportsbooks differ by state, and some markets — college player props among them — are not '
+    + 'offered everywhere. With your state we can show which books you can actually use.'
+    + '<div style="margin-top:10px;"><b style="color:var(--ink);">What is stored:</b> your state '
+    + 'only, on this device. Not your coordinates, and nothing is sent to us.</div>'
+    + '<div style="margin-top:10px;">You can change or remove this any time in Settings.</div>'
+    + '</div>';
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:10px;margin-top:18px;';
+  const no = document.createElement('button');
+  no.id = 'locDecline';
+  no.textContent = 'Not now';
+  no.style.cssText = 'flex:1;padding:12px;border-radius:9px;border:1px solid var(--line);'
+    + 'background:var(--panel);color:var(--sub);font-weight:700;cursor:pointer;font-family:var(--sans);font-size:14px;';
+  const yes = document.createElement('button');
+  yes.id = 'locAccept';
+  yes.textContent = 'Use my location';
+  yes.style.cssText = 'flex:1.4;padding:12px;border-radius:9px;border:none;background:var(--navy2);'
+    + 'color:#fff;font-weight:800;cursor:pointer;font-family:var(--sans);font-size:14px;';
+  const pick = document.createElement('button');
+  pick.id = 'locManual';
+  pick.textContent = 'Choose my state instead';
+  pick.style.cssText = 'display:block;width:100%;margin-top:10px;background:none;border:none;'
+    + 'color:var(--navy2);font-size:13px;cursor:pointer;font-family:var(--sans);text-decoration:underline;';
+
+  const finish = (v)=>{ locSave(v); back.remove(); if(onDone) onDone(v); };
+
+  // Declining is recorded, not ignored. An unrecorded "no" means asking again
+  // tomorrow, which is the behaviour people hate most.
+  no.addEventListener('click', ()=>finish({decision:'declined', state:null, at:new Date().toISOString()}));
+
+  yes.addEventListener('click', async ()=>{
+    yes.disabled = true; yes.textContent = 'Checking…';
+    const pos = await locRequestFromBrowser();
+    if(pos.error){
+      yes.textContent = pos.error === 'denied'
+        ? 'Blocked by your browser' : 'Could not get location';
+      yes.style.background = 'var(--sub)';
+      // The manual picker is the way out of a browser-level block, so surface it.
+      pick.style.fontWeight = '800';
+      setTimeout(()=>{ yes.disabled = false; yes.textContent = 'Try again';
+                       yes.style.background = 'var(--navy2)'; }, 1600);
+      return;
+    }
+    const st = await locResolveState(pos.lat, pos.lon);
+    if(!st){
+      yes.textContent = 'Could not identify a state';
+      pick.style.fontWeight = '800';
+      setTimeout(()=>{ yes.disabled = false; yes.textContent = 'Try again'; }, 1600);
+      return;
+    }
+    finish({decision:'granted', state:st, at:new Date().toISOString(), source:'gps'});
+  });
+
+  pick.addEventListener('click', ()=>{
+    row.style.display = 'none'; pick.style.display = 'none';
+    const sel = document.createElement('select');
+    sel.id = 'locStateSelect';
+    sel.style.cssText = 'width:100%;margin-top:14px;padding:11px;border-radius:9px;'
+      + 'border:1px solid var(--line);font-family:var(--sans);font-size:15px;background:var(--panel);color:var(--ink);';
+    sel.innerHTML = '<option value="">Select your state…</option>'
+      + LOC_STATES.map(s=>`<option value="${s}">${s}</option>`).join('');
+    const save = document.createElement('button');
+    save.id = 'locManualSave';
+    save.textContent = 'Save';
+    save.style.cssText = 'width:100%;margin-top:10px;padding:12px;border-radius:9px;border:none;'
+      + 'background:var(--navy2);color:#fff;font-weight:800;cursor:pointer;font-family:var(--sans);font-size:14px;';
+    save.addEventListener('click', ()=>{
+      if(!sel.value) return;
+      finish({decision:'granted', state:sel.value, at:new Date().toISOString(), source:'manual'});
+    });
+    card.appendChild(sel); card.appendChild(save);
+  });
+
+  row.appendChild(no); row.appendChild(yes);
+  card.appendChild(row); card.appendChild(pick);
+  back.appendChild(card);
+  document.body.appendChild(back);
+  return back;
+}
+
+// Ask only if never answered. Everything else on the page keeps working either
+// way, so this is fire-and-forget.
+function locMaybeAsk(onDone){
+  if(locAnswered()){ if(onDone) onDone(locLoad()); return null; }
+  return locPrompt(onDone);
+}
+
+// ---- what the signal is used for -------------------------------------------
+// A short line under the odds table. It annotates, it does not hide books: this
+// app is not a compliance boundary and pretending otherwise would be worse than
+// saying plainly what we know.
+function locOddsNote(){
+  const st = locState();
+  if(!st){
+    return 'These are every US book the feed carries. '
+      + '<b>Add your state in Settings</b> to see which of them operate where you are.';
+  }
+  if(!LOC_LEGAL_ONLINE.has(st)){
+    return `<b>${st}</b> has no legal online sportsbooks, so none of the books below are available `
+      + 'to you there. Prices are shown for reference.';
+  }
+  return `Showing every US book the feed carries. <b>${st}</b> permits online sportsbooks — check `
+    + 'each book for its own availability, which we cannot verify from here.'
+    + (LOC_NCAA_PROP_BAN.has(st) ? ` Note that ${st} also bans college player props outright.` : '');
+}
+
+// ---- the Settings control --------------------------------------------------
+function locSettingsSection(){
+  const sec = document.createElement('div');
+  sec.id = 'locSettings';
+  sec.style.cssText = 'max-width:400px;padding:20px;border:1px solid var(--line);'
+    + 'border-radius:8px;background:var(--panel);margin-bottom:20px;';
+  const paint = ()=>{
+    sec.innerHTML = '';
+    const h = document.createElement('div');
+    h.textContent = 'Location';
+    h.style.cssText = 'font-weight:800;font-size:15px;margin-bottom:6px;';
+    const cur = locLoad();
+    const status = document.createElement('div');
+    status.className = 'footnote';
+    status.style.cssText = 'margin-bottom:12px;';
+    status.innerHTML = !cur ? 'Not set. We will ask once, the first time it would be useful.'
+      : cur.decision === 'declined' ? 'You chose not to share your location.'
+      : `Set to <b>${cur.state}</b>${cur.source === 'manual' ? ' (chosen manually)' : ' (from your device)'}.`;
+    sec.appendChild(h); sec.appendChild(status);
+
+    const lab = document.createElement('div');
+    lab.className = 'footnote';
+    lab.textContent = 'State';
+    sec.appendChild(lab);
+    const sel = document.createElement('select');
+    sel.id = 'locSettingsSelect';
+    sel.style.cssText = 'width:100%;padding:10px;border-radius:8px;border:1px solid var(--line);'
+      + 'font-family:var(--sans);font-size:15px;background:var(--panel);color:var(--ink);margin:4px 0 12px;';
+    sel.innerHTML = '<option value="">Not set</option>'
+      + LOC_STATES.map(s=>`<option value="${s}"${(cur && cur.state===s)?' selected':''}>${s}</option>`).join('');
+    sel.addEventListener('change', ()=>{
+      if(!sel.value) locClear();
+      else locSave({decision:'granted', state:sel.value, at:new Date().toISOString(), source:'manual'});
+      paint();
+    });
+    sec.appendChild(sel);
+
+    const detect = document.createElement('button');
+    detect.id = 'locDetect';
+    detect.className = 'addbtn';
+    detect.textContent = 'Detect from my device';
+    detect.addEventListener('click', async ()=>{
+      detect.disabled = true; detect.textContent = 'Checking…';
+      const pos = await locRequestFromBrowser();
+      if(pos.error){ detect.textContent = pos.error === 'denied' ? 'Blocked by your browser' : 'Unavailable';
+        setTimeout(paint, 1800); return; }
+      const st = await locResolveState(pos.lat, pos.lon);
+      if(!st){ detect.textContent = 'Could not identify a state'; setTimeout(paint, 1800); return; }
+      locSave({decision:'granted', state:st, at:new Date().toISOString(), source:'gps'});
+      paint();
+    });
+    sec.appendChild(detect);
+
+    const clear = document.createElement('button');
+    clear.id = 'locForget';
+    clear.textContent = 'Forget my location';
+    clear.style.cssText = 'display:block;width:100%;margin-top:8px;padding:11px;border-radius:8px;'
+      + 'border:1px solid var(--line);background:var(--panel);color:var(--red);font-weight:700;'
+      + 'cursor:pointer;font-family:var(--sans);font-size:14px;';
+    clear.addEventListener('click', ()=>{ locClear(); paint(); });
+    sec.appendChild(clear);
+
+    const note = document.createElement('div');
+    note.className = 'footnote';
+    note.style.cssText = 'margin-top:10px;';
+    note.textContent = 'Only the two-letter state is kept, and only on this device. '
+      + 'Your coordinates are never stored and never leave your browser.';
+    sec.appendChild(note);
+  };
+  paint();
+  return sec;
+}
+
+// ============================================================================
 // THE BETS TAB -- the new landing tab on a player profile.
 //
 //   stat chips        Pts Reb Ast 3PM P+R+A P+R P+A R+A   (defaults to Pts)
@@ -10127,14 +10403,27 @@ function pbGamesFor(player, team, opponent){
   }
   if(PB_STATE.venue) games = games.filter(g => (g.homeAway === 'home') === (PB_STATE.venue === 'home'));
   if(PB_STATE.tier){
+    // THE TIER KEYS ARE LOWERCASE. computeHeightTierData tags each game
+    // 'shortest' | 'middle' | 'tallest'; an earlier version of this compared
+    // against 'Shortest' | 'Middle' | 'Tallest' -- the capitalisation used by the
+    // unrelated team-defence-rank tiers -- so it matched nothing and every height
+    // filter returned an empty chart.
+    //
+    // The tier itself is exactly the Production tab's calculation, not a
+    // re-implementation: for each game it takes the opposing players who share
+    // this player's position bucket, weights their heights by minutes played,
+    // and splits the season's games at the 33rd and 67th percentiles of that
+    // weighted opponent height.
     let td = null;
     try{ td = cachedHeightTierData(player, team); }catch(e){ td = null; }
-    if(td && td.allGames){
-      const want = {tallest:'Tallest', middle:'Middle', shortest:'Shortest'}[PB_STATE.tier];
-      const dates = new Set(td.allGames.filter(g => g.tier === want).map(g => g.date));
+    if(td && td.allGames && td.allGames.length){
+      const dates = new Set(td.allGames.filter(g => g.tier === PB_STATE.tier).map(g => g.date));
       games = games.filter(g => dates.has(g.date));
     } else {
+      // Fewer than six tiered games in the season, so there are no thirds to
+      // split. Returning nothing is right, but the chart should say why.
       games = [];
+      games.__noTierData = true;
     }
   }
   const w = {l5:5, l10:10, l15:15, l30:30}[PB_STATE.timeline];
@@ -10151,7 +10440,9 @@ function pbChart(games, statKey, line){
     const e = document.createElement('div');
     e.className = 'footnote';
     e.style.cssText = 'padding:26px 0;text-align:center;';
-    e.textContent = 'No games match this timeline and filter combination.';
+    e.textContent = games.__noTierData
+      ? 'Not enough games this season to split opponents into height thirds — the Production tab needs at least six.'
+      : 'No games match this timeline and filter combination.';
     wrap.appendChild(e);
     return wrap;
   }
@@ -10450,6 +10741,16 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   repaint();
 
   // ---- odds table ----------------------------------------------------------
+  // The location ask lives OUTSIDE the odds fetch. An earlier version had it at
+  // the end of that async block, so on any day the odds call failed -- offline,
+  // a Worker hiccup, no slate -- the prompt silently never appeared. The reason
+  // we ask is the odds table, but the ask must not depend on it succeeding.
+  if(typeof locMaybeAsk === 'function'){
+    setTimeout(()=>locMaybeAsk(()=>{
+      if(typeof window.__pbRepaintOdds === 'function') window.__pbRepaintOdds();
+    }), 300);
+  }
+
   (async ()=>{
     oddsHolder.innerHTML = '<div class="footnote">Loading odds…</div>';
     let cached = [];
@@ -10501,9 +10802,8 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
       // Being straight about this: the feed is requested for the US region as a
       // whole. Narrowing to the books legal in the viewer's own state needs a
       // location signal the app does not have yet.
-      n.innerHTML = 'Best price on each side is highlighted. <b>These are every US book the feed '
-        + 'carries</b> — not yet narrowed to the books licensed in your state, which needs a '
-        + 'location signal the app does not collect.';
+      n.innerHTML = 'Best price on each side is highlighted. '
+        + (typeof locOddsNote === 'function' ? locOddsNote() : '');
       oddsHolder.appendChild(n);
     };
     // Changing the stat chip has to move the odds table with it.
@@ -10649,14 +10949,36 @@ async function psFetchResearch(){
 // ============================================================================
 function psFilterSheet(page, onApply){
   const f = psF(page);
+  // THREE THINGS THIS SHEET HAS TO CLEAR, and it was clearing none of them:
+  //   * the legacy black tab bar, fixed at bottom:0 with z-index 900
+  //   * the floating Props/Markets/My Radar menu, at z-index 950
+  //   * the iOS home indicator (safe-area-inset-bottom)
+  // At z-index 80 the sheet was UNDER both bars, and its Apply button was
+  // rendering behind them. It now sits above everything, and the backdrop stops
+  // short of the black bar so the sheet's own bottom edge is the last thing on
+  // screen rather than something hidden beneath it.
+  const legacyH = (typeof psLegacyBarHeight === 'function') ? psLegacyBarHeight() : 0;
   const back = document.createElement('div');
   back.id = 'psFilterBackdrop';
-  back.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:80;'
-    + 'display:flex;align-items:flex-end;justify-content:center;';
+  back.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:1000;'
+    + `bottom:${legacyH}px;`
+    + 'background:rgba(0,0,0,.42);display:flex;align-items:flex-end;justify-content:center;';
+
+  // The floating menu is hidden while the sheet is open. It is unreachable
+  // behind a modal anyway, and leaving it visible put a pill row on top of the
+  // Apply button.
+  const floatBar = document.getElementById('psBottomBar');
+  const floatWas = floatBar ? floatBar.style.display : null;
+  if(floatBar) floatBar.style.display = 'none';
+
   const sheet = document.createElement('div');
   sheet.id = 'psFilterSheet';
-  sheet.style.cssText = 'background:var(--panel);width:100%;max-width:640px;max-height:86vh;overflow-y:auto;'
-    + 'border-radius:18px 18px 0 0;padding:0 0 calc(20px + env(safe-area-inset-bottom,0px));'
+  // max-height against the BACKDROP (100%), not the viewport -- the backdrop has
+  // already had the black bar subtracted, so 88% of it is 88% of what is really
+  // visible.
+  sheet.style.cssText = 'background:var(--panel);width:100%;max-width:640px;max-height:88%;'
+    + 'overflow-y:auto;-webkit-overflow-scrolling:touch;'
+    + 'border-radius:18px 18px 0 0;padding:0;'
     + 'box-shadow:0 -8px 30px rgba(0,0,0,.28);transition:transform .18s ease-out;';
 
   // Grab handle. Dragging it (or the header) down far enough dismisses -- the
@@ -10672,7 +10994,16 @@ function psFilterSheet(page, onApply){
   grabWrap.appendChild(grab); grabWrap.appendChild(title);
   sheet.appendChild(grabWrap);
 
-  const close = ()=>{ back.remove(); };
+  const close = ()=>{
+    back.remove();
+    if(floatBar) floatBar.style.display = floatWas || '';
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('touchmove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    window.removeEventListener('touchend', onUp);
+    window.removeEventListener('touchcancel', onUp);
+    window.removeEventListener('resize', onResize);
+  };
   back.addEventListener('click', e => { if(e.target === back) close(); });
 
   let startY = null, dy = 0;
@@ -10690,6 +11021,11 @@ function psFilterSheet(page, onApply){
     else sheet.style.transform = '';
     startY = null;
   };
+  const onResize = ()=>{
+    const h = (typeof psLegacyBarHeight === 'function') ? psLegacyBarHeight() : 0;
+    back.style.bottom = h + 'px';
+  };
+  window.addEventListener('resize', onResize);
   ['mousedown','touchstart'].forEach(ev => grabWrap.addEventListener(ev, onDown, {passive:true}));
   ['mousemove','touchmove'].forEach(ev => window.addEventListener(ev, onMove, {passive:false}));
   ['mouseup','touchend','touchcancel'].forEach(ev => window.addEventListener(ev, onUp, {passive:true}));
@@ -10697,7 +11033,7 @@ function psFilterSheet(page, onApply){
 
   const section = (label) => {
     const s = document.createElement('div');
-    s.style.cssText = 'padding:14px 18px 4px;border-top:1px solid var(--line);';
+    s.style.cssText = 'padding:14px 18px 12px;border-top:1px solid var(--line);';
     const h = document.createElement('div');
     h.textContent = label;
     h.style.cssText = 'font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--sub);'
@@ -10930,8 +11266,12 @@ function psFilterSheet(page, onApply){
   s7.appendChild(linkRow);
 
   const actions = document.createElement('div');
-  actions.style.cssText = 'display:flex;gap:10px;padding:14px 18px 4px;position:sticky;bottom:0;background:var(--panel);'
-    + 'border-top:1px solid var(--line);';
+  // Sticky to the sheet's own bottom, and it owns the safe-area padding now that
+  // the sheet's padding is zero -- so Reset/Apply are always the last thing on
+  // screen and never tuck under the iOS home indicator.
+  actions.style.cssText = 'display:flex;gap:10px;position:sticky;bottom:0;z-index:3;'
+    + 'background:var(--panel);border-top:1px solid var(--line);'
+    + 'padding:14px 18px calc(14px + env(safe-area-inset-bottom, 0px));';
   const reset = document.createElement('button');
   reset.textContent = 'Reset';
   reset.style.cssText = 'flex:0 0 auto;padding:11px 18px;border-radius:10px;border:1px solid var(--line);'
@@ -15186,6 +15526,7 @@ function renderSettingsPage(activeTab){
   tabBar.style.cssText = 'display:flex;gap:8px;margin:14px 0 20px;border-bottom:1px solid var(--line);';
   const tabs = [
     {key:'account', label:'Account Info'},
+    {key:'location', label:'Location'},
     {key:'email', label:'Change Email'},
     {key:'password', label:'Change Password'},
   ];
@@ -15214,6 +15555,12 @@ function renderSettingsPage(activeTab){
     const el = document.createElement('div');
     el.style.cssText = 'max-width:400px;padding:20px;border:1px solid var(--line);border-radius:8px;background:var(--panel);margin-bottom:20px;';
     return el;
+  }
+
+  if(activeTab === 'location'){
+    // The ONLY place the location setting can be changed, as specified.
+    main.appendChild(locSettingsSection());
+    return;
   }
 
   if(activeTab === 'account'){
