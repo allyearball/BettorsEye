@@ -3841,6 +3841,11 @@ function currentPageLabel(){
 // data-track-label lets any specific button opt into a clean, deliberate description instead of
 // relying on this generic fallback.
 function describeClickTarget(el){
+  // A prop card reports itself as the PROP, not as "div.ps-card". This is what
+  // makes the Markets "Most Researched" list possible: the aggregate is a group
+  // by element over click_events, so the element has to identify the bet.
+  const propEl = el && el.closest ? el.closest('[data-be-prop]') : null;
+  if(propEl) return propEl.dataset.beProp;
   let node = el;
   for(let i=0; i<4 && node; i++){
     if(node.hasAttribute && node.hasAttribute('data-track-label')) return node.getAttribute('data-track-label');
@@ -3866,6 +3871,9 @@ async function flushClickEvents(){
     await fetch(`${workerBase}/track/click`, {method:'POST', headers:{'Content-Type':'application/json', ...authHeaders()}, body: JSON.stringify({events}), keepalive:true});
   }catch(e){ /* best-effort -- a lost batch of clicks isn't worth retrying or blocking on */ }
 }
+// Filters are read once at boot so the first render already reflects them --
+// loading them inside the render would flash an unfiltered board first.
+try{ if(typeof psLoadFilters === 'function') psLoadFilters(); }catch(e){}
 function initClickTracking(){
   document.addEventListener('click', (e)=>{
     if(!isLoggedIn()) return;
@@ -3946,7 +3954,7 @@ async function initApp(){
    entry points initApp() reads, and would advertise deep links that a hard reload can't restore
    (the entries live in memory, not in the URL). Back/forward is the goal here, not shareable
    per-page URLs -- those would need a real serialize/parse layer for every page's arguments. */
-const HISTORY_PAGES = ['renderPropsScreen','renderMarketsScreen','renderFavoritesScreen',
+const HISTORY_PAGES = ['renderPropsScreen','renderMarketsScreen','renderMyRadarScreen',
   'renderHomePage','renderOddsPage','renderLeagueStatsPage','renderTeamPage',
   'renderGamePage','renderPlayerPage','renderHeightTierDetailPage',
   'renderLineHistoryPage','renderAppTrackerPage','renderBetTrackerPage','renderSettingsPage',
@@ -9480,6 +9488,7 @@ function psGatherProps(cachedFetch, selectedBook){
     pool = pool.concat(legs
       .filter(l => (l.betType==='player_prop' || l.betType==='player_prop_alt') && l.price >= PS_MIN_PRICE)
       .map(l => Object.assign({}, l, {
+        eventId: ev.id,
         game: `${ev.away_team} @ ${ev.home_team}`,
         gameShort: `${psAbbr(awayShort)} @ ${psAbbr(homeShort)}`,
         commenceTime: ev.commence_time,
@@ -9493,6 +9502,35 @@ function psGatherProps(cachedFetch, selectedBook){
     if(!prev || l.price > prev.price) best.set(k, l);
   }
   return [...best.values()];
+}
+
+// One fetch of the day's board, shared by Props, Markets and My Radar. Three
+// screens each pulling their own copy would triple the Worker calls and let the
+// three disagree about what is on the slate.
+let _psPool = null, _psPoolAt = 0;
+const PS_POOL_TTL_MS = 90 * 1000;
+async function psLoadPool(force){
+  if(!force && _psPool && (Date.now() - _psPoolAt) < PS_POOL_TTL_MS) return _psPool;
+  const events = await fetchCachedOddsEvents();
+  const todayStr = new Date().toDateString();
+  const todays = (events||[]).filter(ev => new Date(ev.commence_time).toDateString() === todayStr);
+  const cached = [];
+  for(const ev of todays){
+    let detail = null;
+    try{ detail = await fetchCachedOddsDetail(ev.id); }catch(e){}
+    cached.push({ev, detail});
+  }
+  // The games list the filter sheet offers, in tip-off order.
+  window.__psGames = todays.map(ev => ({
+    id: ev.id,
+    label: `${psAbbr(SHORT_TEAM_NAME[ev.away_team]||ev.away_team)}@${psAbbr(SHORT_TEAM_NAME[ev.home_team]||ev.home_team)}`,
+    time: new Date(ev.commence_time).toLocaleTimeString('en-US',
+      {timeZone:'America/New_York', hour:'numeric', minute:'2-digit'}) + ' ET',
+    t: ev.commence_time,
+  })).sort((a,b)=>String(a.t).localeCompare(String(b.t)));
+  _psPool = psGatherProps(cached, 'best');
+  _psPoolAt = Date.now();
+  return _psPool;
 }
 
 // ============================================================================
@@ -9568,6 +9606,11 @@ function psStatBox(label, val, emphasis, key){
 function psCard(leg, favs, onToggleFav){
   const card = document.createElement('div');
   card.className = 'ps-card';
+  // Stable identity for click tracking. describeClickTarget() reads this, so a
+  // tap on any part of a card lands in click_events as the prop itself rather
+  // than as "div.ps-card" -- which is what makes Most Researched possible.
+  card.dataset.beProp = 'prop:' + psFavKey(leg);
+  card.addEventListener('click', ()=>{ if(typeof psRecordResearch === 'function') psRecordResearch(leg); });
   card.style.cssText = 'border:1px solid var(--line);border-radius:12px;background:var(--panel);'
     + 'padding:12px 12px 10px;margin:0 0 10px;';
 
@@ -9717,8 +9760,11 @@ async function renderPropsScreen(){
   const row2Holder = document.createElement('div');
   const row3Holder = document.createElement('div');
   shell.appendChild(row2Holder); shell.appendChild(row3Holder);
+  // The chip row and the filter sheet's "Sort By" hold ONE value between them.
+  PS_STATE.metric = psF('props').sortBy || PS_STATE.metric;
   const row2 = psChipRow(metricItems, PS_STATE.metric, k=>{
-    PS_STATE.metric = k; PS_STATE.limit = PS_PAGE_SIZE; row2.update(k); paint();
+    PS_STATE.metric = k; psF('props').sortBy = k; psSaveFilters();
+    PS_STATE.limit = PS_PAGE_SIZE; row2.update(k); paint();
   });
   const row3 = psChipRow(PS_MARKETS, PS_STATE.market, k=>{
     PS_STATE.market = k; PS_STATE.limit = PS_PAGE_SIZE; row3.update(k); paint();
@@ -9735,14 +9781,14 @@ async function renderPropsScreen(){
   list.style.cssText = 'padding:10px 14px 0;';
   shell.appendChild(list);
 
-  shell.appendChild(psBottomBar('props'));
+  shell.appendChild(psBottomBar('props', ()=>psFilterSheet('props', ()=>renderPropsScreen())));
 
   let pool = [];
   const favs = psLoadFavs();
 
   function filtered(){
     const mk = PS_MARKETS.find(m=>m.key===PS_STATE.market);
-    let rows = pool;
+    let rows = (typeof psApplyFilters === 'function') ? psApplyFilters(pool, 'props') : pool;
     if(mk && mk.stats) rows = rows.filter(l => mk.stats.includes(l.statKey));
     if(PS_STATE.search){
       const q = PS_STATE.search;
@@ -9793,16 +9839,7 @@ async function renderPropsScreen(){
   }
 
   try{
-    const events = await fetchCachedOddsEvents();
-    const todayStr = new Date().toDateString();
-    const todays = (events||[]).filter(ev => new Date(ev.commence_time).toDateString() === todayStr);
-    const cached = [];
-    for(const ev of todays){
-      let detail = null;
-      try{ detail = await fetchCachedOddsDetail(ev.id); }catch(e){}
-      cached.push({ev, detail});
-    }
-    pool = psGatherProps(cached, 'best');
+    pool = await psLoadPool();
     paint();
   }catch(e){
     status.textContent = `Couldn’t load props: ${e.message}`;
@@ -9810,42 +9847,21 @@ async function renderPropsScreen(){
 }
 
 // ---- the other two tabs ----------------------------------------------------
-function renderMarketsScreen(){
-  lastRender = () => renderMarketsScreen();
+function renderMyRadarScreen(){
+  lastRender = () => renderMyRadarScreen();
   main.innerHTML = '';
   if(typeof removeGameWindowStickyBar === 'function') removeGameWindowStickyBar();
   const shell = document.createElement('div');
   shell.style.cssText = 'padding:16px 14px 78px;';
   const h = document.createElement('h2');
-  h.textContent = 'Markets';
-  h.style.cssText = 'margin:0 0 6px;';
-  const p = document.createElement('div');
-  p.className = 'footnote';
-  p.innerHTML = 'Streaks and cold runs — bets that have consistently hit or missed — are the next '
-    + 'thing to build here. <b>One caution worth settling before it is built:</b> a run of hits is not '
-    + 'evidence of an edge. Out of ~400 props a night, long streaks appear by chance alone, and a board '
-    + 'that ranks by streak length will select almost entirely for noise. The version worth building '
-    + 'compares each streak against how often a streak that long would occur anyway at that price.';
-  shell.appendChild(h); shell.appendChild(p);
-  main.appendChild(shell);
-  main.appendChild(psBottomBar('markets'));
-}
-
-function renderFavoritesScreen(){
-  lastRender = () => renderFavoritesScreen();
-  main.innerHTML = '';
-  if(typeof removeGameWindowStickyBar === 'function') removeGameWindowStickyBar();
-  const shell = document.createElement('div');
-  shell.style.cssText = 'padding:16px 14px 78px;';
-  const h = document.createElement('h2');
-  h.textContent = 'Favorites';
+  h.textContent = 'My Radar';
   h.style.cssText = 'margin:0 0 10px;';
   shell.appendChild(h);
   const favs = psLoadFavs();
   if(!favs.size){
     const e = document.createElement('div');
     e.className = 'footnote';
-    e.textContent = 'No favourites yet. Tap the star on any prop to keep it here.';
+    e.textContent = 'Nothing on your radar yet. Tap the star on any prop to keep it here.';
     shell.appendChild(e);
   } else {
     const listing = document.createElement('div');
@@ -9861,7 +9877,7 @@ function renderFavoritesScreen(){
       const rm = document.createElement('button');
       rm.textContent = '★';
       rm.style.cssText = 'background:none;border:none;cursor:pointer;font-size:20px;color:#E8A33D;';
-      rm.addEventListener('click', ()=>{ const f = psLoadFavs(); f.delete(k); psSaveFavs(f); renderFavoritesScreen(); });
+      rm.addEventListener('click', ()=>{ const f = psLoadFavs(); f.delete(k); psSaveFavs(f); renderMyRadarScreen(); });
       row.appendChild(t); row.appendChild(rm);
       listing.appendChild(row);
     });
@@ -9869,28 +9885,31 @@ function renderFavoritesScreen(){
     const note = document.createElement('div');
     note.className = 'footnote';
     note.style.cssText = 'margin-top:12px;';
-    note.textContent = 'Favourites are saved on this device only. They do not follow you to another '
+    note.textContent = 'Your radar is saved on this device only. It does not follow you to another '
       + 'browser or phone yet.';
     shell.appendChild(note);
   }
   main.appendChild(shell);
-  main.appendChild(psBottomBar('favorites'));
+  main.appendChild(psBottomBar('radar', ()=>psFilterSheet('radar', ()=>renderMyRadarScreen())));
 }
 
 // ---- the floating bar ------------------------------------------------------
-function psBottomBar(active){
+function psBottomBar(active, onFilter){
   const old = document.getElementById('psBottomBar');
   if(old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'psBottomBar';
+  wrap.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:60;'
+    + 'display:flex;gap:8px;align-items:center;'
+    + 'padding-bottom:env(safe-area-inset-bottom, 0px);';
   const bar = document.createElement('div');
-  bar.id = 'psBottomBar';
-  bar.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:60;'
-    + 'display:flex;gap:4px;padding:5px;border-radius:999px;background:var(--panel);'
-    + 'border:1px solid var(--line);box-shadow:0 6px 20px rgba(0,0,0,.16);'
-    + 'padding-bottom:calc(5px + env(safe-area-inset-bottom, 0px));';
+  bar.id = 'psBottomBarPills';
+  bar.style.cssText = 'display:flex;gap:4px;padding:5px;border-radius:999px;background:var(--panel);'
+    + 'border:1px solid var(--line);box-shadow:0 6px 20px rgba(0,0,0,.16);';
   const items = [
-    {key:'props',     label:'Props',     glyph:'▤', fn:renderPropsScreen},
-    {key:'markets',   label:'Markets',   glyph:'◫', fn:renderMarketsScreen},
-    {key:'favorites', label:'Favorites', glyph:'☆', fn:renderFavoritesScreen},
+    {key:'props',   label:'Props',     glyph:'▤', fn:renderPropsScreen},
+    {key:'markets', label:'Markets',   glyph:'◫', fn:renderMarketsScreen},
+    {key:'radar',   label:'My Radar',  glyph:'☆', fn:renderMyRadarScreen},
   ];
   items.forEach(it=>{
     const b = document.createElement('button');
@@ -9904,7 +9923,28 @@ function psBottomBar(active){
     b.addEventListener('click', ()=>{ if(!on) it.fn(); });
     bar.appendChild(b);
   });
-  return bar;
+  wrap.appendChild(bar);
+  // The filter button sits BESIDE the menu rather than inside it: it is not a
+  // fourth destination, it changes what the current one shows. Markets is a
+  // league-wide view with no filters, so it does not get one.
+  if(onFilter){
+    const page = active === 'radar' ? 'radar' : 'props';
+    const nActive = (typeof psActiveFilterCount === 'function') ? psActiveFilterCount(page) : 0;
+    const fb = document.createElement('button');
+    fb.id = 'psFilterBtn';
+    fb.setAttribute('aria-label', 'Filters');
+    fb.title = nActive ? `${nActive} filter(s) active` : 'Filters';
+    fb.style.cssText = 'width:46px;height:46px;border-radius:50%;cursor:pointer;position:relative;'
+      + 'background:var(--panel);border:1px solid ' + (nActive ? 'var(--navy2)' : 'var(--line)') + ';'
+      + 'box-shadow:0 6px 20px rgba(0,0,0,.16);font-size:17px;color:var(--ink);';
+    fb.innerHTML = '⚙'
+      + (nActive ? `<span style="position:absolute;top:-3px;right:-3px;background:var(--navy2);color:#fff;`
+          + `border-radius:999px;min-width:17px;height:17px;font-size:10px;font-weight:800;`
+          + `display:flex;align-items:center;justify-content:center;padding:0 4px;">${nActive}</span>` : '');
+    fb.addEventListener('click', onFilter);
+    wrap.appendChild(fb);
+  }
+  return wrap;
 }
 
 // ---- the menu (where furloughed pages live) --------------------------------
@@ -9936,6 +9976,646 @@ function psBuildMenu(){
   add('Bet Tracker (old)', ()=>renderBetTrackerPage(), true);
   if(typeof isAdminUser === 'function' && isAdminUser()) add('App Tracker (old)', ()=>renderAppTrackerPage(), true);
   return panel;
+}
+
+// ============================================================================
+// FILTERS, MARKETS, MY RADAR
+//
+// Three things that hang off the Props screen:
+//   * a bottom-sheet filter, swipe-down to dismiss, shown on Props and My Radar
+//   * a Markets screen of four stacked lists, 5 shown, expandable 25 -> 50
+//   * Favorites renamed My Radar
+//
+// FILTER STATE IS PER PAGE ON PURPOSE. Props and My Radar keep separate
+// settings -- narrowing your radar to one game should not silently narrow the
+// whole board -- unless the user ticks "use these on both", which makes them one
+// object rather than copying values between two.
+// ============================================================================
+
+const PS_FILTER_KEY = 'be_filters_v1';
+const PS_RESEARCH_KEY = 'be_research_v1';   // local view counts, a fallback before the Worker has data
+
+const psFilterDefaults = () => ({
+  altLines: true,                 // include alternate ("2+") lines
+  games: null,                    // null = every game; otherwise a list of eventIds
+  sortBy: 'l10',                  // shares one value with the row-2 chips
+  hitRates: {l5:null, l10:null, l15:null, l30:null, season:null},  // null = not applied
+  propTypes: null,                // null = every market; otherwise a list of statKeys
+  oddsMin: PS_MIN_PRICE,
+  oddsMax: null,
+});
+const PS_FILTERS = {props: psFilterDefaults(), radar: psFilterDefaults(), linked: false};
+
+// One object when linked, so there is no copy to keep in sync and no way for the
+// two to drift apart while claiming to be shared.
+function psF(page){ return PS_FILTERS.linked ? PS_FILTERS.props : (PS_FILTERS[page] || PS_FILTERS.props); }
+
+function psSaveFilters(){
+  try{ localStorage.setItem(PS_FILTER_KEY, JSON.stringify(PS_FILTERS)); }catch(e){}
+}
+function psLoadFilters(){
+  try{
+    const raw = JSON.parse(localStorage.getItem(PS_FILTER_KEY) || 'null');
+    if(!raw) return;
+    ['props','radar'].forEach(p=>{
+      if(raw[p]) PS_FILTERS[p] = Object.assign(psFilterDefaults(), raw[p]);
+    });
+    PS_FILTERS.linked = !!raw.linked;
+  }catch(e){}
+}
+
+// ---- applying them ---------------------------------------------------------
+function psApplyFilters(legs, page){
+  const f = psF(page);
+  return legs.filter(l => {
+    if(!f.altLines && l.betType === 'player_prop_alt') return false;
+    if(f.games && f.games.length && !f.games.includes(l.eventId)) return false;
+    if(f.propTypes && f.propTypes.length && !f.propTypes.includes(l.statKey)) return false;
+    if(l.price < f.oddsMin) return false;
+    if(f.oddsMax !== null && l.price > f.oddsMax) return false;
+    // Hit-rate floors. Each window is independent and only applies once the user
+    // has set it -- an unset window must not silently exclude a player who has
+    // not played enough games to have one.
+    for(const key of Object.keys(f.hitRates)){
+      const min = f.hitRates[key];
+      if(min === null || min === undefined) continue;
+      const v = psMetricValue(l, key);
+      if(!v || v.sort * 100 < min) return false;
+    }
+    return true;
+  });
+}
+
+// ---- streaks ---------------------------------------------------------------
+// Consecutive results against TONIGHT'S line, walking back from her most recent
+// game. A streak is the run at the front of the log, not the longest run in it:
+// six wins that ended a month ago is not a hot streak, it is history.
+function psStreak(leg){
+  const pl = DATA.fullPlayerLogs[leg.player+'|'+leg.team];
+  if(!pl) return null;
+  const played = (pl.log||[]).filter(g=>!g.dnp);
+  if(!played.length) return null;
+  const threshold = Number.isInteger(leg.line) ? leg.line+1 : Math.ceil(leg.line);
+  let wins = 0, losses = 0, done = false;
+  for(let i = played.length - 1; i >= 0 && !done; i--){
+    const v = statValue(played[i], leg.statKey);
+    if(v === null || v === undefined) break;
+    const won = leg.side === 'under' ? v < threshold : v >= threshold;
+    if(wins === 0 && losses === 0){ won ? wins++ : losses++; continue; }
+    if(won && losses === 0) wins++;
+    else if(!won && wins === 0) losses++;
+    else done = true;
+  }
+  return {wins, losses, gp: played.length};
+}
+
+// ---- "most researched" -----------------------------------------------------
+// Built on the click tracking that already exists. Every card carries a
+// data-be-prop attribute; describeClickTarget() reports it verbatim, so a tap on
+// a card lands in click_events as "prop:<player>|<team>|<stat>|<side>|<line>".
+// The Worker aggregates the last 24 hours.
+//
+// A local tally runs alongside it so a single tester sees something before the
+// endpoint has traffic. The list says which source it is showing -- one user's
+// own taps are not "most researched" and must not be presented as if they were.
+function psRecordResearch(leg){
+  try{
+    const raw = JSON.parse(localStorage.getItem(PS_RESEARCH_KEY) || '{}');
+    const cutoff = Date.now() - 24*3600*1000;
+    const key = psFavKey(leg);
+    raw[key] = (raw[key] || []).filter(t => t > cutoff);
+    raw[key].push(Date.now());
+    // Keep the object from growing without bound on a long session.
+    Object.keys(raw).forEach(k=>{ raw[k] = raw[k].filter(t=>t>cutoff); if(!raw[k].length) delete raw[k]; });
+    localStorage.setItem(PS_RESEARCH_KEY, JSON.stringify(raw));
+  }catch(e){}
+}
+function psLocalResearch(){
+  try{
+    const raw = JSON.parse(localStorage.getItem(PS_RESEARCH_KEY) || '{}');
+    const cutoff = Date.now() - 24*3600*1000;
+    return Object.entries(raw)
+      .map(([k, ts]) => ({key: k, n: (ts||[]).filter(t=>t>cutoff).length}))
+      .filter(x => x.n > 0)
+      .sort((a,b)=>b.n-a.n);
+  }catch(e){ return []; }
+}
+async function psFetchResearch(){
+  try{
+    const base = (await loadSavedUrl()) || DEFAULT_WORKER_URL;
+    const res = await fetch(`${base.replace(/\/$/,'')}/markets/researched?hours=24`, {headers: authHeaders()});
+    if(!res.ok) return null;
+    const data = await res.json();
+    return (data && Array.isArray(data.rows)) ? data.rows : null;
+  }catch(e){ return null; }
+}
+
+// ============================================================================
+// THE FILTER SHEET
+// ============================================================================
+function psFilterSheet(page, onApply){
+  const f = psF(page);
+  const back = document.createElement('div');
+  back.id = 'psFilterBackdrop';
+  back.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:80;'
+    + 'display:flex;align-items:flex-end;justify-content:center;';
+  const sheet = document.createElement('div');
+  sheet.id = 'psFilterSheet';
+  sheet.style.cssText = 'background:var(--panel);width:100%;max-width:640px;max-height:86vh;overflow-y:auto;'
+    + 'border-radius:18px 18px 0 0;padding:0 0 calc(20px + env(safe-area-inset-bottom,0px));'
+    + 'box-shadow:0 -8px 30px rgba(0,0,0,.28);transition:transform .18s ease-out;';
+
+  // Grab handle. Dragging it (or the header) down far enough dismisses -- the
+  // gesture people expect from a bottom sheet on a phone.
+  const grabWrap = document.createElement('div');
+  grabWrap.style.cssText = 'position:sticky;top:0;background:var(--panel);padding:10px 0 6px;'
+    + 'border-radius:18px 18px 0 0;cursor:grab;touch-action:none;z-index:2;';
+  const grab = document.createElement('div');
+  grab.style.cssText = 'width:42px;height:5px;border-radius:3px;background:var(--line);margin:0 auto;';
+  const title = document.createElement('div');
+  title.textContent = 'Filters';
+  title.style.cssText = 'text-align:center;font-weight:800;font-size:15px;margin-top:8px;';
+  grabWrap.appendChild(grab); grabWrap.appendChild(title);
+  sheet.appendChild(grabWrap);
+
+  const close = ()=>{ back.remove(); };
+  back.addEventListener('click', e => { if(e.target === back) close(); });
+
+  let startY = null, dy = 0;
+  const onDown = e => { startY = (e.touches ? e.touches[0].clientY : e.clientY); dy = 0; sheet.style.transition = 'none'; };
+  const onMove = e => {
+    if(startY === null) return;
+    dy = (e.touches ? e.touches[0].clientY : e.clientY) - startY;
+    if(dy > 0){ sheet.style.transform = `translateY(${dy}px)`; if(e.cancelable) e.preventDefault(); }
+  };
+  const onUp = ()=>{
+    if(startY === null) return;
+    sheet.style.transition = 'transform .18s ease-out';
+    // Past a quarter of the sheet's height, let it go. Short drags spring back.
+    if(dy > Math.max(90, sheet.offsetHeight * 0.25)){ sheet.style.transform = 'translateY(110%)'; setTimeout(close, 180); }
+    else sheet.style.transform = '';
+    startY = null;
+  };
+  ['mousedown','touchstart'].forEach(ev => grabWrap.addEventListener(ev, onDown, {passive:true}));
+  ['mousemove','touchmove'].forEach(ev => window.addEventListener(ev, onMove, {passive:false}));
+  ['mouseup','touchend','touchcancel'].forEach(ev => window.addEventListener(ev, onUp, {passive:true}));
+  back.addEventListener('remove', ()=>{});
+
+  const section = (label) => {
+    const s = document.createElement('div');
+    s.style.cssText = 'padding:14px 18px 4px;border-top:1px solid var(--line);';
+    const h = document.createElement('div');
+    h.textContent = label;
+    h.style.cssText = 'font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--sub);'
+      + 'font-weight:800;margin-bottom:9px;';
+    s.appendChild(h);
+    sheet.appendChild(s);
+    return s;
+  };
+  const pill = (label, on, fn) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.dataset.psPill = label;
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.style.cssText = 'padding:7px 13px;border-radius:999px;font-size:13px;font-weight:700;cursor:pointer;'
+      + 'font-family:var(--sans);margin:0 7px 7px 0;border:1px solid '
+      + (on ? 'var(--navy2)' : 'var(--line)') + ';'
+      + (on ? 'background:var(--navy2);color:#fff;' : 'background:var(--panel);color:var(--sub);');
+    b.addEventListener('click', ()=>fn(b));
+    return b;
+  };
+
+  // ---- 1. alternate lines --------------------------------------------------
+  const s1 = section('Alternate Lines');
+  const toggleRow = document.createElement('div');
+  toggleRow.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding-bottom:10px;';
+  const tLabel = document.createElement('span');
+  tLabel.textContent = 'Include "2+" style alternate lines';
+  tLabel.style.cssText = 'font-size:13.5px;';
+  const sw = document.createElement('button');
+  sw.id = 'psAltToggle';
+  const paintSwitch = ()=>{
+    sw.setAttribute('aria-pressed', f.altLines ? 'true' : 'false');
+    sw.style.cssText = 'width:46px;height:27px;border-radius:999px;border:none;cursor:pointer;position:relative;'
+      + `background:${f.altLines ? 'var(--navy2)' : 'var(--line)'};transition:background .15s;`;
+    sw.innerHTML = `<span style="position:absolute;top:3px;left:${f.altLines ? 22 : 3}px;width:21px;height:21px;`
+      + 'border-radius:50%;background:#fff;transition:left .15s;"></span>';
+  };
+  paintSwitch();
+  sw.addEventListener('click', ()=>{ f.altLines = !f.altLines; paintSwitch(); });
+  toggleRow.appendChild(tLabel); toggleRow.appendChild(sw);
+  s1.appendChild(toggleRow);
+
+  // ---- 2. games ------------------------------------------------------------
+  const s2 = section('Games');
+  const gamesWrap = document.createElement('div');
+  const games = (window.__psGames || []);
+  if(!games.length){
+    const n = document.createElement('div');
+    n.className = 'footnote'; n.textContent = 'No games on the board right now.';
+    gamesWrap.appendChild(n);
+  } else {
+    const allBtn = pill('All games', !f.games || !f.games.length, ()=>{
+      f.games = null; repaintGames();
+    });
+    gamesWrap.appendChild(allBtn);
+    games.forEach(g=>{
+      const on = !!(f.games && f.games.includes(g.id));
+      const b = pill('', on, ()=>{
+        const cur = new Set(f.games || []);
+        cur.has(g.id) ? cur.delete(g.id) : cur.add(g.id);
+        f.games = cur.size ? [...cur] : null;
+        repaintGames();
+      });
+      b.textContent = '';
+      b.dataset.psPill = g.label;
+      b.style.textAlign = 'left';
+      b.innerHTML = `<div style="font-weight:800;">${g.label}</div>`
+        + `<div style="font-size:10.5px;opacity:.75;font-weight:600;">${g.time}</div>`;
+      gamesWrap.appendChild(b);
+    });
+  }
+  function repaintGames(){
+    [...gamesWrap.children].forEach((b, i)=>{
+      const on = i === 0 ? (!f.games || !f.games.length) : !!(f.games && f.games.includes(games[i-1].id));
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.style.borderColor = on ? 'var(--navy2)' : 'var(--line)';
+      b.style.background  = on ? 'var(--navy2)' : 'var(--panel)';
+      b.style.color       = on ? '#fff' : 'var(--sub)';
+    });
+  }
+  s2.appendChild(gamesWrap);
+
+  // ---- 3. sort by ----------------------------------------------------------
+  // Deliberately the SAME value the row-2 chips set. Two controls that both
+  // claim to choose the sort, holding different answers, is worse than one
+  // control in two places.
+  const s3 = section('Sort By');
+  const sortWrap = document.createElement('div');
+  const sortItems = PS_METRICS.map(m => ({key: m.key,
+    label: m.key==='season' ? psSeasonLabel(PS_STATE.sport)
+         : m.key==='prior'  ? psSeasonLabel(PS_STATE.sport, (PS_SPORTS.find(s=>s.key===PS_STATE.sport)||{}).season - 1)
+         : m.label}));
+  sortItems.forEach(it=>{
+    const b = pill(it.label, f.sortBy === it.key, ()=>{
+      f.sortBy = it.key;
+      [...sortWrap.children].forEach((x, i)=>{
+        const on = sortItems[i].key === f.sortBy;
+        x.setAttribute('aria-pressed', on ? 'true':'false');
+        x.style.borderColor = on ? 'var(--navy2)' : 'var(--line)';
+        x.style.background  = on ? 'var(--navy2)' : 'var(--panel)';
+        x.style.color       = on ? '#fff' : 'var(--sub)';
+      });
+    });
+    b.dataset.psSort = it.key;
+    sortWrap.appendChild(b);
+  });
+  s3.appendChild(sortWrap);
+  const sortNote = document.createElement('div');
+  sortNote.className = 'footnote';
+  sortNote.textContent = 'This is the same setting as the chip row at the top of the Props screen.';
+  s3.appendChild(sortNote);
+
+  // ---- 4. hit rates --------------------------------------------------------
+  const s4 = section('Hit Rates');
+  const hrNote = document.createElement('div');
+  hrNote.className = 'footnote';
+  hrNote.style.cssText = 'margin-bottom:8px;';
+  hrNote.textContent = 'Grey means not applied. Set a minimum on any window to require it.';
+  s4.appendChild(hrNote);
+  [['l5','L5'],['l10','L10'],['l15','L15'],['l30','L30'],['season',psSeasonLabel(PS_STATE.sport)]].forEach(([key,label])=>{
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:9px;';
+    const l = document.createElement('div');
+    l.textContent = label;
+    l.style.cssText = 'width:56px;font-weight:700;font-size:13px;';
+    const slider = document.createElement('input');
+    slider.type = 'range'; slider.min = '0'; slider.max = '100'; slider.step = '5';
+    slider.value = f.hitRates[key] === null ? '0' : String(f.hitRates[key]);
+    slider.dataset.psHr = key;
+    slider.style.cssText = 'flex:1;';
+    const val = document.createElement('div');
+    val.style.cssText = 'width:52px;text-align:right;font-weight:800;font-size:13px;';
+    const paint = ()=>{
+      const applied = f.hitRates[key] !== null;
+      val.textContent = applied ? `${f.hitRates[key]}%+` : 'any';
+      val.style.color = applied ? 'var(--ink)' : 'var(--sub)';
+      l.style.color = applied ? 'var(--ink)' : 'var(--sub)';
+      slider.style.opacity = applied ? '1' : '.45';
+    };
+    slider.addEventListener('input', ()=>{
+      const v = parseInt(slider.value, 10);
+      f.hitRates[key] = v === 0 ? null : v;
+      paint();
+    });
+    const clear = document.createElement('button');
+    clear.textContent = '×';
+    clear.title = `Clear the ${label} filter`;
+    clear.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sub);font-size:17px;';
+    clear.addEventListener('click', ()=>{ f.hitRates[key] = null; slider.value = '0'; paint(); });
+    paint();
+    row.appendChild(l); row.appendChild(slider); row.appendChild(val); row.appendChild(clear);
+    s4.appendChild(row);
+  });
+
+  // ---- 5. prop type --------------------------------------------------------
+  const s5 = section('Prop Type');
+  const typeWrap = document.createElement('div');
+  const typeItems = PS_MARKETS.filter(m => m.key !== 'all');
+  const allTypes = pill('All', !f.propTypes || !f.propTypes.length, ()=>{ f.propTypes = null; repaintTypes(); });
+  typeWrap.appendChild(allTypes);
+  typeItems.forEach(m=>{
+    const b = pill(m.label, !!(f.propTypes && f.propTypes.includes(m.stats[0])), ()=>{
+      const cur = new Set(f.propTypes || []);
+      cur.has(m.stats[0]) ? cur.delete(m.stats[0]) : cur.add(m.stats[0]);
+      f.propTypes = cur.size ? [...cur] : null;
+      repaintTypes();
+    });
+    typeWrap.appendChild(b);
+  });
+  function repaintTypes(){
+    [...typeWrap.children].forEach((b, i)=>{
+      const on = i === 0 ? (!f.propTypes || !f.propTypes.length)
+                         : !!(f.propTypes && f.propTypes.includes(typeItems[i-1].stats[0]));
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.style.borderColor = on ? 'var(--navy2)' : 'var(--line)';
+      b.style.background  = on ? 'var(--navy2)' : 'var(--panel)';
+      b.style.color       = on ? '#fff' : 'var(--sub)';
+    });
+  }
+  s5.appendChild(typeWrap);
+
+  // ---- 6. odds -------------------------------------------------------------
+  const s6 = section('Odds');
+  const oddsRow = document.createElement('div');
+  oddsRow.style.cssText = 'display:flex;gap:10px;align-items:center;';
+  const mkNum = (ph, val, fn, id) => {
+    const i = document.createElement('input');
+    i.type = 'number'; i.placeholder = ph; i.id = id;
+    i.value = (val === null || val === undefined) ? '' : String(val);
+    i.style.cssText = 'flex:1;padding:8px 10px;border:1px solid var(--line);border-radius:8px;'
+      + 'font-family:var(--sans);font-size:14px;background:var(--panel);color:var(--ink);';
+    i.addEventListener('input', ()=>{
+      const v = i.value.trim();
+      fn(v === '' ? null : parseInt(v, 10));
+    });
+    return i;
+  };
+  const minI = mkNum('min (-150)', f.oddsMin, v => { f.oddsMin = (v === null ? PS_MIN_PRICE : v); }, 'psOddsMin');
+  const maxI = mkNum('max (any)', f.oddsMax, v => { f.oddsMax = v; }, 'psOddsMax');
+  const dash = document.createElement('span'); dash.textContent = 'to'; dash.style.color = 'var(--sub)';
+  oddsRow.appendChild(minI); oddsRow.appendChild(dash); oddsRow.appendChild(maxI);
+  s6.appendChild(oddsRow);
+  const oddsNote = document.createElement('div');
+  oddsNote.className = 'footnote';
+  oddsNote.textContent = `Defaults to ${PS_MIN_PRICE} or better. American odds — a higher number is a better price.`;
+  s6.appendChild(oddsNote);
+
+  // ---- link + actions ------------------------------------------------------
+  const s7 = section('Scope');
+  const linkRow = document.createElement('label');
+  linkRow.style.cssText = 'display:flex;align-items:center;gap:9px;font-size:13.5px;cursor:pointer;padding-bottom:6px;';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox'; cb.id = 'psLinkFilters'; cb.checked = PS_FILTERS.linked;
+  cb.addEventListener('change', ()=>{
+    // Linking adopts the page you are standing on, so the settings in front of
+    // you are the ones that survive rather than being replaced by the other
+    // page's without warning.
+    if(cb.checked){
+      const cur = JSON.parse(JSON.stringify(psF(page)));
+      PS_FILTERS.props = cur;
+      PS_FILTERS.linked = true;
+    } else {
+      PS_FILTERS.linked = false;
+      PS_FILTERS.radar = JSON.parse(JSON.stringify(PS_FILTERS.props));
+    }
+  });
+  const cbl = document.createElement('span');
+  cbl.textContent = 'Use these settings on both Props and My Radar';
+  linkRow.appendChild(cb); linkRow.appendChild(cbl);
+  s7.appendChild(linkRow);
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:10px;padding:14px 18px 4px;position:sticky;bottom:0;background:var(--panel);'
+    + 'border-top:1px solid var(--line);';
+  const reset = document.createElement('button');
+  reset.textContent = 'Reset';
+  reset.style.cssText = 'flex:0 0 auto;padding:11px 18px;border-radius:10px;border:1px solid var(--line);'
+    + 'background:var(--panel);color:var(--sub);font-weight:700;cursor:pointer;font-family:var(--sans);font-size:14px;';
+  reset.addEventListener('click', ()=>{
+    const fresh = psFilterDefaults();
+    Object.keys(fresh).forEach(k => { psF(page)[k] = fresh[k]; });
+    psSaveFilters(); close(); onApply();
+  });
+  const apply = document.createElement('button');
+  apply.textContent = 'Apply';
+  apply.id = 'psApplyFilters';
+  apply.style.cssText = 'flex:1;padding:11px 18px;border-radius:10px;border:none;background:var(--navy2);'
+    + 'color:#fff;font-weight:800;cursor:pointer;font-family:var(--sans);font-size:14px;';
+  apply.addEventListener('click', ()=>{
+    PS_STATE.metric = psF(page).sortBy;   // keep the chip row honest
+    psSaveFilters(); close(); onApply();
+  });
+  actions.appendChild(reset); actions.appendChild(apply);
+  sheet.appendChild(actions);
+
+  back.appendChild(sheet);
+  document.body.appendChild(back);
+  return back;
+}
+
+// How many filters are actually doing something -- shown on the button so it is
+// obvious when a short list is a filter and not an empty slate.
+function psActiveFilterCount(page){
+  const f = psF(page), d = psFilterDefaults();
+  let n = 0;
+  if(f.altLines !== d.altLines) n++;
+  if(f.games && f.games.length) n++;
+  if(f.propTypes && f.propTypes.length) n++;
+  if(f.oddsMin !== d.oddsMin) n++;
+  if(f.oddsMax !== null) n++;
+  n += Object.values(f.hitRates).filter(v => v !== null && v !== undefined).length;
+  return n;
+}
+
+// ============================================================================
+// MARKETS
+// ============================================================================
+const PS_MARKET_LISTS = [
+  {key:'top',    title:'Top Performers',
+   blurb:'Highest season hit rate against tonight’s line, minimum 8 games.'},
+  {key:'hot',    title:'Hot Streaks',
+   blurb:'Consecutive games clearing tonight’s line, counting back from her most recent.'},
+  {key:'cold',   title:'Cold Streaks',
+   blurb:'Consecutive games missing tonight’s line — the Under side of the same board.'},
+  {key:'research', title:'Most Researched',
+   blurb:'Props opened most often in the last 24 hours.'},
+];
+const PS_MARKET_STEPS = [5, 25, 50];
+
+async function renderMarketsScreen(){
+  lastRender = () => renderMarketsScreen();
+  main.innerHTML = '';
+  if(typeof removeGameWindowStickyBar === 'function') removeGameWindowStickyBar();
+  const shell = document.createElement('div');
+  shell.style.cssText = 'padding:14px 14px 86px;';
+  const h = document.createElement('h2');
+  h.textContent = 'Markets';
+  h.style.cssText = 'margin:0 0 2px;';
+  const sub = document.createElement('div');
+  sub.className = 'footnote';
+  sub.style.cssText = 'margin-bottom:12px;';
+  sub.textContent = `Every list uses the same ${PS_MIN_PRICE} price floor as the Props board.`;
+  shell.appendChild(h); shell.appendChild(sub);
+  const body = document.createElement('div');
+  shell.appendChild(body);
+  main.appendChild(shell);
+  main.appendChild(psBottomBar('markets'));
+
+  const status = document.createElement('div');
+  status.className = 'footnote';
+  status.textContent = 'Loading…';
+  body.appendChild(status);
+
+  let pool = [];
+  try{ pool = await psLoadPool(); }
+  catch(e){ status.textContent = `Couldn’t load the board: ${e.message}`; return; }
+  // Markets is a league-wide view, so it uses the price floor only -- the Props
+  // page's filters are that page's, not a global setting.
+  pool = pool.filter(l => l.price >= PS_MIN_PRICE);
+  status.remove();
+  if(!pool.length){
+    const e = document.createElement('div');
+    e.className = 'footnote';
+    e.textContent = 'No props on the board right now.';
+    body.appendChild(e);
+    return;
+  }
+
+  const research = (await psFetchResearch()) || null;
+  const localResearch = psLocalResearch();
+
+  const withStreaks = pool.map(l => ({leg: l, streak: psStreak(l)}));
+  const listData = {
+    top: pool.map(l => ({leg: l, v: psMetricValue(l, 'season')}))
+            .filter(x => x.v && /\d/.test(x.v.sub || '') && parseInt((x.v.sub||'0/0').split('/')[1], 10) >= 8)
+            .sort((a,b)=>b.v.sort - a.v.sort)
+            .map(x => ({leg: x.leg, note: `${x.v.text} season (${x.v.sub})`})),
+    hot: withStreaks.filter(x => x.streak && x.streak.wins >= 2)
+            .sort((a,b)=>b.streak.wins - a.streak.wins)
+            .map(x => ({leg: x.leg, note: `${x.streak.wins} in a row`})),
+    cold: withStreaks.filter(x => x.streak && x.streak.losses >= 2)
+            .sort((a,b)=>b.streak.losses - a.streak.losses)
+            .map(x => ({leg: x.leg, note: `${x.streak.losses} misses in a row`})),
+    research: (()=>{
+      const counts = new Map();
+      (research || []).forEach(r => counts.set(r.key, r.n));
+      if(!counts.size) localResearch.forEach(r => counts.set(r.key, r.n));
+      return pool.map(l => ({leg: l, n: counts.get(psFavKey(l)) || 0}))
+                 .filter(x => x.n > 0)
+                 .sort((a,b)=>b.n-a.n)
+                 .map(x => ({leg: x.leg, note: `${x.n} view${x.n===1?'':'s'}`}));
+    })(),
+  };
+
+  PS_MARKET_LISTS.forEach(spec => {
+    const rows = listData[spec.key] || [];
+    const sec = document.createElement('div');
+    sec.dataset.psList = spec.key;
+    sec.style.cssText = 'margin:0 0 22px;';
+    const t = document.createElement('h3');
+    t.textContent = spec.title;
+    t.style.cssText = 'margin:0 0 2px;font-size:15px;';
+    const b = document.createElement('div');
+    b.className = 'footnote';
+    b.style.cssText = 'margin-bottom:8px;';
+    b.textContent = spec.blurb;
+    sec.appendChild(t); sec.appendChild(b);
+
+    if(spec.key === 'research' && !research){
+      const n = document.createElement('div');
+      n.className = 'footnote';
+      n.style.cssText = 'margin-bottom:8px;color:var(--sub);';
+      n.textContent = localResearch.length
+        ? 'Showing YOUR views from this device — the shared 24-hour count needs the Worker endpoint deployed and some traffic behind it.'
+        : 'No views recorded yet. This fills in once the Worker endpoint is live and props are being opened.';
+      sec.appendChild(n);
+    }
+
+    const listEl = document.createElement('div');
+    sec.appendChild(listEl);
+    let shown = PS_MARKET_STEPS[0];
+    const paint = ()=>{
+      listEl.innerHTML = '';
+      if(!rows.length){
+        const e = document.createElement('div');
+        e.className = 'footnote';
+        e.textContent = 'Nothing qualifies right now.';
+        listEl.appendChild(e);
+        return;
+      }
+      rows.slice(0, shown).forEach((r, i)=> listEl.appendChild(psMarketRow(r.leg, i+1, r.note)));
+      const cap = PS_MARKET_STEPS[PS_MARKET_STEPS.length - 1];
+      if(shown < Math.min(rows.length, cap)){
+        const more = document.createElement('button');
+        const next = PS_MARKET_STEPS.find(s => s > shown) || cap;
+        const add = Math.min(next, rows.length, cap) - shown;
+        more.textContent = `Show ${add} more`;
+        more.className = 'addbtn';
+        more.dataset.psMore = spec.key;
+        more.style.cssText += 'width:100%;margin-top:8px;';
+        more.addEventListener('click', ()=>{ shown = Math.min(next, cap); paint(); });
+        listEl.appendChild(more);
+      } else if(rows.length > cap){
+        const n = document.createElement('div');
+        n.className = 'footnote';
+        n.style.cssText = 'margin-top:8px;';
+        n.textContent = `Capped at the top ${cap}. ${rows.length - cap} more qualify.`;
+        listEl.appendChild(n);
+      }
+    };
+    paint();
+    body.appendChild(sec);
+  });
+
+  // The streak lists need saying out loud, because ranking by streak length is
+  // exactly the shape of thing that selects for noise.
+  const caveat = document.createElement('div');
+  caveat.className = 'footnote';
+  caveat.style.cssText = 'margin-top:18px;padding-top:12px;border-top:1px solid var(--line);';
+  caveat.innerHTML = '<b>On streaks.</b> A long run of hits is not by itself evidence of an edge. '
+    + 'Across a few hundred props a night, runs of five and six happen by chance alone — at an even '
+    + 'price, six in a row comes up about once in 64 tries, and there are far more than 64 props on '
+    + 'the board. Read these as <b>a place to start looking</b>, not as a signal. The version worth '
+    + 'trusting compares each streak against how often a run that long would occur anyway at that '
+    + 'price, and that comparison is not built yet.';
+  body.appendChild(caveat);
+}
+
+function psMarketRow(leg, rank, note){
+  const row = document.createElement('div');
+  row.className = 'ps-mrow';
+  row.dataset.beProp = 'prop:' + psFavKey(leg);
+  row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);cursor:pointer;';
+  const r = document.createElement('div');
+  r.textContent = rank;
+  r.style.cssText = 'width:18px;text-align:right;font-weight:800;font-size:12px;color:var(--sub);';
+  row.appendChild(r);
+  row.appendChild(psAvatar(leg.player, leg.team, 32));
+  const t = document.createElement('div');
+  t.style.cssText = 'flex:1;min-width:0;';
+  t.innerHTML = `<div style="font-weight:700;font-size:14px;">${leg.player} `
+    + `<span style="color:var(--sub);font-size:11.5px;font-weight:600;">${psAbbr(leg.team)}</span></div>`
+    + `<div style="font-size:12.5px;color:var(--sub);">${leg.side==='under'?'u':'o'} ${leg.line} `
+    + `${leg.market || PROP_MARKET_LABEL[leg.statKey] || leg.statKey}</div>`;
+  row.appendChild(t);
+  const n = document.createElement('div');
+  n.style.cssText = 'text-align:right;';
+  n.innerHTML = `<div style="font-weight:800;font-size:13px;">${note}</div>`
+    + `<div style="font-size:11.5px;color:var(--sub);">${leg.price>0?'+':''}${leg.price}</div>`;
+  row.appendChild(n);
+  row.addEventListener('click', ()=>psRecordResearch(leg));
+  return row;
 }
 
 // ---- fitted constants ------------------------------------------------------
