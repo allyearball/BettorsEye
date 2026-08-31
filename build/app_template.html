@@ -9584,22 +9584,42 @@ const CM_DIST = {
   ra:  {dist:'poisson', k: null, note:'two event counts, no value weighting'},
 
   // --- baseball ---
-  // Declared from the same reasoning, to be refitted against real MLB logs when
-  // the ingest lands. Anything value-weighted takes the overdispersed branch.
-  hits_bat:     {dist:'poisson', k: null, note:'event count, mean ~1'},
-  runs:         {dist:'poisson', k: null, note:'event count'},
-  rbi:          {dist:'nb',      k: 6,    note:'clustered by opportunity; provisional'},
-  hr:           {dist:'poisson', k: null, note:'event count, mean ~0.15'},
-  bb:           {dist:'poisson', k: null, note:'event count'},
-  so_bat:       {dist:'poisson', k: null, note:'event count'},
-  sb:           {dist:'poisson', k: null, note:'event count'},
-  total_bases:  {dist:'nb',      k: 4,    note:'VALUE-WEIGHTED (1B..HR=4) — baseball’s points; provisional'},
-  hrr:          {dist:'nb',      k: 8,    note:'sum of three correlated counts; provisional'},
-  so_pit:       {dist:'poisson', k: null, note:'event count, mean ~5'},
-  outs:         {dist:'nb',      k: 12,   note:'bounded by the hook; provisional'},
-  er:           {dist:'nb',      k: 3,    note:'heavily clustered — blow-up innings; provisional'},
-  hits_allowed: {dist:'poisson', k: null, note:'event count'},
-  bb_pit:       {dist:'poisson', k: null, note:'event count'},
+  // MEASURED, not reasoned: 61,643 player-games across the 2026 season
+  // (mlbfit.py). Two findings replaced the provisional guesses here.
+  //
+  // 1. THE EVENT STATS ARE BINOMIAL, NOT POISSON. Pearson dispersion measured
+  //    against a Poisson expectation came back BELOW 1 for every stat capped at
+  //    one per opportunity -- hits 0.76, pitcher strikeouts 0.69 -- which a
+  //    Poisson cannot produce. The binomial prediction phi = 1-p fits all seven
+  //    to a mean absolute error of 0.022, across p from 0.02 to 0.33, while four
+  //    uncapped control stats miss it by +1.08. A plate appearance is a Bernoulli
+  //    trial: at most one hit, one walk, one strikeout.
+  //
+  //    This is where baseball and basketball genuinely differ. WNBA counts were
+  //    Poisson GIVEN MINUTES because a minute has no ceiling -- you can score
+  //    several times in one. A plate appearance admits exactly one outcome, so the
+  //    trial structure, not just the rate, changes.
+  //
+  // 2. THE VALUE-WEIGHTED MARKETS ARE OVERDISPERSED, as predicted from points.
+  //    total_bases phi 1.86 against hits 0.76 on the same denominator.
+  hits_bat:     {dist:'binomial', k: null, note:'phi 0.76 vs 1-p = 0.784; one hit per PA'},
+  runs:         {dist:'binomial', k: null, note:'phi 0.87 vs 1-p = 0.884'},
+  hr:           {dist:'binomial', k: null, note:'phi 0.93 vs 1-p = 0.970'},
+  bb:           {dist:'binomial', k: null, note:'phi 0.90 vs 1-p = 0.911'},
+  so_bat:       {dist:'binomial', k: null, note:'phi 0.81 vs 1-p = 0.779'},
+  sb:           {dist:'binomial', k: null, note:'phi 0.97 vs 1-p = 0.980'},
+  so_pit:       {dist:'binomial', k: null, note:'phi 0.69 vs 1-p = 0.667; a K is an out'},
+  total_bases:  {dist:'nb',       k: 1.6,  note:'phi 1.86 — VALUE-WEIGHTED, baseball’s points'},
+  rbi:          {dist:'nb',       k: 1.1,  note:'phi 1.39 — up to 4 per PA'},
+  hrr:          {dist:'nb',       k: 2.2,  note:'phi 1.75 — sum of three correlated counts'},
+  er:           {dist:'nb',       k: 0.5,  note:'phi 2.64 — blow-up innings; the most dispersed market'},
+  hits_allowed: {dist:'nb',       k: 2.8,  note:'phi 1.56'},
+  bb_pit:       {dist:'nb',       k: 2.1,  note:'phi 1.30'},
+  // Outs has no opportunity denominator -- it is the manager's hook, not a count of
+  // chances. Marginal Fano 1.30 gives k~50, but 21.4% of starts end on exactly 18
+  // outs (6.0 innings) and NO smooth distribution reproduces a spike that size. This
+  // market wants an empirical distribution; NB is the honest interim, not the answer.
+  outs:         {dist:'nb',       k: 50,   note:'21.4% of starts end at exactly 6.0 IP — needs an empirical distribution'},
 };
 
 function cmDistFor(statKey){
@@ -9640,7 +9660,25 @@ function cmNegBinPmf(x, mu, k){
     + k * Math.log(p) + x * Math.log(1 - p));
 }
 
+// P(X = x) for a Binomial(n, p). THE DISTRIBUTION THE REAL DATA ASKED FOR.
+//
+// A batter gets at most ONE hit per plate appearance, so hits are not a Poisson
+// count of events -- they are n Bernoulli trials. Poisson is the p->0 limit of the
+// binomial, and at the rates baseball actually runs at it is meaningfully too WIDE:
+// binomial variance is np(1-p) against Poisson's np, so at a .216 hit rate a Poisson
+// carries 28% too much variance and reports tails that are not there.
+function cmBinomPmf(x, n, p){
+  if(!(n > 0) || x < 0 || x > n || !Number.isInteger(x)) return 0;
+  if(!(p > 0)) return x === 0 ? 1 : 0;
+  if(p >= 1) return x === n ? 1 : 0;
+  return Math.exp(cmLogGamma(n + 1) - cmLogGamma(x + 1) - cmLogGamma(n - x + 1)
+    + x * Math.log(p) + (n - x) * Math.log(1 - p));
+}
+
 function cmPmf(x, mu, spec){
+  if(spec.dist === 'binomial' && spec.n > 0){
+    return cmBinomPmf(x, Math.round(spec.n), Math.min(1, mu / Math.round(spec.n)));
+  }
   return spec.dist === 'nb' && spec.k ? cmNegBinPmf(x, mu, spec.k) : cmPoissonPmf(x, mu);
 }
 
@@ -9648,7 +9686,9 @@ function cmPmf(x, mu, spec){
 // because the means are small; capped so a pathological mean cannot spin.
 function cmSfAtLeast(threshold, mu, spec){
   if(threshold <= 0) return 1;
-  const cap = Math.max(60, Math.ceil(mu + 12 * Math.sqrt(mu + 1)));
+  const cap = (spec.dist === 'binomial' && spec.n > 0)
+    ? Math.round(spec.n)
+    : Math.max(60, Math.ceil(mu + 12 * Math.sqrt(mu + 1)));
   let below = 0;
   for(let x = 0; x < Math.min(threshold, cap + 1); x++) below += cmPmf(x, mu, spec);
   return Math.max(0, Math.min(1, 1 - below));
@@ -9663,8 +9703,13 @@ function cmSfAtLeast(threshold, mu, spec){
 // and the normal CDF cannot represent a push at all -- it assigns zero mass to any
 // single value. Handling it here is not a refinement; it is the difference between
 // a correct number and a wrong one on every integer line.
-function cmProbs(mu, line, statKey){
-  const spec = cmDistFor(statKey);
+function cmProbs(mu, line, statKey, opportunity){
+  const base = cmDistFor(statKey);
+  // A binomial needs n, not just the mean. Without an opportunity count the honest
+  // fallback is the Poisson limit -- slightly too wide, but not wrong in shape.
+  const spec = (base.dist === 'binomial' && opportunity > 0)
+    ? {dist:'binomial', n: opportunity}
+    : (base.dist === 'binomial' ? {dist:'poisson', k:null} : base);
   if(!(mu > 0) || line === null || line === undefined) return null;
   const isInteger = Math.abs(line - Math.round(line)) < 1e-9;
   if(isInteger){
@@ -9695,13 +9740,13 @@ function cmErf(x){
 // THE ENTRY POINT. Routes per stat to whichever model measured better, and falls
 // back to the normal when a count model is selected but the caller could not
 // supply a usable mean. `sd` is only consulted on the normal branch.
-function cmProbOver(mu, line, statKey, sd){
+function cmProbOver(mu, line, statKey, sd, opportunity){
   const spec = cmDistFor(statKey);
   if(spec.dist === 'normal'){
     const r = cmProbsNormal(mu, sd, line);
-    return r || cmProbs(mu, line, statKey);
+    return r || cmProbs(mu, line, statKey, opportunity);
   }
-  return cmProbs(mu, line, statKey) || cmProbsNormal(mu, sd, line);
+  return cmProbs(mu, line, statKey, opportunity) || cmProbsNormal(mu, sd, line);
 }
 
 // ---- rate x opportunity ----------------------------------------------------
@@ -9755,6 +9800,12 @@ const SPORT_DEFS = {
   wnba: {
     key: 'wnba', label: 'WNBA', family: 'basketball',
     season: 2026, splitYear: false, active: true, dataLoaded: true,
+    // The leagues are single-sex, so copy about a player can and should be
+    // gendered correctly rather than flattened to "they". Any user-facing string
+    // that refers to a player reads this instead of hardcoding a pronoun -- the
+    // Bets tab, the Markets blurbs and the Stats screen all previously said "her"
+    // regardless of sport, which would have called every MLB player she.
+    pronoun: {subject:'she', object:'her', possessive:'her', plural:'women'},
     oddsSportKey: 'basketball_wnba',
     // From db/seed.sql: a 44-game season supports a 10-game form window.
     formWindow: 10, priorWeightGames: 12, thinDataGames: 5,
@@ -9824,6 +9875,7 @@ const SPORT_DEFS = {
   mlb: {
     key: 'mlb', label: 'MLB', family: 'baseball',
     season: 2026, splitYear: false, active: true, dataLoaded: false,
+    pronoun: {subject:'he', object:'him', possessive:'his', plural:'men'},
     oddsSportKey: 'baseball_mlb',
     // From db/seed.sql: a 162-game season, so a longer form window and a much
     // heavier prior -- a batter's 15 games say far less about him than a
@@ -9896,10 +9948,11 @@ const SPORT_DEFS = {
 // The remaining leagues are declared but not active, so the dropdown does not
 // imply them. They stay here rather than in a comment because the season-label
 // logic (split-year vs single-year) is already right for them and is tested.
+const MENS = {subject:'he', object:'him', possessive:'his', plural:'men'};
 const SPORT_INACTIVE = [
-  {key:'nba', label:'NBA', family:'basketball', season:2026, splitYear:true,  active:false, dataLoaded:false},
-  {key:'nhl', label:'NHL', family:'hockey',     season:2026, splitYear:true,  active:false, dataLoaded:false},
-  {key:'nfl', label:'NFL', family:'football',   season:2026, splitYear:false, active:false, dataLoaded:false},
+  {key:'nba', label:'NBA', family:'basketball', season:2026, splitYear:true,  active:false, dataLoaded:false, pronoun:MENS},
+  {key:'nhl', label:'NHL', family:'hockey',     season:2026, splitYear:true,  active:false, dataLoaded:false, pronoun:MENS},
+  {key:'nfl', label:'NFL', family:'football',   season:2026, splitYear:false, active:false, dataLoaded:false, pronoun:MENS},
 ];
 SPORT_INACTIVE.forEach(s=>{ if(!SPORT_DEFS[s.key]) SPORT_DEFS[s.key] = s; });
 
@@ -9926,6 +9979,16 @@ function sportMarketLabel(statKey, sport){
 // Whether there is actually data behind a sport. The one thing the whole file
 // exists to make checkable.
 function sportHasData(sport){ return !!sportDef(sport).dataLoaded; }
+
+// The right pronoun for a player in this league. `kind` is 'subject' (she/he),
+// 'object' (her/him), 'possessive' (her/his) or 'plural' (women/men). Defaults to
+// the neutral form only if a sport somehow has no pronoun block, which is a bug
+// rather than a style choice.
+function sportPronoun(kind, sport){
+  const p = sportDef(sport).pronoun;
+  if(!p) return {subject:'they', object:'them', possessive:'their', plural:'players'}[kind] || 'they';
+  return p[kind] || p.subject;
+}
 
 // A season inside one calendar year reads "2026"; one straddling two reads
 // "26/27". Basketball and hockey straddle; the WNBA, MLB and NFL do not.
@@ -11906,7 +11969,7 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
       if(!rows.length){
         const e = document.createElement('div');
         e.className = 'footnote';
-        e.textContent = 'No book is posting this market for her today.';
+        e.textContent = `No book is posting this market for ${sportPronoun('object')} today.`;
         oddsHolder.appendChild(e);
         return;
       }
@@ -12083,7 +12146,7 @@ function renderTeamsScreen(){
   sub.className = 'footnote';
   sub.style.cssText = 'margin-bottom:12px;';
   sub.innerHTML = `Every team, and every player with a logged game this season. Tap a team to `
-    + `expand it, or a player to open her profile. Names in <span style="color:#6b7280;font-weight:700;">grey</span> `
+    + `expand it, or a player to open ${sportPronoun('possessive')} profile. Names in <span style="color:#6b7280;font-weight:700;">grey</span> `
     + `have not appeared in that team's last ${TS_ROSTER_WINDOW} games and are not on its injury `
     + `report — most likely traded or released, though a game log cannot see a transaction directly.`;
   head.appendChild(sub);
@@ -12667,7 +12730,7 @@ const PS_MARKET_LISTS = [
   {key:'top',    title:'Top Performers',
    blurb:'Highest season hit rate against tonight’s line, minimum 8 games.'},
   {key:'hot',    title:'Hot Streaks',
-   blurb:'Consecutive games clearing tonight’s line, counting back from her most recent.'},
+   blurb:`Consecutive games clearing tonight’s line, counting back from ${sportPronoun('possessive')} most recent.`},
   {key:'cold',   title:'Cold Streaks',
    blurb:'Consecutive games missing tonight’s line — the Under side of the same board.'},
   {key:'research', title:'Most Researched',
