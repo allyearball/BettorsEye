@@ -3727,7 +3727,11 @@ function buildCompactMenu(afterEl, actions){
 
 function buildTopLinks(){
   const tl = document.getElementById('toplinks');
-  const homeBtn = document.createElement('button'); homeBtn.textContent='Top Bets'; homeBtn.classList.add('active');
+  // Top Bets is furloughed out of the top bar, so it no longer carries the default
+  // active class -- it would have been set on a detached node, leaving nothing
+  // highlighted anywhere. The Props screen is the landing page now and owns its
+  // own highlighting through the floating Props/Markets/Favorites bar.
+  const homeBtn = document.createElement('button'); homeBtn.textContent='Top Bets';
   const explorerBtn = document.createElement('button'); explorerBtn.textContent='Stats';
   const oddsBtn = document.createElement('button'); oddsBtn.textContent='Live Lines';
   const trackerBtn = document.createElement('button'); trackerBtn.textContent='Bet Tracker';
@@ -3755,7 +3759,7 @@ function buildTopLinks(){
   const goHome = withLogin(()=>{
     setActiveBoth(homeBtn, 'tabHome');
     nav.innerHTML=''; nav.style.display='none';
-    renderHomePage();
+    renderPropsScreen();
   });
   const goExplorer = withLogin(()=>{
     setActiveBoth(explorerBtn, 'tabExplorer');
@@ -3784,8 +3788,12 @@ function buildTopLinks(){
   oddsBtn.addEventListener('click', goOdds);
   trackerBtn.addEventListener('click', goTracker);
   appTrackerBtn.addEventListener('click', goAppTracker);
-  tl.appendChild(homeBtn); tl.appendChild(explorerBtn); tl.appendChild(oddsBtn); tl.appendChild(trackerBtn);
-  if(isAdminUser()) tl.appendChild(appTrackerBtn); // App Tracker is admin-only now -- no visible nav entry for anyone else
+  // FURLOUGHED: Top Bets, Bet Tracker and App Tracker are out of the top bar and
+  // the bottom tab bar. Nothing is deleted -- renderHomePage, renderBetTrackerPage
+  // and renderAppTrackerPage are untouched and are reachable from the Props
+  // screen's menu, under a "Furloughed" heading. Re-adding them here is a
+  // one-line change if they come back.
+  tl.appendChild(explorerBtn); tl.appendChild(oddsBtn);
   renderAccountControls();
   buildBottomTabBar(goHome, goExplorer, goOdds, goTracker, goAppTracker);
 }
@@ -3797,13 +3805,12 @@ function buildBottomTabBar(goHome, goExplorer, goOdds, goTracker, goAppTracker){
   if(bar) bar.remove();
   bar = document.createElement('div');
   bar.id = 'bottomTabBar';
+  // The Props screen carries its own floating Props/Markets/Favorites bar, so
+  // this legacy tab bar only holds what is left after the furlough.
   const TABS = [
-    {id:'tabHome', icon:'\ud83c\udfe0', label:'Top Bets', fn:goHome},
     {id:'tabExplorer', icon:'\ud83d\udcca', label:'Stats', fn:goExplorer},
     {id:'tabOdds', icon:'\ud83d\udcc8', label:'Live Lines', fn:goOdds},
-    {id:'tabTracker', icon:'\ud83d\udcdd', label:'Bet Tracker', fn:goTracker},
   ];
-  if(isAdminUser()) TABS.push({id:'tabAppTracker', icon:'\u2699\ufe0f', label:'App Tracker', fn:goAppTracker});
   TABS.forEach((t,i)=>{
     const btn = document.createElement('button');
     btn.id = t.id;
@@ -3914,11 +3921,11 @@ async function initApp(){
   // fully loaded into the page by this point regardless (loadData() above runs unconditionally),
   // so this stops someone from using the app through the normal UI, not from viewing source.
   if(!isLoggedIn()){
-    renderAuthGate(main, ()=>{ renderAccountControls(); renderHomePage(); });
+    renderAuthGate(main, ()=>{ renderAccountControls(); renderPropsScreen(); });
     return;
   }
 
-  renderHomePage();
+  renderPropsScreen();
 }
 
 /* ================= Browser Back / Forward =================
@@ -3939,7 +3946,8 @@ async function initApp(){
    entry points initApp() reads, and would advertise deep links that a hard reload can't restore
    (the entries live in memory, not in the URL). Back/forward is the goal here, not shareable
    per-page URLs -- those would need a real serialize/parse layer for every page's arguments. */
-const HISTORY_PAGES = ['renderHomePage','renderOddsPage','renderLeagueStatsPage','renderTeamPage',
+const HISTORY_PAGES = ['renderPropsScreen','renderMarketsScreen','renderFavoritesScreen',
+  'renderHomePage','renderOddsPage','renderLeagueStatsPage','renderTeamPage',
   'renderGamePage','renderPlayerPage','renderHeightTierDetailPage',
   'renderLineHistoryPage','renderAppTrackerPage','renderBetTrackerPage','renderSettingsPage',
   'renderAdminPage'];
@@ -9246,6 +9254,689 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
 // does. So the board is built to show WHERE THE LINE HAS AND HAS NOT MOVED,
 // and it labels rows the market has already priced instead of hiding them.
 // ============================================================================
+
+// ============================================================================
+// THE PROPS SCREEN -- the new primary surface.
+//
+// Self-contained on purpose. It calls existing helpers (gatherCandidateLegs,
+// propHitRateSided, dvpIndexWindow, computeHeightTierData, beNoVig, ...) but
+// nothing calls INTO it except the router, so the whole block lifts into the
+// thin D1 client later by swapping psGatherProps() for a fetch.
+//
+// LAYOUT (Jon's spec):
+//   row 1  sport dropdown | logo | search + menu
+//   row 2  H2H L5 L10 L15 L30 2026 DvP Edge 2025 vs.Size   (scrolls, one active)
+//   row 3  All Points Rebounds ...                          (scrolls, one active)
+//   body   bet cards
+//   float  Props | Markets | Favorites
+//
+// Row 2 sets the HEADLINE STAT and sorts by it. The per-card box row still
+// shows every timeframe, so choosing one never hides the others.
+// ============================================================================
+
+const PS_MIN_PRICE = -150;          // Jon's floor for this board: browse wide, not curated
+const PS_PAGE_SIZE = 40;            // rows rendered per batch; the pool is 300-600
+const PS_FAVS_KEY = 'be_favs_v1';
+
+// ---- sports ----------------------------------------------------------------
+// Only WNBA is live. The others sit here so the dropdown is real rather than a
+// stub, and so the season label logic below has something to be right about.
+const PS_SPORTS = [
+  {key:'wnba', label:'WNBA', season:2026, splitYear:false, active:true},
+  {key:'nba',  label:'NBA',  season:2026, splitYear:true,  active:false},
+  {key:'nhl',  label:'NHL',  season:2026, splitYear:true,  active:false},
+  {key:'mlb',  label:'MLB',  season:2026, splitYear:false, active:false},
+  {key:'nfl',  label:'NFL',  season:2026, splitYear:false, active:false},
+];
+// A season inside one calendar year reads "2026"; one that straddles two reads
+// "26/27". Basketball and hockey straddle; the WNBA, MLB and NFL do not.
+function psSeasonLabel(sport, season){
+  const s = PS_SPORTS.find(x=>x.key===sport) || PS_SPORTS[0];
+  const y = season || s.season;
+  return s.splitYear ? `${String(y).slice(2)}/${String(y+1).slice(2)}` : String(y);
+}
+
+// ---- team identity ---------------------------------------------------------
+// Abbreviation and colour per franchise. Neither exists anywhere else in the
+// file, and the card needs both.
+const PS_TEAM = {
+  Aces:      {abbr:'LVA', color:'#000000', city:'Las Vegas'},
+  Dream:     {abbr:'ATL', color:'#C8102E', city:'Atlanta'},
+  Fever:     {abbr:'IND', color:'#002D62', city:'Indiana'},
+  Fire:      {abbr:'POR', color:'#C4122E', city:'Portland'},
+  Liberty:   {abbr:'NYL', color:'#6ECEB2', city:'New York'},
+  Lynx:      {abbr:'MIN', color:'#236192', city:'Minnesota'},
+  Mercury:   {abbr:'PHX', color:'#5F259F', city:'Phoenix'},
+  Mystics:   {abbr:'WAS', color:'#002B5C', city:'Washington'},
+  Sky:       {abbr:'CHI', color:'#4187C7', city:'Chicago'},
+  Sparks:    {abbr:'LAS', color:'#552583', city:'Los Angeles'},
+  Storm:     {abbr:'SEA', color:'#2C5234', city:'Seattle'},
+  Sun:       {abbr:'CON', color:'#E03A3E', city:'Connecticut'},
+  Tempo:     {abbr:'TOR', color:'#B2005E', city:'Toronto'},
+  Valkyries: {abbr:'GSV', color:'#BE29EC', city:'Golden State'},
+  Wings:     {abbr:'DAL', color:'#0C2340', city:'Dallas'},
+};
+const psAbbr  = t => (PS_TEAM[t] && PS_TEAM[t].abbr)  || (t||'').slice(0,3).toUpperCase();
+const psColor = t => (PS_TEAM[t] && PS_TEAM[t].color) || '#2F6B52';
+
+// PLAYER IMAGE. Initials on the team colour -- no external host, no licensing
+// question, and it looks deliberate rather than broken. When headshots arrive
+// with redistribution rights, this is the only function that changes.
+function psAvatar(player, team, size){
+  size = size || 40;
+  const el = document.createElement('div');
+  const initials = (player||'?').split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase();
+  el.textContent = initials;
+  el.setAttribute('aria-label', player || '');
+  el.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;flex:0 0 ${size}px;`
+    + `background:${psColor(team)};color:#fff;display:flex;align-items:center;justify-content:center;`
+    + `font-weight:700;font-size:${Math.round(size*0.36)}px;letter-spacing:.02em;`;
+  return el;
+}
+
+// ---- row 2: the metric chips ----------------------------------------------
+// Each returns {text, sort} for a leg. sort is what the list orders by; null
+// means "no data" and always sinks to the bottom rather than sorting as zero.
+const PS_METRICS = [
+  {key:'h2h',    label:'H2H'},
+  {key:'l5',     label:'L5'},
+  {key:'l10',    label:'L10'},
+  {key:'l15',    label:'L15'},
+  {key:'l30',    label:'L30'},
+  {key:'season', label:'SEASON'},          // relabelled per sport at render time
+  {key:'dvp',    label:'DvP'},
+  {key:'edge',   label:'Edge'},
+  {key:'prior',  label:'PRIOR'},           // relabelled per sport at render time
+  {key:'size',   label:'vs. Size'},
+];
+const PS_WINDOWS = {l5:5, l10:10, l15:15, l30:30, season:'all'};
+const psPct = r => (r && r.gp) ? {text:`${Math.round(r.rate*100)}%`, sort:r.rate, sub:`${r.hits}/${r.gp}`} : null;
+
+// Her record on this exact bet against tonight's opponent, this season.
+function psH2H(leg){
+  const pl = DATA.fullPlayerLogs[leg.player+'|'+leg.team];
+  if(!pl || !leg.opponent) return null;
+  const games = (pl.log||[]).filter(g=>!g.dnp && g.opp === leg.opponent);
+  if(!games.length) return null;
+  const threshold = Number.isInteger(leg.line) ? leg.line+1 : Math.ceil(leg.line);
+  const vals = games.map(g=>statValue(g, leg.statKey)).filter(v=>v!==null && v!==undefined);
+  if(!vals.length) return null;
+  const hits = vals.filter(v => leg.side==='under' ? v < threshold : v >= threshold).length;
+  return {text:`${Math.round(100*hits/vals.length)}%`, sort:hits/vals.length, sub:`${hits}/${vals.length}`};
+}
+
+// Defence vs position for this stat. Above 1.05 favours the over, below 0.95
+// the under -- so for an Under bet the scale is inverted before sorting, or
+// "best DvP" would mean the opposite thing on half the board.
+function psDvp(leg){
+  const bucket = positionBucket(getPlayerPosition(leg.player, leg.team));
+  if(!bucket || !leg.opponent) return null;
+  let idx = null;
+  try{ idx = dvpIndexWindow(leg.opponent, leg.statKey, bucket, 10); }catch(e){ return null; }
+  if(idx === null || idx === undefined || !isFinite(idx)) return null;
+  return {text: idx.toFixed(2), sort: leg.side==='under' ? -idx : idx,
+          sub: leg.side==='under' ? 'lower is better' : 'higher is better'};
+}
+
+// Edge in probability points against the de-vigged price. Same definition the
+// Bettor's Eye board uses, so the two screens can never disagree.
+function psEdge(leg){
+  if(typeof beNoVig !== 'function' || typeof beProject !== 'function') return null;
+  const p = beProject(leg.player, leg.team, leg.statKey);
+  if(!p) return null;
+  const log = (DATA.fullPlayerLogs[leg.player+'|'+leg.team]||{}).log||[];
+  const played = log.filter(g=>!g.dnp && (g.min||0)>0).slice(-10);
+  if(played.length < 5) return null;
+  const vals = played.map(g=>beStatValue(g, leg.statKey));
+  const m = vals.reduce((a,b)=>a+b,0)/vals.length;
+  const sd = Math.sqrt(vals.reduce((a,v)=>a+(v-m)*(v-m),0)/(vals.length-1));
+  if(!(sd>0)) return null;
+  const z = (p.proj - leg.line)/sd;
+  const pOver = 0.5*(1+beErf(z/Math.SQRT2));
+  const prob = leg.side==='under' ? 1-pOver : pOver;
+  const pp = 100*(prob - beNoVig(leg.price));
+  return {text:`${pp>=0?'+':''}${pp.toFixed(1)}`, sort:pp, sub:'pp vs no-vig'};
+}
+
+// Her record against opposing position groups of this height tier. Reuses the
+// height-matchup machinery from the player profile pages verbatim.
+function psSize(leg){
+  if(!leg.opponent) return null;
+  let tierData = null, groupTier = null;
+  try{
+    tierData = cachedHeightTierData(leg.player, leg.team);
+    if(!tierData) return null;
+    groupTier = cachedOpponentGroupTier(leg.player, leg.team, leg.opponent, tierData);
+  }catch(e){ return null; }
+  if(!groupTier || !groupTier.tier) return null;
+  let r = null;
+  try{ r = tierHitRateForLeg(leg, groupTier.tier, tierData); }catch(e){ return null; }
+  if(!r || !r.gp) return null;
+  return {text:`${Math.round(r.rate*100)}%`, sort:r.rate, sub:`${r.hits}/${r.gp} vs ${groupTier.tier}`};
+}
+
+function psMetricValue(leg, key){
+  switch(key){
+    case 'h2h':  return psH2H(leg);
+    case 'dvp':  return psDvp(leg);
+    case 'edge': return psEdge(leg);
+    case 'size': return psSize(leg);
+    // No prior-season data is loaded, so this is honestly blank rather than
+    // quietly falling back to the current season and mislabelling it.
+    case 'prior': return null;
+    default: {
+      const w = PS_WINDOWS[key];
+      if(!w) return null;
+      let r = null;
+      try{ r = propHitRateSided(leg.player, leg.team, leg.statKey, leg.line, leg.side, w); }catch(e){ return null; }
+      return psPct(r);
+    }
+  }
+}
+
+// ---- row 3: the market chips ----------------------------------------------
+const PS_MARKETS = [
+  {key:'all', label:'All',        stats:null},
+  {key:'pts', label:'Points',     stats:['pts']},
+  {key:'reb', label:'Rebounds',   stats:['reb']},
+  {key:'ast', label:'Assists',    stats:['ast']},
+  {key:'tpm', label:'3PM',        stats:['tpm']},
+  {key:'pra', label:'Pts+Reb+Ast',stats:['pra']},
+  {key:'pr',  label:'Pts+Reb',    stats:['pr']},
+  {key:'pa',  label:'Pts+Ast',    stats:['pa']},
+  {key:'ra',  label:'Reb+Ast',    stats:['ra']},
+];
+
+// ---- favourites ------------------------------------------------------------
+// Per-device, in localStorage. Deliberately not on the Worker yet: a favourite
+// is a personal bookmark, and shipping it server-side means a schema, an
+// endpoint and a migration for something that works offline today.
+function psLoadFavs(){
+  try{ return new Set(JSON.parse(localStorage.getItem(PS_FAVS_KEY) || '[]')); }
+  catch(e){ return new Set(); }
+}
+function psSaveFavs(set){
+  try{ localStorage.setItem(PS_FAVS_KEY, JSON.stringify([...set])); }catch(e){}
+}
+const psFavKey = leg => `${leg.player}|${leg.team}|${leg.statKey}|${leg.side}|${leg.line}`;
+
+// ---- the pool --------------------------------------------------------------
+function psGatherProps(cachedFetch, selectedBook){
+  selectedBook = selectedBook || 'best';
+  const todayStr = new Date().toDateString();
+  const now = new Date();
+  const games = (cachedFetch||[]).filter(({ev}) =>
+    new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
+  let pool = [];
+  games.forEach(({ev, detail})=>{
+    const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
+    const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
+    const gameMarkets = marketsByKey(getBookmakerData(ev, selectedBook));
+    const detailMarkets = marketsByKey(detail ? getBookmakerData(detail, selectedBook) : null);
+    let legs = [];
+    // Qualification bar 0: this board shows the slate, it does not curate it.
+    try{ legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0, selectedBook); }
+    catch(e){ legs = []; }
+    pool = pool.concat(legs
+      .filter(l => (l.betType==='player_prop' || l.betType==='player_prop_alt') && l.price >= PS_MIN_PRICE)
+      .map(l => Object.assign({}, l, {
+        game: `${ev.away_team} @ ${ev.home_team}`,
+        gameShort: `${psAbbr(awayShort)} @ ${psAbbr(homeShort)}`,
+        commenceTime: ev.commence_time,
+      })));
+  });
+  // One row per player/stat/side/line, best price wins.
+  const best = new Map();
+  for(const l of pool){
+    const k = psFavKey(l);
+    const prev = best.get(k);
+    if(!prev || l.price > prev.price) best.set(k, l);
+  }
+  return [...best.values()];
+}
+
+// ============================================================================
+// RENDERING
+// ============================================================================
+const PS_STATE = {sport:'wnba', metric:'l10', market:'all', screen:'props', search:'', limit:PS_PAGE_SIZE};
+
+// Returns the row with an update(activeKey) method. Restyling in place rather
+// than rebuilding matters: these rows scroll horizontally, and tearing them down
+// on every tap resets the scroll position -- so a user who scrolls right to
+// reach "vs. Size" would be thrown back to the start the moment they picked it.
+function psChipRow(items, activeKey, onPick){
+  const wrap = document.createElement('div');
+  // Horizontal scroll rather than shrinking the type. Momentum scrolling on
+  // iOS, no visible scrollbar, and the row keeps a comfortable tap target.
+  wrap.style.cssText = 'display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;padding:8px 14px;'
+    + '-webkit-overflow-scrolling:touch;scrollbar-width:none;border-bottom:1px solid var(--line);'
+    + 'background:var(--panel);white-space:nowrap;';
+  wrap.className = 'ps-chiprow';
+  items.forEach(it=>{
+    const b = document.createElement('button');
+    b.textContent = it.label;
+    b.dataset.key = it.key;
+    const on = it.key === activeKey;
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.style.cssText = 'flex:0 0 auto;padding:7px 14px;border-radius:999px;font-size:13px;'
+      + 'font-weight:700;cursor:pointer;font-family:var(--sans);border:1px solid '
+      + (on ? 'var(--navy2)' : 'var(--line)') + ';'
+      + (on ? 'background:var(--navy2);color:#fff;' : 'background:var(--panel);color:var(--sub);');
+    b.addEventListener('click', ()=>onPick(it.key));
+    wrap.appendChild(b);
+  });
+  wrap.update = (key)=>{
+    [...wrap.children].forEach(b=>{
+      const on = b.dataset.key === key;
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.style.borderColor = on ? 'var(--navy2)' : 'var(--line)';
+      b.style.background  = on ? 'var(--navy2)' : 'var(--panel)';
+      b.style.color       = on ? '#fff' : 'var(--sub)';
+    });
+  };
+  return wrap;
+}
+
+function psStatBox(label, val, emphasis, key){
+  const box = document.createElement('div');
+  // State carried in data attributes, not only in a background colour. A test
+  // (or a future stylesheet, or assistive tech) should not have to infer which
+  // box is active by sampling computed styles.
+  if(key) box.dataset.psKey = key;
+  if(emphasis) box.dataset.psActive = '1';
+  box.style.cssText = 'flex:0 0 auto;min-width:56px;border:1px solid var(--line);border-radius:8px;'
+    + 'padding:5px 9px;text-align:center;background:'
+    + (emphasis ? 'var(--navy2)' : 'var(--panel)') + ';'
+    + (emphasis ? 'color:#fff;' : '');
+  const l = document.createElement('div');
+  l.textContent = label;
+  l.style.cssText = 'font-size:9px;letter-spacing:.06em;text-transform:uppercase;opacity:.7;';
+  const v = document.createElement('div');
+  v.textContent = val ? val.text : '—';
+  v.style.cssText = 'font-size:14px;font-weight:800;line-height:1.25;'
+    + (val ? '' : 'opacity:.45;');
+  box.appendChild(l); box.appendChild(v);
+  if(val && val.sub){
+    const s = document.createElement('div');
+    s.textContent = val.sub;
+    s.style.cssText = 'font-size:9px;opacity:.6;';
+    box.appendChild(s);
+  }
+  return box;
+}
+
+function psCard(leg, favs, onToggleFav){
+  const card = document.createElement('div');
+  card.className = 'ps-card';
+  card.style.cssText = 'border:1px solid var(--line);border-radius:12px;background:var(--panel);'
+    + 'padding:12px 12px 10px;margin:0 0 10px;';
+
+  // --- top: avatar + name/bet on the left, odds + edge on the right ---------
+  const top = document.createElement('div');
+  top.style.cssText = 'display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;';
+
+  top.appendChild(psAvatar(leg.player, leg.team, 42));
+
+  const mid = document.createElement('div');
+  mid.style.cssText = 'min-width:0;';
+  const nameRow = document.createElement('div');
+  nameRow.style.cssText = 'display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;';
+  const nm = document.createElement('span');
+  nm.textContent = leg.player;
+  nm.style.cssText = 'font-weight:800;font-size:15px;color:var(--ink);';
+  const ab = document.createElement('span');
+  ab.textContent = psAbbr(leg.team);
+  ab.style.cssText = 'font-size:12px;font-weight:700;color:var(--sub);';
+  nameRow.appendChild(nm); nameRow.appendChild(ab);
+  const betLine = document.createElement('div');
+  betLine.textContent = `${leg.side === 'under' ? 'u' : 'o'} ${leg.line} ${leg.market || PROP_MARKET_LABEL[leg.statKey] || leg.statKey}`;
+  betLine.style.cssText = 'font-size:13.5px;color:var(--ink);margin-top:3px;';
+  const gameLine = document.createElement('div');
+  gameLine.textContent = leg.gameShort || '';
+  gameLine.style.cssText = 'font-size:11px;color:var(--sub);margin-top:2px;';
+  mid.appendChild(nameRow); mid.appendChild(betLine); mid.appendChild(gameLine);
+  top.appendChild(mid);
+
+  // Odds and Edge: label on the name row, boxed value on the bet row.
+  const right = document.createElement('div');
+  right.style.cssText = 'display:flex;gap:8px;align-items:flex-start;';
+  const mkPair = (label, text, tone) => {
+    const col = document.createElement('div');
+    col.style.cssText = 'text-align:center;';
+    const l = document.createElement('div');
+    l.textContent = label;
+    l.style.cssText = 'font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--sub);margin-bottom:3px;';
+    const b = document.createElement('div');
+    b.textContent = text;
+    b.style.cssText = 'border:1px solid var(--line);border-radius:8px;padding:5px 10px;font-weight:800;'
+      + 'font-size:14px;min-width:56px;'
+      + (tone === 'pos' ? 'color:var(--green);border-color:var(--green);'
+        : tone === 'neg' ? 'color:var(--red);border-color:var(--red);' : '');
+    col.appendChild(l); col.appendChild(b);
+    return col;
+  };
+  const edgeVal = psMetricValue(leg, 'edge');
+  right.appendChild(mkPair('Odds', `${leg.price > 0 ? '+' : ''}${leg.price}`, null));
+  right.appendChild(mkPair('Edge', edgeVal ? edgeVal.text : '—',
+    edgeVal ? (edgeVal.sort > 0 ? 'pos' : 'neg') : null));
+
+  const star = document.createElement('button');
+  const isFav = favs.has(psFavKey(leg));
+  star.textContent = isFav ? '★' : '☆';
+  star.title = isFav ? 'Remove from Favorites' : 'Add to Favorites';
+  star.style.cssText = 'background:none;border:none;cursor:pointer;font-size:20px;padding:0 2px;'
+    + `color:${isFav ? '#E8A33D' : 'var(--sub)'};line-height:1;`;
+  star.addEventListener('click', (e)=>{ e.stopPropagation(); onToggleFav(leg, star); });
+  right.appendChild(star);
+  top.appendChild(right);
+  card.appendChild(top);
+
+  // --- bottom: the scrollable stat strip ------------------------------------
+  const strip = document.createElement('div');
+  strip.className = 'ps-strip';
+  strip.style.cssText = 'display:flex;gap:6px;overflow-x:auto;margin-top:10px;padding-bottom:2px;'
+    + '-webkit-overflow-scrolling:touch;scrollbar-width:none;';
+  const boxes = [
+    ['season', psSeasonLabel(PS_STATE.sport)],
+    ['h2h', 'H2H'], ['l5','L5'], ['l10','L10'], ['l15','L15'], ['l30','L30'],
+    ['dvp','DvP'], ['edge','Edge'], ['size','vs. Size'],
+  ];
+  boxes.forEach(([key, label])=>{
+    strip.appendChild(psStatBox(label, psMetricValue(leg, key), key === PS_STATE.metric, key));
+  });
+  card.appendChild(strip);
+  return card;
+}
+
+// ---- the screen ------------------------------------------------------------
+async function renderPropsScreen(){
+  lastRender = () => renderPropsScreen();
+  main.innerHTML = '';
+  if(typeof removeGameWindowStickyBar === 'function') removeGameWindowStickyBar();
+
+  const shell = document.createElement('div');
+  shell.style.cssText = 'padding-bottom:78px;';   // clear the floating bar
+  main.appendChild(shell);
+
+  // ---- row 1 ---------------------------------------------------------------
+  const row1 = document.createElement('div');
+  row1.style.cssText = 'display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;'
+    + 'padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel);';
+  const sportSel = document.createElement('select');
+  sportSel.style.cssText = 'font-family:var(--sans);font-size:13px;font-weight:700;padding:6px 8px;'
+    + 'border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);justify-self:start;';
+  PS_SPORTS.filter(s=>s.active).forEach(s=>{
+    const o = document.createElement('option'); o.value = s.key; o.textContent = s.label; sportSel.appendChild(o);
+  });
+  sportSel.value = PS_STATE.sport;
+  sportSel.addEventListener('change', ()=>{ PS_STATE.sport = sportSel.value; renderPropsScreen(); });
+  const logo = document.createElement('div');
+  logo.textContent = 'Bettor’s Eye';
+  logo.style.cssText = 'font-weight:800;font-size:16px;letter-spacing:-.01em;color:var(--ink);justify-self:center;white-space:nowrap;';
+  const icons = document.createElement('div');
+  icons.style.cssText = 'display:flex;gap:6px;justify-self:end;';
+  const mkIcon = (glyph, title, fn) => {
+    const b = document.createElement('button');
+    b.textContent = glyph; b.title = title; b.setAttribute('aria-label', title);
+    b.style.cssText = 'background:none;border:1px solid var(--line);border-radius:8px;width:34px;height:34px;'
+      + 'cursor:pointer;font-size:15px;color:var(--ink);line-height:1;';
+    b.addEventListener('click', fn);
+    return b;
+  };
+  const searchWrap = document.createElement('div');
+  searchWrap.style.cssText = 'display:none;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--panel);';
+  const searchInput = document.createElement('input');
+  searchInput.placeholder = 'Search player or team…';
+  searchInput.style.cssText = 'width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;'
+    + 'font-family:var(--sans);font-size:14px;background:var(--panel);color:var(--ink);';
+  searchInput.addEventListener('input', ()=>{ PS_STATE.search = searchInput.value.trim().toLowerCase();
+    PS_STATE.limit = PS_PAGE_SIZE; paint(); });
+  searchWrap.appendChild(searchInput);
+  icons.appendChild(mkIcon('⌕', 'Search', ()=>{
+    const showing = searchWrap.style.display !== 'none';
+    searchWrap.style.display = showing ? 'none' : '';
+    if(!showing) searchInput.focus();
+    else { searchInput.value = ''; PS_STATE.search = ''; paint(); }
+  }));
+  icons.appendChild(mkIcon('☰', 'Menu', ()=>psToggleMenu(menuPanel)));
+  row1.appendChild(sportSel); row1.appendChild(logo); row1.appendChild(icons);
+  shell.appendChild(row1);
+
+  // The menu is where the furloughed pages live -- out of the main navigation,
+  // still one tap away, nothing deleted.
+  const menuPanel = psBuildMenu();
+  shell.appendChild(menuPanel);
+  shell.appendChild(searchWrap);
+
+  // ---- rows 2 and 3 --------------------------------------------------------
+  const metricItems = PS_METRICS.map(m => Object.assign({}, m, {
+    label: m.key === 'season' ? psSeasonLabel(PS_STATE.sport)
+         : m.key === 'prior'  ? psSeasonLabel(PS_STATE.sport, (PS_SPORTS.find(s=>s.key===PS_STATE.sport)||{}).season - 1)
+         : m.label,
+  }));
+  const row2Holder = document.createElement('div');
+  const row3Holder = document.createElement('div');
+  shell.appendChild(row2Holder); shell.appendChild(row3Holder);
+  const row2 = psChipRow(metricItems, PS_STATE.metric, k=>{
+    PS_STATE.metric = k; PS_STATE.limit = PS_PAGE_SIZE; row2.update(k); paint();
+  });
+  const row3 = psChipRow(PS_MARKETS, PS_STATE.market, k=>{
+    PS_STATE.market = k; PS_STATE.limit = PS_PAGE_SIZE; row3.update(k); paint();
+  });
+  row2Holder.appendChild(row2); row3Holder.appendChild(row3);
+
+  // ---- body ----------------------------------------------------------------
+  const status = document.createElement('div');
+  status.className = 'footnote';
+  status.style.cssText = 'padding:10px 14px 0;';
+  status.textContent = 'Loading today’s props…';
+  shell.appendChild(status);
+  const list = document.createElement('div');
+  list.style.cssText = 'padding:10px 14px 0;';
+  shell.appendChild(list);
+
+  shell.appendChild(psBottomBar('props'));
+
+  let pool = [];
+  const favs = psLoadFavs();
+
+  function filtered(){
+    const mk = PS_MARKETS.find(m=>m.key===PS_STATE.market);
+    let rows = pool;
+    if(mk && mk.stats) rows = rows.filter(l => mk.stats.includes(l.statKey));
+    if(PS_STATE.search){
+      const q = PS_STATE.search;
+      rows = rows.filter(l => (l.player||'').toLowerCase().includes(q)
+        || (l.team||'').toLowerCase().includes(q) || psAbbr(l.team).toLowerCase().includes(q));
+    }
+    // Sort by the selected metric, best first, with no-data rows last -- a
+    // missing value must never sort as if it were zero.
+    const keyed = rows.map(l => ({l, v: psMetricValue(l, PS_STATE.metric)}));
+    keyed.sort((a,b)=>{
+      if(a.v && b.v) return b.v.sort - a.v.sort;
+      if(a.v) return -1;
+      if(b.v) return 1;
+      return 0;
+    });
+    return keyed.map(x=>x.l);
+  }
+
+  function paint(){
+    const rows = filtered();
+    list.innerHTML = '';
+    if(!rows.length){
+      const e = document.createElement('div');
+      e.className = 'footnote';
+      e.textContent = pool.length
+        ? 'No props match this filter.'
+        : 'No games with player props on the board right now.';
+      list.appendChild(e);
+      status.textContent = `${pool.length} prop(s) on the slate.`;
+      return;
+    }
+    rows.slice(0, PS_STATE.limit).forEach(l => list.appendChild(psCard(l, favs, (leg, btn)=>{
+      const k = psFavKey(leg);
+      if(favs.has(k)){ favs.delete(k); btn.textContent='☆'; btn.style.color='var(--sub)'; }
+      else { favs.add(k); btn.textContent='★'; btn.style.color='#E8A33D'; }
+      psSaveFavs(favs);
+    })));
+    status.textContent = `${rows.length} prop(s) — sorted by `
+      + (metricItems.find(m=>m.key===PS_STATE.metric)||{}).label;
+    if(rows.length > PS_STATE.limit){
+      const more = document.createElement('button');
+      more.textContent = `Show ${Math.min(PS_PAGE_SIZE, rows.length - PS_STATE.limit)} more`;
+      more.className = 'addbtn';
+      more.style.cssText += 'width:100%;margin:4px 0 10px;';
+      more.addEventListener('click', ()=>{ PS_STATE.limit += PS_PAGE_SIZE; paint(); });
+      list.appendChild(more);
+    }
+  }
+
+  try{
+    const events = await fetchCachedOddsEvents();
+    const todayStr = new Date().toDateString();
+    const todays = (events||[]).filter(ev => new Date(ev.commence_time).toDateString() === todayStr);
+    const cached = [];
+    for(const ev of todays){
+      let detail = null;
+      try{ detail = await fetchCachedOddsDetail(ev.id); }catch(e){}
+      cached.push({ev, detail});
+    }
+    pool = psGatherProps(cached, 'best');
+    paint();
+  }catch(e){
+    status.textContent = `Couldn’t load props: ${e.message}`;
+  }
+}
+
+// ---- the other two tabs ----------------------------------------------------
+function renderMarketsScreen(){
+  lastRender = () => renderMarketsScreen();
+  main.innerHTML = '';
+  if(typeof removeGameWindowStickyBar === 'function') removeGameWindowStickyBar();
+  const shell = document.createElement('div');
+  shell.style.cssText = 'padding:16px 14px 78px;';
+  const h = document.createElement('h2');
+  h.textContent = 'Markets';
+  h.style.cssText = 'margin:0 0 6px;';
+  const p = document.createElement('div');
+  p.className = 'footnote';
+  p.innerHTML = 'Streaks and cold runs — bets that have consistently hit or missed — are the next '
+    + 'thing to build here. <b>One caution worth settling before it is built:</b> a run of hits is not '
+    + 'evidence of an edge. Out of ~400 props a night, long streaks appear by chance alone, and a board '
+    + 'that ranks by streak length will select almost entirely for noise. The version worth building '
+    + 'compares each streak against how often a streak that long would occur anyway at that price.';
+  shell.appendChild(h); shell.appendChild(p);
+  main.appendChild(shell);
+  main.appendChild(psBottomBar('markets'));
+}
+
+function renderFavoritesScreen(){
+  lastRender = () => renderFavoritesScreen();
+  main.innerHTML = '';
+  if(typeof removeGameWindowStickyBar === 'function') removeGameWindowStickyBar();
+  const shell = document.createElement('div');
+  shell.style.cssText = 'padding:16px 14px 78px;';
+  const h = document.createElement('h2');
+  h.textContent = 'Favorites';
+  h.style.cssText = 'margin:0 0 10px;';
+  shell.appendChild(h);
+  const favs = psLoadFavs();
+  if(!favs.size){
+    const e = document.createElement('div');
+    e.className = 'footnote';
+    e.textContent = 'No favourites yet. Tap the star on any prop to keep it here.';
+    shell.appendChild(e);
+  } else {
+    const listing = document.createElement('div');
+    [...favs].forEach(k=>{
+      const [player, team, statKey, side, line] = k.split('|');
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);';
+      row.appendChild(psAvatar(player, team, 34));
+      const t = document.createElement('div');
+      t.innerHTML = `<div style="font-weight:700;">${player} <span style="color:var(--sub);font-size:12px;">${psAbbr(team)}</span></div>`
+        + `<div style="font-size:13px;color:var(--sub);">${side==='under'?'u':'o'} ${line} ${PROP_MARKET_LABEL[statKey]||statKey}</div>`;
+      t.style.cssText = 'flex:1;min-width:0;';
+      const rm = document.createElement('button');
+      rm.textContent = '★';
+      rm.style.cssText = 'background:none;border:none;cursor:pointer;font-size:20px;color:#E8A33D;';
+      rm.addEventListener('click', ()=>{ const f = psLoadFavs(); f.delete(k); psSaveFavs(f); renderFavoritesScreen(); });
+      row.appendChild(t); row.appendChild(rm);
+      listing.appendChild(row);
+    });
+    shell.appendChild(listing);
+    const note = document.createElement('div');
+    note.className = 'footnote';
+    note.style.cssText = 'margin-top:12px;';
+    note.textContent = 'Favourites are saved on this device only. They do not follow you to another '
+      + 'browser or phone yet.';
+    shell.appendChild(note);
+  }
+  main.appendChild(shell);
+  main.appendChild(psBottomBar('favorites'));
+}
+
+// ---- the floating bar ------------------------------------------------------
+function psBottomBar(active){
+  const old = document.getElementById('psBottomBar');
+  if(old) old.remove();
+  const bar = document.createElement('div');
+  bar.id = 'psBottomBar';
+  bar.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:14px;z-index:60;'
+    + 'display:flex;gap:4px;padding:5px;border-radius:999px;background:var(--panel);'
+    + 'border:1px solid var(--line);box-shadow:0 6px 20px rgba(0,0,0,.16);'
+    + 'padding-bottom:calc(5px + env(safe-area-inset-bottom, 0px));';
+  const items = [
+    {key:'props',     label:'Props',     glyph:'▤', fn:renderPropsScreen},
+    {key:'markets',   label:'Markets',   glyph:'◫', fn:renderMarketsScreen},
+    {key:'favorites', label:'Favorites', glyph:'☆', fn:renderFavoritesScreen},
+  ];
+  items.forEach(it=>{
+    const b = document.createElement('button');
+    const on = it.key === active;
+    b.style.cssText = 'display:flex;align-items:center;gap:6px;padding:9px 16px;border-radius:999px;'
+      + 'border:none;cursor:pointer;font-family:var(--sans);font-size:13px;font-weight:700;'
+      + (on ? 'background:var(--navy2);color:#fff;' : 'background:transparent;color:var(--sub);');
+    const g = document.createElement('span'); g.textContent = it.glyph; g.style.fontSize = '14px';
+    const l = document.createElement('span'); l.textContent = it.label;
+    b.appendChild(g); b.appendChild(l);
+    b.addEventListener('click', ()=>{ if(!on) it.fn(); });
+    bar.appendChild(b);
+  });
+  return bar;
+}
+
+// ---- the menu (where furloughed pages live) --------------------------------
+function psToggleMenu(panel){ panel.style.display = panel.style.display === 'none' ? '' : 'none'; }
+function psBuildMenu(){
+  const panel = document.createElement('div');
+  panel.style.cssText = 'display:none;border-bottom:1px solid var(--line);background:var(--panel);padding:6px 0;';
+  const add = (label, fn, muted)=>{
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.style.cssText = 'display:block;width:100%;text-align:left;padding:10px 16px;background:none;'
+      + 'border:none;cursor:pointer;font-family:var(--sans);font-size:14px;'
+      + (muted ? 'color:var(--sub);' : 'color:var(--ink);font-weight:600;');
+    b.addEventListener('click', ()=>{ panel.style.display='none'; fn(); });
+    panel.appendChild(b);
+  };
+  add('League Stats', ()=>renderLeagueStatsPage());
+  add('Live Lines', ()=>renderOddsPage());
+  add('Settings', ()=>renderSettingsPage());
+  const hr = document.createElement('div');
+  hr.style.cssText = 'border-top:1px solid var(--line);margin:6px 0;';
+  panel.appendChild(hr);
+  const lab = document.createElement('div');
+  lab.textContent = 'FURLOUGHED';
+  lab.style.cssText = 'font-size:10px;letter-spacing:.1em;color:var(--sub);padding:4px 16px;';
+  panel.appendChild(lab);
+  // Out of the main navigation, intact and reachable. Nothing was deleted.
+  add('Top Bets (old)', ()=>renderHomePage(), true);
+  add('Bet Tracker (old)', ()=>renderBetTrackerPage(), true);
+  if(typeof isAdminUser === 'function' && isAdminUser()) add('App Tracker (old)', ()=>renderAppTrackerPage(), true);
+  return panel;
+}
 
 // ---- fitted constants ------------------------------------------------------
 // Minutes allocation. shortfall is spread across players in proportion to
