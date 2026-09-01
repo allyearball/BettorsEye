@@ -295,13 +295,45 @@
 let DATA = null;
 const DATA_B64_GZ = "__APP_DATA_B64GZ__";
 
-async function loadData(){
-  const binary = atob(DATA_B64_GZ);
+// A SECOND SPORT'S DATA, in its own payload.
+//
+// `DATA` stays the WNBA blob because every legacy basketball page reads it
+// directly and unconditionally -- League Stats, Team pages, the furloughed Top
+// Bets board. Repointing that name at whichever sport is selected would send
+// basketball code into a baseball log. So MLB gets its own blob and the SHARED
+// screens (Props, Markets, My Radar, Stats, the Bets tab) read through sportDATA()
+// instead, which returns the right one for the current selection.
+//
+// The placeholder is left as-is by any builder that does not know about it, which
+// is deliberate: an older build.py produces a working WNBA-only app rather than a
+// broken one, and the client treats an unreplaced placeholder as "not loaded".
+let DATA_MLB = null;
+const MLB_DATA_B64_GZ = "__MLB_DATA_B64GZ__";
+const MLB_PLACEHOLDER = "__MLB_DATA" + "_B64GZ__";   // split so it is not itself substituted
+
+async function decodeBlob(b64){
+  const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
   const text = await new Response(stream).text();
   return JSON.parse(text);
+}
+
+async function loadData(){ return decodeBlob(DATA_B64_GZ); }
+
+async function loadMlbData(){
+  if(!MLB_DATA_B64_GZ || MLB_DATA_B64_GZ === MLB_PLACEHOLDER) return null;
+  try{ return await decodeBlob(MLB_DATA_B64_GZ); }
+  catch(e){ console.warn('MLB data failed to decode', e); return null; }
+}
+
+// The blob for a sport, or null when that sport has nothing behind it. Every
+// shared screen reads this rather than the global.
+function sportDATA(sport){
+  const key = sport || (typeof PS_STATE !== 'undefined' ? PS_STATE.sport : 'wnba');
+  if(key === 'mlb') return DATA_MLB;
+  return DATA;
 }
 </script>
 <script>
@@ -4156,6 +4188,11 @@ async function initApp(){
   }
   try {
     DATA = await loadData();
+    // MLB is loaded alongside, not lazily: the payload is inline in this same file,
+    // so there is nothing to defer -- the bytes have already been downloaded. A
+    // failure here leaves DATA_MLB null and the sport shows its empty state rather
+    // than taking the whole app down with it.
+    DATA_MLB = await loadMlbData();
   } catch (err) {
     document.getElementById('main').innerHTML =
       '<div style="padding:24px;color:#b3261e;">Failed to load app data: ' + (err && err.message ? err.message : err) +
@@ -9972,6 +10009,11 @@ const SPORT_DEFS = {
     // regardless of sport, which would have called every MLB player she.
     pronoun: {subject:'she', object:'her', possessive:'her', plural:'women'},
     oddsSportKey: 'basketball_wnba',
+    // Live prop odds, and a per-player profile page. Both are true for the sport
+    // the app was built around and neither is true for a sport that has only just
+    // had its season data ingested -- keeping them separate from `dataLoaded` is
+    // what lets each screen say precisely what IS and ISN'T there.
+    hasOdds: true, hasPlayerPage: true,
     // From db/seed.sql: a 44-game season supports a 10-game form window.
     formWindow: 10, priorWeightGames: 12, thinDataGames: 5,
 
@@ -10039,9 +10081,33 @@ const SPORT_DEFS = {
   // standing matchup edge.
   mlb: {
     key: 'mlb', label: 'MLB', family: 'baseball',
-    season: 2026, splitYear: false, active: true, dataLoaded: false,
+    season: 2026, splitYear: false, active: true, dataLoaded: true,
     pronoun: {subject:'he', object:'him', possessive:'his', plural:'men'},
     oddsSportKey: 'baseball_mlb',
+    // Season data is in; the Worker does not yet fetch baseball_mlb props, and the
+    // player profile is still the basketball page. Both are honest false rather
+    // than a screen that half-works.
+    hasOdds: false, hasPlayerPage: false,
+    // Abbreviation and primary colour per club, the same job PS_TEAM does for the
+    // WNBA. Without these every badge would read the first three letters of the
+    // city -- "CHI" for both Chicago clubs, "NEW" for both New York clubs.
+    teams: {
+      'Arizona Diamondbacks':{abbr:'ARI',color:'#A71930'}, 'Athletics':{abbr:'ATH',color:'#003831'},
+      'Atlanta Braves':{abbr:'ATL',color:'#CE1141'},       'Baltimore Orioles':{abbr:'BAL',color:'#DF4601'},
+      'Boston Red Sox':{abbr:'BOS',color:'#BD3039'},       'Chicago Cubs':{abbr:'CHC',color:'#0E3386'},
+      'Chicago White Sox':{abbr:'CWS',color:'#27251F'},    'Cincinnati Reds':{abbr:'CIN',color:'#C6011F'},
+      'Cleveland Guardians':{abbr:'CLE',color:'#00385D'},  'Colorado Rockies':{abbr:'COL',color:'#33006F'},
+      'Detroit Tigers':{abbr:'DET',color:'#0C2340'},       'Houston Astros':{abbr:'HOU',color:'#002D62'},
+      'Kansas City Royals':{abbr:'KC', color:'#004687'},   'Los Angeles Angels':{abbr:'LAA',color:'#BA0021'},
+      'Los Angeles Dodgers':{abbr:'LAD',color:'#005A9C'},  'Miami Marlins':{abbr:'MIA',color:'#00A3E0'},
+      'Milwaukee Brewers':{abbr:'MIL',color:'#12284B'},    'Minnesota Twins':{abbr:'MIN',color:'#002B5C'},
+      'New York Mets':{abbr:'NYM',color:'#002D72'},        'New York Yankees':{abbr:'NYY',color:'#003087'},
+      'Philadelphia Phillies':{abbr:'PHI',color:'#E81828'},'Pittsburgh Pirates':{abbr:'PIT',color:'#27251F'},
+      'San Diego Padres':{abbr:'SD', color:'#2F241D'},     'San Francisco Giants':{abbr:'SF', color:'#FD5A1E'},
+      'Seattle Mariners':{abbr:'SEA',color:'#0C2C56'},     'St. Louis Cardinals':{abbr:'STL',color:'#C41E3A'},
+      'Tampa Bay Rays':{abbr:'TB', color:'#092C5C'},       'Texas Rangers':{abbr:'TEX',color:'#003278'},
+      'Toronto Blue Jays':{abbr:'TOR',color:'#134A8E'},    'Washington Nationals':{abbr:'WSH',color:'#AB0003'},
+    },
     // From db/seed.sql: a 162-game season, so a longer form window and a much
     // heavier prior -- a batter's 15 games say far less about him than a
     // basketball player's 10 say about her.
@@ -10143,7 +10209,32 @@ function sportMarketLabel(statKey, sport){
 }
 // Whether there is actually data behind a sport. The one thing the whole file
 // exists to make checkable.
-function sportHasData(sport){ return !!sportDef(sport).dataLoaded; }
+// dataLoaded is the DECLARED intent; what matters at runtime is whether a blob
+// actually decoded. A build that shipped without the MLB payload, or a payload that
+// failed to decompress, must show the empty state rather than throwing on the first
+// read of fullPlayerLogs.
+// Does this sport have a live prop feed? Separate from having season data: MLB has
+// three seasons of box scores and no odds, and a screen that needs prices must say
+// that rather than showing an empty board.
+function sportHasOdds(sport){ return !!sportDef(sport).hasOdds && sportHasData(sport); }
+function sportHasPlayerPage(sport){ return !!sportDef(sport).hasPlayerPage; }
+
+// Team identity for this sport. Falls back to the WNBA table, which is where the
+// franchise list lived before the registry existed.
+function sportTeam(team, sport){
+  const t = sportDef(sport).teams;
+  if(t && t[team]) return t[team];
+  if(typeof PS_TEAM !== 'undefined' && PS_TEAM[team]) return PS_TEAM[team];
+  return null;
+}
+
+function sportHasData(sport){
+  const key = sport || (typeof PS_STATE !== 'undefined' ? PS_STATE.sport : 'wnba');
+  if(!sportDef(key).dataLoaded) return false;
+  if(typeof sportDATA !== 'function') return true;
+  const d = sportDATA(key);
+  return !!(d && d.fullPlayerLogs && Object.keys(d.fullPlayerLogs).length);
+}
 
 // The right pronoun for a player in this league. `kind` is 'subject' (she/he),
 // 'object' (her/him), 'possessive' (her/his) or 'plural' (women/men). Defaults to
@@ -10183,6 +10274,31 @@ function sportMarketStats(markets, sport){
 // Deliberately specific about WHY and WHAT IS MISSING rather than a generic
 // "coming soon" -- the reader should be able to tell this is a build order, not
 // an outage.
+// The board screens need a live price feed. When a sport has season data but no
+// odds, saying "isn't loaded yet" would be wrong in a way that matters -- the data
+// IS loaded, and the Stats screen proves it.
+function sportNoOddsState(sport){
+  const s = sportDef(sport);
+  const d = sportDATA(s.key) || {};
+  const n = Object.keys(d.fullPlayerLogs || {}).length;
+  const wrap = document.createElement('div');
+  wrap.dataset.sportNoOdds = s.key;
+  wrap.style.cssText = 'margin:18px 14px;padding:18px;border:1px solid var(--line);'
+    + 'border-radius:12px;background:var(--panel);';
+  const h = document.createElement('div');
+  h.style.cssText = 'font-weight:800;font-size:15px;margin-bottom:6px;';
+  h.textContent = `No live ${s.label} odds yet`;
+  const p = document.createElement('div');
+  p.className = 'footnote';
+  p.style.cssText = 'line-height:1.55;';
+  p.innerHTML = `${s.label} season data is loaded — ${n.toLocaleString()} players through `
+    + `${d.generatedThrough || 'the current season'} — and browsable under <b>Stats</b>. `
+    + `This board needs live prices, and the odds feed is not yet wired for `
+    + `${s.label}, so there is nothing to price against.`;
+  wrap.appendChild(h); wrap.appendChild(p);
+  return wrap;
+}
+
 function sportEmptyState(sport){
   const s = sportDef(sport);
   const wrap = document.createElement('div');
@@ -10255,8 +10371,11 @@ const PS_TEAM = {
   Valkyries: {abbr:'GSV', color:'#BE29EC', city:'Golden State'},
   Wings:     {abbr:'DAL', color:'#0C2340', city:'Dallas'},
 };
-const psAbbr  = t => (PS_TEAM[t] && PS_TEAM[t].abbr)  || (t||'').slice(0,3).toUpperCase();
-const psColor = t => (PS_TEAM[t] && PS_TEAM[t].color) || '#2F6B52';
+// Per sport, via the registry -- PS_TEAM is the WNBA table and remains the fallback.
+// Falling through to the first three letters of the name would give both Chicago
+// clubs "CHI" and both New York clubs "NEW".
+const psAbbr  = t => (sportTeam(t) || {}).abbr  || (t||'').slice(0,3).toUpperCase();
+const psColor = t => (sportTeam(t) || {}).color || '#2F6B52';
 
 // PLAYER IMAGE. Initials on the team colour -- no external host, no licensing
 // question, and it looks deliberate rather than broken. When headshots arrive
@@ -10285,7 +10404,7 @@ const psPct = r => (r && r.gp) ? {text:`${Math.round(r.rate*100)}%`, sort:r.rate
 
 // Her record on this exact bet against tonight's opponent, this season.
 function psH2H(leg){
-  const pl = DATA.fullPlayerLogs[leg.player+'|'+leg.team];
+  const pl = sportDATA().fullPlayerLogs[leg.player+'|'+leg.team];
   if(!pl || !leg.opponent) return null;
   const games = (pl.log||[]).filter(g=>!g.dnp && g.opp === leg.opponent);
   if(!games.length) return null;
@@ -10315,7 +10434,7 @@ function psEdge(leg){
   if(typeof beNoVig !== 'function' || typeof beProject !== 'function') return null;
   const p = beProject(leg.player, leg.team, leg.statKey);
   if(!p) return null;
-  const log = (DATA.fullPlayerLogs[leg.player+'|'+leg.team]||{}).log||[];
+  const log = (sportDATA().fullPlayerLogs[leg.player+'|'+leg.team]||{}).log||[];
   const played = log.filter(g=>!g.dnp && (g.min||0)>0).slice(-10);
   if(played.length < 5) return null;
   const vals = played.map(g=>beStatValue(g, leg.statKey));
@@ -10664,8 +10783,9 @@ async function renderPropsScreen(){
   // through to the WNBA blob, which every helper below reads unconditionally --
   // would render WNBA players under an MLB heading, which is worse than an empty
   // screen because it looks like it worked.
-  if(!sportHasData(PS_STATE.sport)){
-    shell.appendChild(sportEmptyState(PS_STATE.sport));
+  if(!sportHasOdds(PS_STATE.sport)){
+    shell.appendChild(sportHasData(PS_STATE.sport)
+      ? sportNoOddsState(PS_STATE.sport) : sportEmptyState(PS_STATE.sport));
     shell.appendChild(psBottomBar('props', null));
     return;
   }
@@ -10801,8 +10921,9 @@ function renderMyRadarScreen(){
   h.textContent = 'My Radar';
   h.style.cssText = 'margin:0 0 10px;';
   shell.appendChild(h);
-  if(!sportHasData(PS_STATE.sport)){
-    shell.appendChild(sportEmptyState(PS_STATE.sport));
+  if(!sportHasOdds(PS_STATE.sport)){
+    shell.appendChild(sportHasData(PS_STATE.sport)
+      ? sportNoOddsState(PS_STATE.sport) : sportEmptyState(PS_STATE.sport));
     main.appendChild(shell);
     main.appendChild(psBottomBar('radar', null));
     return;
@@ -11447,7 +11568,7 @@ function pbNextOpponent(team){
 // cut to the window. Filtering BEFORE the cut is deliberate: "last 10 home
 // games" is the useful reading of L10 + Home, not "home games among her last 10".
 function pbGamesFor(player, team, opponent){
-  const pl = DATA.fullPlayerLogs[player+'|'+team];
+  const pl = sportDATA().fullPlayerLogs[player+'|'+team];
   if(!pl) return [];
   let games = (pl.log||[]).filter(g=>!g.dnp);
 
@@ -11670,25 +11791,43 @@ function pbChart(games, statKey, line){
   // and fifth hue would compete with the thing the reader is actually here for.
   // Long dash = mean, fine dot = median, dash-dot = mode, which is also the order
   // of how much they are usually trusted.
-  // WHICH SERIES THE CENTRES DESCRIBE. Points when it is showing, otherwise the
-  // percentage -- six lines for two series would bury the chart, and the centres
-  // of the thing you are betting on are the ones that matter. The label carries
-  // the units so there is never a question which axis they belong to.
-  const onPct = !showBars && pctDef;
-  const centreVals = onPct ? pctVals.filter(v => v !== null && v !== undefined) : vals;
-  const centreY = onPct ? yPct : y;
-  const centreTop = onPct ? 1 : top;
-  const fmtC = onPct ? (v => `${(v*100).toFixed(1)}%`) : (v => v % 1 ? v.toFixed(1) : String(v));
+  // CENTRES FOR EACH SERIES THAT IS SHOWING, on its own axis and in its own colour.
+  //
+  // Points reads against the left axis in ink; the shooting percentage reads
+  // against the right axis in orange. Both sets can be up at once, which is the
+  // point -- "his mean is 24 on 47% shooting" is one sentence, and forcing the
+  // reader to toggle between them to see both halves of it defeats the dual axis.
+  //
+  // Colour separates the SERIES; the dash pattern separates mean from median from
+  // mode. Two independent encodings for two independent facts, so six lines stay
+  // readable. Legend text stays ink for both -- only the swatch carries the hue.
+  const PCT_COLOR = '#D2600A';
+  const centreSeries = [];
+  if(showBars){
+    centreSeries.push({
+      vals, toY: y, top, color: 'var(--ink)', tag: 'stat',
+      fmt: v => (v % 1 ? v.toFixed(1) : String(v)),
+    });
+  }
+  if(pctDef){
+    centreSeries.push({
+      vals: pctVals.filter(v => v !== null && v !== undefined),
+      toY: yPct, top: 1, color: PCT_COLOR, tag: 'pct',
+      fmt: v => `${(v*100).toFixed(1)}%`,
+    });
+  }
+
   let legendMarks = [];
-  const centres = pbCentres(centreVals);
-  if(centres){
+  centreSeries.forEach(ser=>{
+    const centres = pbCentres(ser.vals);
+    if(!centres) return;
     const marks = [
-      {v: centres.mean,   dash: '10 5', label: `mean ${fmtC(centres.mean)}`},
-      {v: centres.median, dash: '2 4',  label: `median ${fmtC(centres.median)}`},
+      {v: centres.mean,   dash: '10 5', label: `mean ${ser.fmt(centres.mean)}`},
+      {v: centres.median, dash: '2 4',  label: `median ${ser.fmt(centres.median)}`},
     ];
     if(centres.mode !== null){
       marks.push({v: centres.mode, dash: '12 4 2 4',
-        label: `mode ${fmtC(centres.mode)}${centres.modeTies > 1 ? ` (${centres.modeTies} tied)` : ''} ×${centres.modeN}`});
+        label: `mode ${ser.fmt(centres.mode)}${centres.modeTies > 1 ? ` (${centres.modeTies} tied)` : ''} ×${centres.modeN}`});
     }
     // THE LINES GO ON THE CHART; THE LABELS GO IN A LEGEND UNDERNEATH.
     //
@@ -11698,13 +11837,14 @@ function pbChart(games, statKey, line){
     // top of the bars it was meant to describe. A legend below the chart can use
     // real body text, and the dash swatch carries the mapping instead of position.
     marks.forEach(mk=>{
-      if(!(mk.v >= 0) || mk.v > centreTop) return;
-      svg.appendChild(el('line', {x1:PAD_L, x2:W-PAD_R, y1:centreY(mk.v), y2:centreY(mk.v),
-        'data-pb-centre': mk.dash,
-        stroke:'var(--ink)', 'stroke-width':1.5, 'stroke-dasharray':mk.dash, opacity:.62}));
+      if(!(mk.v >= 0) || mk.v > ser.top) return;
+      svg.appendChild(el('line', {x1:PAD_L, x2:W-PAD_R, y1:ser.toY(mk.v), y2:ser.toY(mk.v),
+        'data-pb-centre': mk.dash, 'data-pb-centre-series': ser.tag,
+        stroke: ser.color, 'stroke-width':1.5, 'stroke-dasharray':mk.dash, opacity:.7}));
     });
-    legendMarks = marks.filter(mk => mk.v >= 0 && mk.v <= centreTop);
-  }
+    marks.filter(mk => mk.v >= 0 && mk.v <= ser.top)
+         .forEach(mk => legendMarks.push(Object.assign({}, mk, {color: ser.color, tag: ser.tag})));
+  });
 
   // Tonight's line, drawn across so the bars can be read against it.
   if(line !== null && line !== undefined){
@@ -11747,6 +11887,7 @@ function pbChart(games, statKey, line){
     legendMarks.forEach(mk=>{
       const item = document.createElement('span');
       item.dataset.pbLegendItem = mk.label.split(' ')[0];
+      item.dataset.pbLegendSeries = mk.tag || 'stat';
       item.style.cssText = 'display:inline-flex;align-items:center;gap:7px;'
         + 'font-size:13px;font-family:var(--sans);color:var(--ink);white-space:nowrap;';
       // The swatch repeats the exact dash pattern of its line, so the mapping is
@@ -11758,7 +11899,9 @@ function pbChart(games, statKey, line){
       const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
       ln.setAttribute('x1', 0); ln.setAttribute('x2', 30);
       ln.setAttribute('y1', 5); ln.setAttribute('y2', 5);
-      ln.setAttribute('stroke', 'var(--ink)');
+      // Only the SWATCH is coloured. The label stays ink so the legend reads as one
+      // block of text rather than two competing colours of writing.
+      ln.setAttribute('stroke', mk.color || 'var(--ink)');
       ln.setAttribute('stroke-width', 2);
       ln.setAttribute('stroke-dasharray', mk.dash);
       ln.setAttribute('opacity', .72);
@@ -11947,7 +12090,7 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   calPanel.id = 'pbCalPanel';
   calPanel.style.cssText = 'display:none;padding:10px 14px;background:var(--panel);'
     + 'border-bottom:1px solid var(--line);';
-  const allDates = ((DATA.fullPlayerLogs[playerName+'|'+team] || {}).log || [])
+  const allDates = ((sportDATA().fullPlayerLogs[playerName+'|'+team] || {}).log || [])
     .filter(g=>!g.dnp).map(g=>g.date).sort();
   const mkDate = (id, label, val) => {
     const w = document.createElement('label');
@@ -12245,18 +12388,28 @@ function tsSaveOpen(s){
 // Every player with a logged game for this team this season, with the roster
 // status the colour depends on.
 function tsRoster(team){
-  const rec = DATA.teams[team];
+  const rec = sportDATA().teams[team];
   if(!rec || !rec.summaryFull) return [];
-  const recent = new Set(teamRecentGameDates(team, TS_ROSTER_WINDOW));
+  const recent = new Set(tsRecentDates(team, TS_ROSTER_WINDOW));
   const teamHasEnoughGames = recent.size >= Math.min(TS_ROSTER_WINDOW, 3);
+  // The injury report is a WNBA feed. For a sport without one, nobody is marked
+  // injured -- which makes the departed/injured distinction unavailable rather than
+  // wrong, and tsRoster says so on screen below.
   let injured = [];
-  try{ injured = (typeof teamInjuries === 'function' ? teamInjuries(team) : []) || []; }catch(e){ injured = []; }
+  try{
+    injured = (sportDef().key === 'wnba' && typeof teamInjuries === 'function')
+      ? (teamInjuries(team) || []) : [];
+  }catch(e){ injured = []; }
   const injuredBy = {};
   injured.forEach(i=>{ if(i && i.player) injuredBy[i.player] = i.status || 'Out'; });
 
   return (rec.summaryFull.totals || []).map(r=>{
-    const log = (DATA.fullPlayerLogs[r.player + '|' + team] || {}).log || [];
-    const played = log.filter(g => !g.dnp && (g.min || 0) > 0);
+    const log = (sportDATA().fullPlayerLogs[r.player + '|' + team] || {}).log || [];
+    // "Did he play?" is sport-specific. Basketball rows carry minutes and a zero
+    // means she was on the bench; baseball rows have no minutes column at all, and
+    // the ingest only emits a row for a player who actually appeared. Testing
+    // (g.min || 0) > 0 marked EVERY MLB player as departed, because no row has it.
+    const played = log.filter(g => !g.dnp && (g.min === undefined || g.min === null || g.min > 0));
     const appearedRecently = played.some(g => recent.has(g.date));
     const lastPlayed = played.length ? played[played.length - 1].date : null;
     const status = injuredBy[r.player] || null;
@@ -12265,12 +12418,13 @@ function tsRoster(team){
     const departed = teamHasEnoughGames && !appearedRecently && !status;
     return {
       player: r.player, team,
-      pos: (typeof getPlayerPosition === 'function' ? getPlayerPosition(r.player, team) : null) || '—',
+      pos: tsPosition(r.player, team),
       gp: r.gp || 0,
-      mpg: r.gp ? (r.min || 0) / r.gp : 0,
-      ppg: r.gp ? (r.pts || 0) / r.gp : 0,
-      rpg: r.gp ? (r.reb || 0) / r.gp : 0,
-      apg: r.gp ? (r.ast || 0) / r.gp : 0,
+      // The four numbers shown per player, per sport. Basketball's are per game off
+      // minutes; baseball's are season counting stats, because a per-game home-run
+      // rate is an unreadable 0.1 and nobody quotes it that way.
+      line: tsSeasonLine(r),
+      sortBy: tsSortValue(r),
       departed, status, lastPlayed,
     };
   }).sort((a,b)=>{
@@ -12278,8 +12432,61 @@ function tsRoster(team){
     // the starting five because she had a big season elsewhere would defeat the
     // point of marking her at all.
     if(a.departed !== b.departed) return a.departed ? 1 : -1;
-    return b.mpg - a.mpg;
+    return b.sortBy - a.sortBy;
   });
+}
+
+
+// ---- the sport-specific bits ------------------------------------------------
+// The Stats screen is otherwise sport-neutral; these four are where basketball and
+// baseball genuinely differ, kept together rather than scattered as branches.
+
+// The team's last N game dates. teamRecentGameDates() reads the WNBA globals, so it
+// is used only for that sport and derived from the blob otherwise.
+function tsRecentDates(team, n){
+  if(sportDef().key === 'wnba' && typeof teamRecentGameDates === 'function'){
+    try{ return teamRecentGameDates(team, n); }catch(e){ /* fall through */ }
+  }
+  const d = sportDATA() || {};
+  const rec = (d.teams || {})[team];
+  if(!rec || !rec.gameIdsFull) return [];
+  return rec.gameIdsFull
+    .map(gid => ((d.games || {})[String(gid)] || {}).date)
+    .filter(Boolean).sort().slice(-n);
+}
+
+function tsPosition(player, team){
+  if(sportDef().key === 'wnba' && typeof getPlayerPosition === 'function'){
+    const p = getPlayerPosition(player, team);
+    if(p) return p;
+  }
+  const rec = ((sportDATA() || {}).fullPlayerLogs || {})[player + '|' + team];
+  return (rec && rec.pos) || '\u2014';
+}
+
+// Four numbers per player. Basketball quotes per-game averages; baseball quotes
+// season totals, because a per-game home-run rate reads 0.1 and no one uses it.
+function tsSeasonLine(r){
+  if(sportDef().key !== 'mlb'){
+    const per = k => r.gp ? (r[k] || 0) / r.gp : 0;
+    return [['PTS', per('pts')], ['REB', per('reb')], ['AST', per('ast')], ['MIN', per('min')]];
+  }
+  // A pitcher's line is not a hitter's line.
+  if(r.outs !== undefined && r.outs !== null && (r.ab === undefined || r.ab === null)){
+    const ip = (r.outs || 0) / 3;
+    return [['IP', ip, 1], ['K', r.so_pit || 0, 0], ['ER', r.er || 0, 0],
+            ['ERA', ip > 0 ? 9 * (r.er || 0) / ip : null, 2]];
+  }
+  const ab = r.ab || 0;
+  return [['H', r.hits_bat || 0, 0], ['HR', r.hr || 0, 0], ['RBI', r.rbi || 0, 0],
+          ['AVG', ab > 0 ? (r.hits_bat || 0) / ab : null, 3]];
+}
+
+// What "best player first" means, per sport: minutes in basketball, plate
+// appearances or outs recorded in baseball.
+function tsSortValue(r){
+  if(sportDef().key !== 'mlb') return r.gp ? (r.min || 0) / r.gp : 0;
+  return (r.pa || r.ab || 0) + (r.outs || 0);
 }
 
 function tsPlayerRow(p){
@@ -12310,15 +12517,24 @@ function tsPlayerRow(p){
   const stats = document.createElement('div');
   stats.style.cssText = 'display:flex;gap:10px;flex:0 0 auto;'
     + 'color:' + (p.departed ? '#6b7280' : 'var(--ink)') + ';';
-  [['PTS', p.ppg], ['REB', p.rpg], ['AST', p.apg], ['MIN', p.mpg]].forEach(([lab, v])=>{
+  p.line.forEach(([lab, v, dp])=>{
     const b = document.createElement('div');
     b.style.cssText = 'text-align:center;min-width:34px;';
     b.innerHTML = `<div style="font-size:9.5px;letter-spacing:.06em;color:var(--sub);">${lab}</div>`
-      + `<div style="font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;">${v.toFixed(1)}</div>`;
+      + `<div style="font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;">`
+      + `${v === null || v === undefined ? '—' : v.toFixed(dp === undefined ? 1 : dp)}</div>`;
     stats.appendChild(b);
   });
   row.appendChild(stats);
-  row.addEventListener('click', ()=>goToPlayer(p.player, p.team));
+  // Only sports with a player profile navigate. The profile is still the
+  // basketball page -- Production, Gamelogs, Vs. Opponent all read basketball
+  // stats -- so opening it for a pitcher would render a page of dashes.
+  if(sportHasPlayerPage()){
+    row.addEventListener('click', ()=>goToPlayer(p.player, p.team));
+  } else {
+    row.style.cursor = 'default';
+    row.setAttribute('aria-disabled', 'true');
+  }
   return row;
 }
 
@@ -12357,7 +12573,10 @@ function renderTeamsScreen(){
   list.style.cssText = 'border-top:1px solid var(--line);';
   shell.appendChild(list);
 
-  (TEAM_NAMES || []).slice().sort().forEach(team=>{
+  // The team list comes from the sport's own blob. TEAM_NAMES is the WNBA global
+  // and would list Fever and Liberty on an MLB screen.
+  const teamList = Object.keys((sportDATA() || {}).teams || {}).sort();
+  teamList.forEach(team=>{
     const roster = tsRoster(team);
     const nDeparted = roster.filter(p=>p.departed).length;
 
@@ -12498,7 +12717,7 @@ function psApplyFilters(legs, page){
 // game. A streak is the run at the front of the log, not the longest run in it:
 // six wins that ended a month ago is not a hot streak, it is history.
 function psStreak(leg){
-  const pl = DATA.fullPlayerLogs[leg.player+'|'+leg.team];
+  const pl = sportDATA().fullPlayerLogs[leg.player+'|'+leg.team];
   if(!pl) return null;
   const played = (pl.log||[]).filter(g=>!g.dnp);
   if(!played.length) return null;
@@ -12953,8 +13172,9 @@ async function renderMarketsScreen(){
   sub.style.cssText = 'margin-bottom:12px;';
   sub.textContent = `Every list uses the same ${PS_MIN_PRICE} price floor as the Props board.`;
   shell.appendChild(h); shell.appendChild(sub);
-  if(!sportHasData(PS_STATE.sport)){
-    shell.appendChild(sportEmptyState(PS_STATE.sport));
+  if(!sportHasOdds(PS_STATE.sport)){
+    shell.appendChild(sportHasData(PS_STATE.sport)
+      ? sportNoOddsState(PS_STATE.sport) : sportEmptyState(PS_STATE.sport));
     main.appendChild(shell);
     main.appendChild(psBottomBar('markets', null));
     return;
