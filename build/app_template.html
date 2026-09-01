@@ -10267,6 +10267,12 @@ const SPORT_DEFS = {
       {key:'l30',     label:'L30'},
       {key:'season',  label:null},
       {key:'pitcher', label:'vs SP'},      // replaces DvP
+      // THE PITCHER SIDE'S MATCHUP COLUMN. There is no "vs Hitter" to build: a
+      // batter faces one starter, but a starter faces the whole lineup, so the
+      // mirror image of vs SP is the OPPOSING LINEUP, not an opposing individual.
+      // Structurally this is baseball's defense-vs-position -- how much of this
+      // stat the other club gives up per game, indexed against the league.
+      {key:'lineup',  label:'vs Lineup'},
       {key:'edge',    label:'Edge'},
       {key:'prior',   label:null},
       {key:'hand',    label:'vs L/R'},     // replaces vs. Size
@@ -11043,6 +11049,71 @@ function psHandMatchup(leg){
   return psRateBox(r, r ? `${r.hits}/${r.gp} vs ${leg.oppHand}HP` : null);
 }
 
+// ---- baseball: the opposing lineup ------------------------------------------
+// A starter's matchup is nine hitters, not one, so "vs H" has nothing to point at.
+// What DOES exist is how the other club performs against pitching -- their
+// strikeouts, hits, walks and runs per game -- which is the same object as the WNBA
+// board's defense-vs-position: an opponent tendency, indexed against the league,
+// that says whether this stat is easier or harder to get tonight than usual.
+//
+// Only the four markets with a lineup counterpart are mapped. OUTS IS DELIBERATELY
+// ABSENT: how deep a starter goes is the manager's decision, not something the
+// opposing lineup produces a rate of, so there is no honest opponent number for it.
+const PS_LINEUP_STAT = {so_pit:'so_bat', hits_allowed:'hits_bat', bb_pit:'bb', er:'runs'};
+
+// Built once per sport rather than per leg -- thirty teams times a few hundred
+// player totals, recomputed for each of six hundred cards, is the kind of thing that
+// turns a scroll into a stutter.
+let _psLineupTable = null, _psLineupFor = null;
+function psLineupTable(){
+  const sport = PS_STATE.sport;
+  if(_psLineupTable && _psLineupFor === sport) return _psLineupTable;
+  const teams = (sportDATA() || {}).teams || {};
+  const out = {};
+  Object.keys(teams).forEach(name=>{
+    const t = teams[name] || {};
+    const gp = ((t.gameIdsFull) || []).length;
+    const totals = ((t.summaryFull) || {}).totals || [];
+    if(!gp || !totals.length) return;
+    const row = {gp};
+    Object.keys(PS_LINEUP_STAT).forEach(sk=>{
+      const k = PS_LINEUP_STAT[sk];
+      // Season totals over games played. Pitchers who took a plate appearance are
+      // included, because they were in fact part of the lineup -- excluding them
+      // would be a judgment about who counts rather than a count.
+      row[k] = totals.reduce((a, p)=> a + (Number(p[k]) || 0), 0) / gp;
+    });
+    out[name] = row;
+  });
+  _psLineupTable = out; _psLineupFor = sport;
+  return out;
+}
+
+function psLineup(leg){
+  if(sportDef().family === 'basketball') return null;
+  if(sportStatRole(leg.statKey) !== 'pitcher') return null;
+  const k = PS_LINEUP_STAT[leg.statKey];
+  if(!k || !leg.opponent) return null;
+  const table = psLineupTable();
+  const row = table[leg.opponent];
+  if(!row || !isFinite(row[k])) return null;
+  const vals = Object.keys(table).map(t => table[t][k]).filter(v => isFinite(v) && v > 0);
+  if(vals.length < 10) return null;                     // no league to index against
+  const mean = vals.reduce((a,b)=>a+b,0)/vals.length;
+  if(!(mean > 0)) return null;
+  const idx = row[k] / mean;
+  // Rank 1 is the club that gives up the MOST of this stat, so a high rank number
+  // and a low index mean the same thing and cannot drift apart.
+  const rank = vals.filter(v => v > row[k]).length + 1;
+  return {
+    text: idx.toFixed(2),
+    // SIDE-AWARE, exactly like psDvp. A generous lineup helps an Over and hurts an
+    // Under, so sorting on the raw index would put the best Unders last.
+    sort: leg.side === 'under' ? -idx : idx,
+    sub: `#${rank} of ${vals.length} · ${row[k].toFixed(1)} ${sportStatLabel(k)}/g`,
+  };
+}
+
 // The mean the count model reads for a baseball leg. There is no minutes model
 // here and no lineup card in the payload, so this is deliberately the plainest
 // defensible estimator: recent form shrunk toward his season rate by the prior
@@ -11180,6 +11251,7 @@ function psMetricValue(leg, key){
     // window lookup below and came back null on every leg.
     case 'pitcher': return psPitcherMatchup(leg);
     case 'hand':    return psHandMatchup(leg);
+    case 'lineup':  return psLineup(leg);
     // No prior-season data is loaded, so this is honestly blank rather than
     // quietly falling back to the current season and mislabelling it.
     case 'prior': return null;
@@ -11272,6 +11344,50 @@ function psSlateLabel(events){
 }
 
 // ---- the pool --------------------------------------------------------------
+// ---- every book's price for every leg ---------------------------------------
+// THE CARD SHOWS ONE NUMBER AND NEVER SAID WHOSE. In Best mode the board's price is
+// the best of six books and the card renders it bare, so "+205" could be DraftKings
+// alone or all six agreeing, and there is no way to tell which -- or what the second-
+// best price was, which is the number that matters when your account is not at the
+// book holding the outlier.
+//
+// Built from the RAW detail, before getBookmakerData collapses it. That function
+// keeps only `_bestBooks` (the books tied at the top), which is the one thing this
+// popup must not be limited to; in single-book mode it keeps only the one book. The
+// raw payload is already in hand at this point, so indexing it costs one pass and no
+// extra fetch.
+//
+// KEYED ON THE BET, NOT ON THE MARKET KEY. A base ladder and an alternate ladder can
+// price the same wager -- "Over 1.5 Hits" and the 1.5 rung of the alt ladder are the
+// same bet -- so the key is (stat, player, side, point) and the two collapse together
+// the way a bettor would expect. Where one book lists both, the better price wins;
+// listing a book twice at two prices would make the popup look like a bug.
+function psBooksIndex(detail){
+  const idx = new Map();
+  ((detail && detail.bookmakers) || []).forEach(bm=>{
+    (bm.markets || []).forEach(mk=>{
+      const statKey = (typeof propMarketStat === 'function') ? propMarketStat(mk.key) : null;
+      if(!statKey) return;
+      (mk.outcomes || []).forEach(o=>{
+        if(!o || !o.description || o.point === undefined || o.point === null) return;
+        if(typeof o.price !== 'number') return;
+        const side = o.name === 'Under' ? 'under' : 'over';
+        const k = `${statKey}|${o.description}|${side}|${o.point}`;
+        const list = idx.get(k) || [];
+        const seen = list.find(e => e.book === bm.key);
+        if(!seen) list.push({book: bm.key, price: o.price});
+        else if(o.price > seen.price) seen.price = o.price;
+        idx.set(k, list);
+      });
+    });
+  });
+  return idx;
+}
+// An alt leg's own `line` is the EFFECTIVE line (a "20+" milestone is stored as 19.5),
+// but the book listed it at 20 -- so the lookup has to use the point the feed used.
+const psLegBookKey = leg => `${leg.statKey}|${leg.player}|${leg.side}|`
+  + ((leg.altPoint === undefined || leg.altPoint === null) ? leg.line : leg.altPoint);
+
 function psGatherProps(cachedFetch, selectedBook){
   selectedBook = selectedBook || 'best';
   // The slate was already chosen in psLoadPool; re-deriving it here (as this used
@@ -11284,6 +11400,7 @@ function psGatherProps(cachedFetch, selectedBook){
     const awayShort = SHORT_TEAM_NAME[ev.away_team] || ev.away_team;
     const gameMarkets = marketsByKey(getBookmakerData(ev, selectedBook));
     const detailMarkets = marketsByKey(detail ? getBookmakerData(detail, selectedBook) : null);
+    const bookIdx = psBooksIndex(detail);
     let legs = [];
     // Qualification bar 0: this board shows the slate, it does not curate it.
     try{ legs = gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarkets, 0, selectedBook); }
@@ -11291,6 +11408,8 @@ function psGatherProps(cachedFetch, selectedBook){
     pool = pool.concat(legs
       .filter(l => (l.betType==='player_prop' || l.betType==='player_prop_alt') && l.price >= PS_MIN_PRICE)
       .map(l => Object.assign({}, l, {
+        // Sorted best price first, which is the order a bettor reads it in.
+        books: (bookIdx.get(psLegBookKey(l)) || []).slice().sort((a,b)=>b.price - a.price),
         eventId: ev.id,
         game: `${ev.away_team} @ ${ev.home_team}`,
         gameShort: `${psAbbr(awayShort)} @ ${psAbbr(homeShort)}`,
@@ -11319,7 +11438,20 @@ function psGatherProps(cachedFetch, selectedBook){
   for(const l of pool){
     const k = psFavKey(l);
     const prev = best.get(k);
-    if(!prev || l.price > prev.price) best.set(k, l);
+    if(!prev){ best.set(k, l); continue; }
+    // THE BOOK LISTS MERGE EVEN THOUGH ONE LEG LOSES. A base ladder's "Over 1.5" and
+    // an alt ladder's "2+" are the same wager and collapse to one row here, but they
+    // were indexed under different points -- so keeping only the winner's list would
+    // silently drop every book that priced it on the other ladder.
+    const merged = (prev.books || []).slice();
+    (l.books || []).forEach(b=>{
+      const seen = merged.find(e => e.book === b.book);
+      if(!seen) merged.push(b);
+      else if(b.price > seen.price) seen.price = b.price;
+    });
+    merged.sort((a,b)=>b.price - a.price);
+    const keep = (l.price > prev.price) ? l : prev;
+    best.set(k, Object.assign({}, keep, {books: merged}));
   }
   return [...best.values()];
 }
@@ -11526,6 +11658,148 @@ function psDefShade(leg){
       + `${words}. Shading is matchup context, not a prediction.`};
 }
 
+
+// ---- the sportsbook popup ---------------------------------------------------
+// Hover on a desktop, tap on a phone. One panel for the whole board, reused, so a
+// scroll through forty cards cannot leave forty detached nodes behind.
+//
+// WHY IT IS A PANEL AND NOT A `title` TOOLTIP. A title attribute does not open on
+// touch at all, which is where most of this board is read, and it cannot mark which
+// row is the price the card is showing.
+let _psBooksPanel = null, _psBooksFor = null, _psBooksTimer = null;
+
+function psBooksPanel(){
+  if(_psBooksPanel) return _psBooksPanel;
+  const p = document.createElement('div');
+  p.id = 'psBooksPanel';
+  p.setAttribute('role', 'dialog');
+  p.setAttribute('aria-label', 'Sportsbook prices');
+  p.style.cssText = 'position:absolute;z-index:1200;display:none;min-width:196px;max-width:280px;'
+    + 'max-height:250px;overflow-y:auto;background:var(--panel);border:1px solid var(--line);'
+    + 'border-radius:10px;box-shadow:0 8px 26px rgba(0,0,0,.22);padding:9px 0;'
+    + 'font-family:var(--sans);';
+  // A tap inside the panel must not fall through to the card underneath, which would
+  // log a research view and, on some layouts, close the panel that was just opened.
+  p.addEventListener('click', e => e.stopPropagation());
+  document.body.appendChild(p);
+  _psBooksPanel = p;
+  return p;
+}
+
+function psCloseBooks(){
+  if(_psBooksPanel) _psBooksPanel.style.display = 'none';
+  _psBooksFor = null;
+}
+
+// Bound once. Listening per-panel-open leaks a handler every time the user opens one
+// and navigates away instead of closing it.
+if(typeof window !== 'undefined' && !window.__psBooksBound){
+  window.__psBooksBound = true;
+  document.addEventListener('click', psCloseBooks);
+  document.addEventListener('keydown', e => { if(e.key === 'Escape') psCloseBooks(); });
+  window.addEventListener('scroll', psCloseBooks, true);
+  window.addEventListener('resize', psCloseBooks);
+}
+
+const psBookLabel = k => (typeof BOOK_LABELS !== 'undefined' && BOOK_LABELS[k]) || k;
+const psPriceText = v => `${v > 0 ? '+' : ''}${v}`;
+
+function psOpenBooks(anchor, leg){
+  const key = psFavKey(leg);
+  if(_psBooksFor === key && _psBooksPanel && _psBooksPanel.style.display !== 'none'){
+    psCloseBooks(); return;                      // a second tap closes it
+  }
+  const p = psBooksPanel();
+  p.innerHTML = '';
+  _psBooksFor = key;
+
+  const head = document.createElement('div');
+  head.textContent = `${leg.side === 'under' ? 'Under' : 'Over'} ${leg.line} `
+    + `${leg.market || leg.statKey}`;
+  head.style.cssText = 'font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;'
+    + 'color:var(--sub);padding:0 12px 7px;border-bottom:1px solid var(--line);margin-bottom:6px;';
+  p.appendChild(head);
+
+  const books = leg.books || [];
+  if(!books.length){
+    // The honest empty state. It happens when the board is filtered to one book that
+    // is not pricing this rung, or when a cached payload predates the market.
+    const e = document.createElement('div');
+    e.textContent = 'No book prices cached for this line.';
+    e.style.cssText = 'padding:4px 12px 2px;font-size:12.5px;color:var(--sub);';
+    p.appendChild(e);
+  } else {
+    const top = books[0].price;
+    books.forEach(b=>{
+      const row = document.createElement('div');
+      row.dataset.psBook = b.book;
+      const isTop = b.price === top;
+      row.style.cssText = 'display:flex;justify-content:space-between;gap:14px;align-items:baseline;'
+        + 'padding:4px 12px;font-size:13px;'
+        + (isTop ? 'font-weight:800;' : 'color:var(--sub);');
+      const n = document.createElement('span');
+      n.textContent = psBookLabel(b.book);
+      const v = document.createElement('span');
+      v.textContent = psPriceText(b.price);
+      // Tabular figures so the column of prices lines up rather than shimmering.
+      v.style.cssText = 'font-variant-numeric:tabular-nums;font-weight:800;'
+        + (isTop ? 'color:var(--green);' : '');
+      row.appendChild(n); row.appendChild(v);
+      p.appendChild(row);
+    });
+    const foot = document.createElement('div');
+    foot.textContent = books.length === 1
+      ? 'Only one book is pricing this line.'
+      : `Best of ${books.length} · the card shows ${psPriceText(top)}`;
+    foot.style.cssText = 'padding:7px 12px 0;margin-top:5px;border-top:1px solid var(--line);'
+      + 'font-size:11px;color:var(--sub);';
+    p.appendChild(foot);
+  }
+
+  // Position AFTER filling, because the height is not known until then. Flips above
+  // the anchor when there is no room below, and is clamped to the viewport so a card
+  // at the right edge does not open a panel half off screen.
+  p.style.display = 'block';
+  p.style.left = '0px'; p.style.top = '0px';
+  const r = anchor.getBoundingClientRect();
+  const pw = p.offsetWidth, ph = p.offsetHeight;
+  const sx = window.pageXOffset || document.documentElement.scrollLeft || 0;
+  const sy = window.pageYOffset || document.documentElement.scrollTop || 0;
+  let left = r.left + r.width / 2 - pw / 2;
+  left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+  const below = r.bottom + 8 + ph <= window.innerHeight;
+  const top2 = below ? r.bottom + 8 : Math.max(8, r.top - ph - 8);
+  p.style.left = (left + sx) + 'px';
+  p.style.top  = (top2 + sy) + 'px';
+}
+
+// Desktop opens on hover, touch opens on tap, and BOTH open on click -- a laptop with
+// a touchscreen is not one or the other. The hover delay stops the panel from flashing
+// open as the pointer crosses the board on its way somewhere else.
+function psWireBooks(node, leg){
+  node.style.cursor = 'pointer';
+  node.setAttribute('role', 'button');
+  node.setAttribute('tabindex', '0');
+  node.setAttribute('aria-haspopup', 'dialog');
+  node.title = 'See every book\'s price';
+  node.addEventListener('click', e=>{ e.stopPropagation(); psOpenBooks(node, leg); });
+  node.addEventListener('keydown', e=>{
+    if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); e.stopPropagation(); psOpenBooks(node, leg); }
+  });
+  if(typeof window.matchMedia === 'function' && window.matchMedia('(hover: hover)').matches){
+    node.addEventListener('mouseenter', ()=>{
+      clearTimeout(_psBooksTimer);
+      _psBooksTimer = setTimeout(()=>{ if(_psBooksFor !== psFavKey(leg)) psOpenBooks(node, leg); }, 120);
+    });
+    node.addEventListener('mouseleave', ()=>{
+      clearTimeout(_psBooksTimer);
+      _psBooksTimer = setTimeout(()=>{
+        if(_psBooksPanel && !_psBooksPanel.matches(':hover')) psCloseBooks();
+      }, 220);
+    });
+  }
+}
+
 function psCard(leg, favs, onToggleFav){
   const card = document.createElement('div');
   card.className = 'ps-card';
@@ -11573,7 +11847,7 @@ function psCard(leg, favs, onToggleFav){
   // Odds and Edge: label on the name row, boxed value on the bet row.
   const right = document.createElement('div');
   right.style.cssText = 'display:flex;gap:8px;align-items:flex-start;';
-  const mkPair = (label, text, tone) => {
+  const mkPair = (label, text, tone, wire) => {
     const col = document.createElement('div');
     col.style.cssText = 'text-align:center;';
     const l = document.createElement('div');
@@ -11586,10 +11860,12 @@ function psCard(leg, favs, onToggleFav){
       + (tone === 'pos' ? 'color:var(--green);border-color:var(--green);'
         : tone === 'neg' ? 'color:var(--red);border-color:var(--red);' : '');
     col.appendChild(l); col.appendChild(b);
+    if(wire) wire(b);
     return col;
   };
   const edgeVal = psMetricValue(leg, 'edge');
-  right.appendChild(mkPair('Odds', `${leg.price > 0 ? '+' : ''}${leg.price}`, null));
+  right.appendChild(mkPair('Odds', `${leg.price > 0 ? '+' : ''}${leg.price}`, null,
+    b => { b.dataset.psOdds = '1'; psWireBooks(b, leg); }));
   right.appendChild(mkPair('Edge', edgeVal ? edgeVal.text : '—',
     edgeVal ? (edgeVal.sort > 0 ? 'pos' : 'neg') : null));
 
