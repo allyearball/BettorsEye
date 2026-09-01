@@ -7507,9 +7507,17 @@ function altHitRateFor(playerName, team, statKey, threshold, windowSize){
   const pl = DATA.fullPlayerLogs[key];
   if(!pl) return null;
   const played = windowSlice(pl.log, windowSize).filter(g=>!g.dnp);
-  const gp = played.length;
+  // A GAME THAT DOES NOT CARRY THIS STAT IS NOT A MISS, IT IS NOT A SAMPLE.
+  // This used to count played.length as the denominator and score an absent value
+  // as a failure, which is invisible in basketball -- every played game has points,
+  // rebounds and assists -- and wrong in baseball, where a pitcher's line carries no
+  // batting keys at all. It also made this function disagree with propHitRateSided,
+  // which has always dropped absent values, so the standard and alternate ladders
+  // reported different rates for the same player over the same window.
+  const vals = played.map(g=>statValue(g,statKey)).filter(v=>v!==null && v!==undefined);
+  const gp = vals.length;
   if(gp===0) return {gp:0, hits:0, rate:0, found:true};
-  const hits = played.filter(g=>{ const v=statValue(g,statKey); return v!==null && v>=threshold; }).length;
+  const hits = vals.filter(v=>v>=threshold).length;
   return {gp, hits, rate: hits/gp, found:true};
 }
 
@@ -10117,6 +10125,9 @@ const SPORT_DEFS = {
     hasOdds: true, hasPlayerPage: true,
     // From db/seed.sql: a 44-game season supports a 10-game form window.
     formWindow: 10, priorWeightGames: 12, thinDataGames: 5,
+    // The bars gatherCandidateLegs has always used, now stated rather than
+    // hardcoded: 60% of each window. See the MLB block for why this is per-sport.
+    gpFloors: {w10: 6, w15: 9},
 
     // The row-2 metric chips, in order.
     metrics: [
@@ -10192,6 +10203,15 @@ const SPORT_DEFS = {
     // does not promise a game is on tonight -- an empty slate falls through to the
     // board's ordinary "no props right now" state, which is the honest answer.
     hasOdds: true, hasPlayerPage: true,
+    // SAMPLE-SIZE FLOORS, per league, because "10 games" is not one length of time.
+    // A WNBA player appears in essentially every game, so 6-of-10 and 9-of-15 ask
+    // for a player with a settled role. A starting pitcher works every fifth day:
+    // his last 15 appearances span two and a half months, and demanding 9 of them
+    // inside a 15-row window is the same bar only by coincidence of arithmetic.
+    // Relievers are thinner still. These are the counts required IN the window, and
+    // the ingest has already applied its own floor (20 batting / 5 pitching games),
+    // so this is the second gate, not the only one.
+    gpFloors: {w10: 4, w15: 5},
     // Abbreviation and primary colour per club, the same job PS_TEAM does for the
     // WNBA. Without these every badge would read the first three letters of the
     // city -- "CHI" for both Chicago clubs, "NEW" for both New York clubs.
@@ -10320,6 +10340,18 @@ function sportMarketLabel(statKey, sport){
 // Does this sport have a live prop feed? Separate from having season data: MLB has
 // three seasons of box scores and no odds, and a screen that needs prices must say
 // that rather than showing an empty board.
+// The Odds API market keys this sport's books offer, base ladders and alternate
+// ladders. THIS IS THE LIST THE LEG BUILDER ITERATES. It was a literal array of
+// eight basketball market keys inside gatherCandidateLegs, which is why an MLB
+// slate produced exactly zero player props: the feed was full of batter_hits and
+// pitcher_strikeouts, and nothing ever asked for them.
+function sportPropMarkets(sport){ return Object.keys(sportDef(sport).propMarkets || {}); }
+function sportAltPropMarkets(sport){ return sportPropMarkets(sport).map(k => k + '_alternate'); }
+// Games required inside the 10- and 15-game windows before a leg is trusted.
+function sportGpFloors(sport){
+  const f = sportDef(sport).gpFloors || {};
+  return {w10: f.w10 || 6, w15: f.w15 || 9};
+}
 function sportHasOdds(sport){ return !!sportDef(sport).hasOdds && sportHasData(sport); }
 function sportHasPlayerPage(sport){ return !!sportDef(sport).hasPlayerPage; }
 
@@ -10423,6 +10455,163 @@ function sportEmptyState(sport){
 }
 // >>> END MODULE sports.js
 
+// <<< MODULE generic_legs.js
+// ============================================================================
+// Player-prop legs for a NON-BASKETBALL sport.
+//
+// WHY THIS FILE EXISTS. gatherCandidateLegs() is the only thing in the app that
+// turns an odds payload into bets, and every board -- Props, Markets, My Radar,
+// Top Bets -- goes through it. It was written for the WNBA and hardcoded to that
+// league in three separate ways, each of which alone is enough to empty an MLB
+// board:
+//
+//   1. The player-prop loop iterated a literal list of eight basketball market
+//      keys ('player_points', 'player_rebounds', ...). A baseball payload full of
+//      batter_hits and pitcher_strikeouts matched none of them, so the loop ran
+//      to completion and produced nothing.
+//   2. Before ever reaching that loop it built moneyline, spread and team-total
+//      legs out of DATA.fullTeamGames and DATA.teamRecords -- keys the MLB blob
+//      does not carry. Reading them threw a TypeError, which psGatherProps caught
+//      and turned into `legs = []`. So even a market list that DID match would
+//      never have been reached.
+//   3. Every surviving leg was then filtered through minutes projections, defence
+//      vs position and the WNBA injury report. None of those mean anything in
+//      baseball, and two of them read basketball-only structures.
+//
+// So the fix is a separate path rather than a growing pile of `if(sport)` inside
+// the basketball one. What it deliberately does NOT do is fake the parts that
+// have no baseball equivalent yet: there is no minutes adjustment, no
+// defence-vs-position, and no projection edge, and each is left explicitly null
+// rather than defaulted to a number that would read as measured. The Edge column
+// stays blank on an MLB board until the count model is validated out of sample
+// for baseball -- an unvalidated number in a column called "Edge" is worse than
+// an empty one.
+//
+// WHAT IT DOES USE. Hit rates come from the same hitRateFor / propHitRateSided /
+// altHitRateSided helpers the WNBA board uses, unchanged, because those read
+// DATA.fullPlayerLogs through the sport-aware getter and are already correct for
+// any sport whose logs carry the stat key. Team identity comes from
+// findPlayerTeam, which is the same map lookup. The market list and the
+// sample-size floors come from the registry.
+// ============================================================================
+
+// TWO SPORTS, TWO ALTERNATE-LADDER CONVENTIONS, AND THE POINT FIELD LOOKS THE SAME
+// IN BOTH. DraftKings' WNBA alt markets are MILESTONES -- point 20 means "20+", and
+// 20 is literally the number to reach. The MLB alt markets the same API returns are
+// ordinary half-point lines -- point 1.5 means "Over 1.5", which needs 2. Reading a
+// baseball 1.5 as a milestone gives a leg labelled "1.5+ Hits" stored against an
+// effective line of 1.0, which is neither what the book offered nor comparable with
+// anything else on the board.
+//
+// The integer IS the signal, and it is not a heuristic: a milestone is always a whole
+// number (nobody sells "1.5+ hits") and a half-point line never is.
+const glIsMilestone = point => Number.isInteger(point);
+
+// One leg builder for both ladders. `alt` selects the alternate markets; whether an
+// individual level is scored as a milestone or as an ordinary line is then decided
+// per outcome by glIsMilestone.
+function glLegsForMarket(ctx, mkey, alt){
+  const market = ctx.detailMarkets[mkey];
+  if(!market || !Array.isArray(market.outcomes)) return [];
+  const statKey = propMarketStat(mkey);
+  if(!statKey) return [];
+  const label = sportMarketLabel(statKey, ctx.sport);
+  const out = [];
+
+  // An alternate ladder lists one outcome per level per player, so it is walked
+  // outcome by outcome. A standard market lists Over and Under for one line, so
+  // it is walked player by player and the two sides are paired.
+  const units = alt
+    ? (market.outcomes || []).filter(o => o && o.description
+        && o.point !== undefined && o.point !== null)
+        .map(o => ({pname: o.description, point: o.point,
+                    side: o.name === 'Under' ? 'under' : 'over', over: o, under: o}))
+    : [...new Set((market.outcomes || []).map(o => o && o.description).filter(Boolean))]
+        .map(pname => {
+          const over  = market.outcomes.find(o => o.description === pname && o.name === 'Over');
+          const under = market.outcomes.find(o => o.description === pname && o.name === 'Under');
+          const point = (over || under || {}).point;
+          return {pname, point, side: null, over, under};
+        })
+        .filter(u => u.point !== undefined && u.point !== null);
+
+  for(const u of units){
+    const team = findPlayerTeam(u.pname, ctx.homeShort, ctx.awayShort);
+    if(!team) continue;   // no log for him on either club tonight -- see the guard in psGatherProps
+    const opponent = team === ctx.homeShort ? ctx.awayShort : ctx.homeShort;
+    const milestone = alt && glIsMilestone(u.point);
+    // The line a projection would be measured against. A "2+" milestone is the same
+    // bet as an Over 1.5, and expressing it that way is what lets an alt leg be
+    // compared with a standard one anywhere downstream. A half-point alt is already
+    // in that form and is left alone.
+    const effLine = milestone ? altEffectiveLine(u.point) : u.point;
+
+    const sides = alt ? [u.side] : ['over', 'under'];
+    for(const side of sides){
+      const outcome = side === 'under' ? u.under : u.over;
+      if(!outcome) continue;
+      const rate = w => milestone
+        ? altHitRateSided(u.pname, team, statKey, u.point, side, w)
+        : propHitRateSided(u.pname, team, statKey, u.point, side, w);
+      const r5 = rate(5), r10 = rate(10), r15 = rate(15), rAll = rate('all');
+      if(!r10 || !r15) continue;
+      if(r10.gp < ctx.floors.w10 || r15.gp < ctx.floors.w15) continue;
+      if(r10.rate < ctx.QUAL || r15.rate < ctx.QUAL) continue;
+
+      out.push({
+        label: milestone
+          ? `${u.pname} ${u.point}+ ${label}${side === 'under' ? ' (Under)' : ''}`
+          : `${u.pname} ${side === 'under' ? 'Under' : 'Over'} ${u.point} ${label}`,
+        price: outcome.price,
+        sportsbook: bookSourceLabel(outcome, ctx.bookForFallback),
+        rate5: r5 ? r5.rate : null, rate10: r10.rate, rate15: r15.rate,
+        rateAll: rAll ? rAll.rate : null,
+        gp5: r5 ? r5.gp : 0, gp10: r10.gp, gp15: r15.gp, gpAll: rAll ? rAll.gp : 0,
+        // The raw rates ARE the rates here: nothing adjusts them, because there is
+        // no minutes model in baseball. Carried anyway so the columns that read
+        // rawRate10 do not have to branch on sport.
+        rawRate5: r5 ? r5.rate : null, rawRate10: r10.rate,
+        rawRate15: r15.rate, rawRateAll: rAll ? rAll.rate : null,
+        minutesAdjusted: false, minutesProj: null, agreement: null,
+        projEdge: null, agreementVerdict: null,
+        betType: alt ? 'player_prop_alt' : 'player_prop',
+        team, opponent, player: u.pname, statKey, market: label,
+        line: effLine, side,
+        altPoint: alt ? u.point : undefined,
+        thresholdToHit: milestone ? u.point
+          : (Number.isInteger(u.point) ? u.point + 1 : Math.ceil(u.point)),
+        gameLabel: ctx.gameLabel, gameDate: ctx.gameDate,
+        commenceTime: ctx.ev.commence_time, eventId: ctx.ev.id,
+      });
+    }
+  }
+  return out;
+}
+
+// The entry point gatherCandidateLegs delegates to. Same signature shape, same
+// return shape: an array of legs sorted worst-case-confidence first.
+function gatherGenericPlayerLegs(ev, homeShort, awayShort, detailMarkets, QUAL, bookForFallback){
+  const sport = (typeof PS_STATE !== 'undefined' && PS_STATE.sport) || undefined;
+  const ctx = {
+    ev, homeShort, awayShort, detailMarkets, bookForFallback, sport,
+    QUAL: QUAL || 0,
+    floors: sportGpFloors(sport),
+    gameLabel: `${ev.away_team} @ ${ev.home_team}`,
+    gameDate: toEasternDateStr(ev.commence_time),
+  };
+  let legs = [];
+  // Base ladders first, then alternates. Alt ladders are NOT collapsed here, for
+  // exactly the reason the WNBA path documents: collapsing to the best hit rate
+  // always keeps the lowest milestone, which is the one priced at -2000 that the
+  // caller's price floor then discards, leaving nothing. The callers collapse
+  // after their own price filter.
+  for(const mkey of sportPropMarkets(sport)) legs = legs.concat(glLegsForMarket(ctx, mkey, false));
+  for(const mkey of sportAltPropMarkets(sport)) legs = legs.concat(glLegsForMarket(ctx, mkey, true));
+  legs.sort((a, b) => rankScoreForBet(b) - rankScoreForBet(a));
+  return legs;
+}
+// >>> END MODULE generic_legs.js
+
 // <<< MODULE props_screen.js
 // ============================================================================
 // THE PROPS SCREEN -- the new primary surface.
@@ -10523,6 +10712,13 @@ function psH2H(leg){
 // the under -- so for an Under bet the scale is inverted before sorting, or
 // "best DvP" would mean the opposite thing on half the board.
 function psDvp(leg){
+  // Basketball only, and this is a guard rather than a nicety: getPlayerPosition
+  // walks DATA.rosters, which the MLB blob does not carry, so on a baseball leg it
+  // threw a TypeError out of psMetricValue -- past the try/catch below, which only
+  // wraps the index lookup. The registry already keeps `dvp` out of MLB's metric
+  // row, but a metric function that only works when someone else remembers not to
+  // call it is a trap for the next sport.
+  if(sportDef().family !== 'basketball') return null;
   const bucket = positionBucket(getPlayerPosition(leg.player, leg.team));
   if(!bucket || !leg.opponent) return null;
   let idx = null;
@@ -10566,6 +10762,8 @@ function psEdge(leg){
 // Her record against opposing position groups of this height tier. Reuses the
 // height-matchup machinery from the player profile pages verbatim.
 function psSize(leg){
+  // Height tiers read the basketball roster tables, same reason as psDvp above.
+  if(sportDef().family !== 'basketball') return null;
   if(!leg.opponent) return null;
   let tierData = null, groupTier = null;
   try{
@@ -16546,6 +16744,19 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   // Qualification bar: a specific side of a bet (Over/Under, team ML, team spread) must clear
   // QUAL hit rate in BOTH the last-10-game window and the last-15-game window (fixed windows,
   // independent of the page-level hit-rate selector above) to be eligible.
+  // EVERYTHING BELOW THIS LINE IS BASKETBALL. Not merely tuned for it -- structurally
+  // dependent on it: the market keys are literal 'player_points'-style strings, the
+  // team-level legs read DATA.fullTeamGames and DATA.teamRecords (which only the WNBA
+  // blob carries, so an MLB slate threw a TypeError here before the first prop was
+  // ever considered), and the qualification bars run through minutes projections and
+  // defence-vs-position. A baseball payload came out of this function as an empty
+  // array every single time, which is exactly what an empty MLB board looks like.
+  //
+  // So a non-basketball sport takes its own path rather than threading `if(sport)`
+  // through four hundred lines written against a different game. See generic_legs.js.
+  if(sportDef().family !== 'basketball'){
+    return gatherGenericPlayerLegs(ev, homeShort, awayShort, detailMarkets, QUAL, bookForFallback);
+  }
   const candidates = []; // {label, price, rate10, rate15, ...structured fields for the bet tracker}
   const gameLabel = `${ev.away_team} @ ${ev.home_team}`;
   const gameDate = toEasternDateStr(ev.commence_time);
