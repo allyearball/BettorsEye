@@ -5,6 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bettor&#39;s Eye</title>
 <link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Bettor's Eye">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<script>
+// The service worker is NETWORK-FIRST for the page (see sw.js). Registered after
+// load so it never competes with the 3 MB document for bandwidth, and only over
+// https/localhost, where the API exists at all -- opening the built file straight
+// off disk would otherwise throw on every load.
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(e => console.warn('sw registration failed', e));
+  });
+}
+</script>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Bettor&#39;s Eye">
@@ -292,7 +308,22 @@
 // DATA is shipped gzip-compressed + base64-encoded to keep this file small enough to
 // upload/host anywhere. Decompressed once at load time using the browser's native
 // DecompressionStream API (supported in Safari 16.4+ / any iPhone from the last ~3 years).
-let DATA = null;
+// DATA IS A VIEW ON THE SELECTED SPORT, not a fixed blob.
+//
+// There are ~115 direct `DATA.fullPlayerLogs` / `DATA.teams` / `DATA.games` reads
+// through this file -- the whole prop-gathering path, every hit rate, every chart.
+// Repointing each one at an accessor would be 115 chances to miss one, and a missed
+// one is invisible: it silently computes a WNBA hit rate for a baseball player.
+//
+// So the NAME is the accessor. `DATA` is a getter that returns whichever sport is
+// selected, and the WNBA blob lives under its own name. Every existing read becomes
+// sport-correct at once, and there is no way to forget one.
+//
+// The cost of this choice, stated plainly: the legacy basketball pages (League
+// Stats, Team, Top Bets, Bet Tracker) would read a baseball blob if opened while
+// MLB is selected. They are gated to basketball sports in the menu for exactly
+// that reason -- see psBuildMenu.
+let WNBA_DATA = null;
 const DATA_B64_GZ = "__APP_DATA_B64GZ__";
 
 // A SECOND SPORT'S DATA, in its own payload.
@@ -333,8 +364,16 @@ async function loadMlbData(){
 function sportDATA(sport){
   const key = sport || (typeof PS_STATE !== 'undefined' ? PS_STATE.sport : 'wnba');
   if(key === 'mlb') return DATA_MLB;
-  return DATA;
+  return WNBA_DATA;
 }
+
+// The global every legacy read goes through. Defined as a property rather than a
+// `let` so it can be a getter; assignment is deliberately not supported, because
+// the only two writers are the loaders below.
+Object.defineProperty(globalThis, 'DATA', {
+  configurable: true,
+  get(){ return sportDATA(); },
+});
 </script>
 <script>
 function cmp(a,b){
@@ -3369,7 +3408,54 @@ function appendPlayerTeamByline(container, team, opts){
   return el;
 }
 
+
+// The profile for a sport whose data does not fit the basketball page: a back
+// button, the Bets view, and nothing that would be empty.
+function renderSimpleProfile(playerName, team, returnTo){
+  lastRender = () => renderSimpleProfile(playerName, team, returnTo);
+  main.innerHTML = '';
+  if(typeof removeGameWindowStickyBar === 'function') removeGameWindowStickyBar();
+
+  const back = document.createElement('button');
+  back.className = 'backbtn'; back.textContent = '\u2190 Back';
+  back.addEventListener('click', ()=>navBack(()=>{ if(returnTo) returnTo(); else renderTeamsScreen(); }));
+  main.appendChild(back);
+
+  const rec = ((sportDATA() || {}).fullPlayerLogs || {})[playerName + '|' + team];
+  if(!rec){
+    const e = document.createElement('div');
+    e.className = 'footnote';
+    e.style.cssText = 'padding:20px 0;';
+    e.textContent = `No game log found for ${playerName} on ${team}.`;
+    main.appendChild(e);
+    main.appendChild(psBottomBar('teams', null));
+    return;
+  }
+
+  const host = document.createElement('div');
+  host.style.cssText = 'padding-bottom:86px;';
+  main.appendChild(host);
+  try{
+    buildPlayerBetsTab(host, playerName, team, pbNextOpponent(team),
+                       {pos: rec.pos, bats: rec.bats, throws: rec.throws});
+  }catch(e){
+    host.innerHTML = '<div class="footnote">Profile unavailable: ' + e.message + '</div>';
+    console.warn('simple profile', e);
+  }
+  main.appendChild(psBottomBar('teams', null));
+}
+
 function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
+  // A SPORT WITHOUT THE BASKETBALL TABS GETS THE BETS PAGE ON ITS OWN.
+  //
+  // Everything below this line -- Production, Gamelogs, Vs. Opponent, Season, the
+  // height-tier work, the minutes window -- reads basketball stats out of the WNBA
+  // blob. Pointing it at a pitcher would render four tabs of dashes. The Bets tab
+  // is the one part already sport-neutral (its stat chips come from the registry,
+  // its chart reads whatever key it is given), so for baseball that IS the profile.
+  if(sportDef().family !== 'basketball'){
+    return renderSimpleProfile(playerName, team, returnTo);
+  }
   windowMode = windowMode===undefined ? 'all' : windowMode; // default matches prior behavior
   month = month || 'full';
   const key = `${playerName}|${team}`;
@@ -4187,7 +4273,7 @@ async function initApp(){
     return;
   }
   try {
-    DATA = await loadData();
+    WNBA_DATA = await loadData();
     // MLB is loaded alongside, not lazily: the payload is inline in this same file,
     // so there is nothing to defer -- the bytes have already been downloaded. A
     // failure here leaves DATA_MLB null and the sport shows its empty state rather
@@ -4465,6 +4551,21 @@ function urlBase64ToUint8Array(base64String){
   const outputArray = new Uint8Array(rawData.length);
   for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
   return outputArray;
+}
+
+// The Odds API market key -> our stat key, FOR THE CURRENT SPORT. The literal table
+// below is the WNBA one and stays as the fallback; the registry carries each sport's
+// own mapping, so `batter_hits` resolves to `hits_bat` on a baseball slate instead of
+// to nothing. Alternate ladders share the base market's stat, which is why the
+// `_alternate` suffix is stripped before the lookup.
+function propMarketStat(marketKey){
+  if(!marketKey) return undefined;
+  const base = String(marketKey).replace(/_alternate$/, '');
+  try{
+    const m = (sportDef().propMarkets || {})[base];
+    if(m) return m;
+  }catch(e){ /* registry not ready */ }
+  return PROP_MARKET_TO_STAT[marketKey] || PROP_MARKET_TO_STAT[base];
 }
 
 const PROP_MARKET_TO_STAT = {
@@ -7954,7 +8055,7 @@ function renderOddsPage(){
   const head = document.createElement('div'); head.className='pagehead';
   head.innerHTML = `<h2>Live Lines <span id="liveLinesInfoIcon"></span></h2>`;
   main.appendChild(head);
-  appendDefIcon(head.querySelector('#liveLinesInfoIcon'), `Pulls each team's next scheduled game through your own Cloudflare Worker proxy, across all 6 linked sportsbooks \u2014 your real API key lives only in your Worker's environment, never in this file or in your browser. <b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else, with <b style="color:var(--gold)">gold</b> instead of green whenever that rate is 96% or higher. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same rule, windowed the same way, and both prop tables can be filtered by any column. Click a game's title to drill into just that matchup with its own window toggle. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom. Full-game Moneyline, Spread, and Total lines also show a small "VSiN: X% handle / Y% bets" line \u2014 DraftKings betting splits pulled from VSiN Pro \u2014 showing "\u2014" wherever VSiN hasn't posted a split yet. VSiN doesn't publish splits for halves, team totals, player props, alt lines, or parlays, so those sections don't show this line at all.`);
+  appendDefIcon(head.querySelector('#liveLinesInfoIcon'), `Pulls each team's next scheduled game through your own Cloudflare Worker proxy, across all 6 linked sportsbooks \u2014 your real API key lives only in your Worker's environment, never in this file or in your browser. <b>Note:</b> DraftKings only posts lines a day or two before tip-off, so not every team's "next game" will have odds yet \u2014 those will just show as unavailable. Moneyline, spread, and total lines (full game, 1st half, and 2nd half) all show a hit-rate badge for each team \u2014 same 60% color rule as everywhere else, with <b style="color:var(--gold)">gold</b> instead of green whenever that rate is 96% or higher. Half hit rates are derived from this season's play-by-play data. Player prop hit rates use the same rule, windowed the same way, and both prop tables can be filtered by any column. Click a game's title to drill into just that matchup with its own window toggle. Each game also gets two auto-generated parlay sections (75%+ and 70%+ cutoffs) at the bottom.`);
 
   // Worker URL config (input, Fetch button, remember/forget) is intentionally NOT rendered --
   // the page auto-loads a saved URL or falls back to the baked-in DEFAULT_WORKER_URL and
@@ -10084,10 +10185,13 @@ const SPORT_DEFS = {
     season: 2026, splitYear: false, active: true, dataLoaded: true,
     pronoun: {subject:'he', object:'him', possessive:'his', plural:'men'},
     oddsSportKey: 'baseball_mlb',
-    // Season data is in; the Worker does not yet fetch baseball_mlb props, and the
-    // player profile is still the basketball page. Both are honest false rather
-    // than a screen that half-works.
-    hasOdds: false, hasPlayerPage: false,
+    // Season data is in and the profile works (the Bets view, which is sport-neutral).
+    // Odds stay false until the Worker fetches baseball_mlb.
+    // The Worker now fetches baseball_mlb (batter, pitcher and alternate market
+    // groups) and caches it under mlb: keys. This flag says the FEED IS WIRED; it
+    // does not promise a game is on tonight -- an empty slate falls through to the
+    // board's ordinary "no props right now" state, which is the honest answer.
+    hasOdds: true, hasPlayerPage: true,
     // Abbreviation and primary colour per club, the same job PS_TEAM does for the
     // WNBA. Without these every badge would read the first three letters of the
     // city -- "CHI" for both Chicago clubs, "NEW" for both New York clubs.
@@ -10556,6 +10660,23 @@ function psGatherProps(cachedFetch, selectedBook){
         commenceTime: ev.commence_time,
       })));
   });
+  // CROSS-SPORT GUARD. Legs are built from the ODDS FEED, so their player and team
+  // names come from whatever the Worker returned -- not from our own data. If that
+  // feed ever hands back the wrong league (an undeployed Worker ignoring ?sport=, a
+  // stale cache key, a future routing bug), every one of those props would render on
+  // this board looking entirely normal, with blank hit rates nobody would question.
+  //
+  // So a prop only survives if we actually hold a game log for that player on that
+  // team in the CURRENT sport. It makes cross-sport contamination structurally
+  // impossible rather than merely unlikely, and it costs one map lookup per leg.
+  const known = ((sportDATA() || {}).fullPlayerLogs) || {};
+  const beforeGuard = pool.length;
+  pool = pool.filter(l => Object.prototype.hasOwnProperty.call(known, l.player + '|' + l.team));
+  if(beforeGuard && !pool.length){
+    console.warn(`props: dropped all ${beforeGuard} legs — the odds feed returned players `
+      + `this sport (${PS_STATE.sport}) has no logs for. Wrong league, or an undeployed Worker.`);
+  }
+
   // One row per player/stat/side/line, best price wins.
   const best = new Map();
   for(const l of pool){
@@ -10569,10 +10690,16 @@ function psGatherProps(cachedFetch, selectedBook){
 // One fetch of the day's board, shared by Props, Markets and My Radar. Three
 // screens each pulling their own copy would triple the Worker calls and let the
 // three disagree about what is on the slate.
-let _psPool = null, _psPoolAt = 0;
+let _psPool = null, _psPoolAt = 0, _psPoolSport = null;
 const PS_POOL_TTL_MS = 90 * 1000;
 async function psLoadPool(force){
-  if(!force && _psPool && (Date.now() - _psPoolAt) < PS_POOL_TTL_MS) return _psPool;
+  // THE CACHE IS KEYED BY SPORT. It was keyed only by time, so switching leagues
+  // inside the 90-second window handed the new board the OLD league's pool -- a
+  // WNBA slate rendered under MLB headings, with the cross-sport guard never
+  // consulted because psGatherProps was never re-run. A cache that ignores a
+  // dimension the caller can change is a cache that serves the wrong answer.
+  if(!force && _psPool && _psPoolSport === PS_STATE.sport
+     && (Date.now() - _psPoolAt) < PS_POOL_TTL_MS) return _psPool;
   const events = await fetchCachedOddsEvents();
   const todayStr = new Date().toDateString();
   const todays = (events||[]).filter(ev => new Date(ev.commence_time).toDateString() === todayStr);
@@ -10592,6 +10719,7 @@ async function psLoadPool(force){
   })).sort((a,b)=>String(a.t).localeCompare(String(b.t)));
   _psPool = psGatherProps(cached, 'best');
   _psPoolAt = Date.now();
+  _psPoolSport = PS_STATE.sport;
   return _psPool;
 }
 
@@ -11087,8 +11215,15 @@ function psBuildMenu(panel, onPick){
   // The two destinations the retired bottom tab bar used to carry. Note this is
   // LEAGUE Stats -- the league-wide stat tables -- not the team/roster directory
   // that now sits on the bottom bar under the name Stats.
-  add('League Stats', ()=>renderLeagueStatsPage());
-  add('Live Lines', ()=>renderOddsPage());
+  // BASKETBALL-ONLY DESTINATIONS. League Stats, Live Lines and the furloughed pages
+  // all read basketball stats -- points, rebounds, minutes, height tiers. Now that
+  // DATA follows the selected sport, opening one of them on a baseball slate would
+  // render a page of blanks rather than failing loudly. They are hidden instead.
+  const basketball = sportDef().family === 'basketball';
+  if(basketball){
+    add('League Stats', ()=>renderLeagueStatsPage());
+    add('Live Lines', ()=>renderOddsPage());
+  }
   const hr = document.createElement('div');
   hr.style.cssText = 'border-top:1px solid var(--line);margin:6px 0;';
   panel.appendChild(hr);
@@ -11097,9 +11232,11 @@ function psBuildMenu(panel, onPick){
   lab.style.cssText = 'font-size:10px;letter-spacing:.1em;color:var(--sub);padding:4px 16px;';
   panel.appendChild(lab);
   // Out of the main navigation, intact and reachable. Nothing was deleted.
-  add('Top Bets (old)', ()=>renderHomePage(), true);
-  add('Bet Tracker (old)', ()=>renderBetTrackerPage(), true);
-  if(typeof isAdminUser === 'function' && isAdminUser()) add('App Tracker (old)', ()=>renderAppTrackerPage(), true);
+  if(basketball){
+    add('Top Bets (old)', ()=>renderHomePage(), true);
+    add('Bet Tracker (old)', ()=>renderBetTrackerPage(), true);
+    if(typeof isAdminUser === 'function' && isAdminUser()) add('App Tracker (old)', ()=>renderAppTrackerPage(), true);
+  }
   return panel;
 }
 // >>> END MODULE props_screen.js
@@ -11441,6 +11578,24 @@ const PB_COMPANION = {
   pr:  {key:'min',   label:'MIN',  fmt: v => v === null || v === undefined ? '—' : String(Math.round(v))},
   pa:  {key:'min',   label:'MIN',  fmt: v => v === null || v === undefined ? '—' : String(Math.round(v))},
   ra:  {key:'min',   label:'MIN',  fmt: v => v === null || v === undefined ? '—' : String(Math.round(v))},
+
+  // --- baseball ---
+  // Plate appearances are the opportunity term for every batting market, exactly
+  // as minutes are in basketball, so they are the companion for all of them. The
+  // pitcher markets get outs, for the same reason.
+  hits_bat:     {key:'pa',   label:'PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  total_bases:  {key:'pa',   label:'PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  hr:           {key:'pa',   label:'PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  rbi:          {key:'pa',   label:'PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  runs:         {key:'pa',   label:'PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  hrr:          {key:'pa',   label:'PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  bb:           {key:'pa',   label:'PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  so_bat:       {key:'pa',   label:'PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  sb:           {key:'pa',   label:'PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
+  so_pit:       {key:'outs', label:'OUTS',fmt: v => v === null || v === undefined ? '—' : String(v)},
+  er:           {key:'outs', label:'OUTS',fmt: v => v === null || v === undefined ? '—' : String(v)},
+  hits_allowed: {key:'outs', label:'OUTS',fmt: v => v === null || v === undefined ? '—' : String(v)},
+  bb_pit:       {key:'outs', label:'OUTS',fmt: v => v === null || v === undefined ? '—' : String(v)},
 };
 const pbCompanion = (statKey) => PB_COMPANION[statKey] || null;
 
@@ -11979,8 +12134,18 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   tm.textContent = FULL_TEAM_NAME[team] || team;
   tm.style.cssText = 'font-size:14px;color:var(--ink);margin-top:3px;';
   const pos = document.createElement('div');
-  const position = (bio && bio.pos) || getPlayerPosition(playerName, team) || '—';
-  pos.textContent = position;
+  const position = (bio && bio.pos)
+    || (sportDef().family === 'basketball' && typeof getPlayerPosition === 'function'
+        ? getPlayerPosition(playerName, team) : null)
+    || (((sportDATA() || {}).fullPlayerLogs || {})[playerName + '|' + team] || {}).pos
+    || '—';
+  // Handedness is the standing matchup fact in baseball, so it sits with the
+  // position rather than being buried in a filter nobody opens.
+  const hand = bio && (bio.bats || bio.throws)
+    ? (bio.bats ? ` · bats ${String(bio.bats).toLowerCase()}` : '')
+      + (bio.throws ? ` · throws ${String(bio.throws).toLowerCase()}` : '')
+    : '';
+  pos.textContent = position + hand;
   pos.style.cssText = 'font-size:13px;color:var(--sub);margin-top:2px;font-weight:700;';
   idBlock.appendChild(nm); idBlock.appendChild(tm); idBlock.appendChild(pos);
 
@@ -11992,7 +12157,19 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   actions.appendChild(pbCircleBtn(
     `<span style="font-size:12px;letter-spacing:.02em;">${psAbbr(team)}</span>`,
     FULL_TEAM_NAME[team] || team,
-    ()=>renderTeamPage(team),
+    ()=>{
+      // renderTeamPage is the basketball team page. Sports without one land on the
+      // Stats directory with their club expanded, which is the same destination in
+      // spirit -- "show me this team".
+      if(sportDef().family === 'basketball' && typeof renderTeamPage === 'function'){
+        renderTeamPage(team);
+      } else {
+        try{
+          const open = tsLoadOpen(); open.add(team); tsSaveOpen(open);
+        }catch(e){}
+        renderTeamsScreen();
+      }
+    },
     {id:'team', bg: psColor(team), color:'#fff', border: psColor(team)}));
 
   const favs = psLoadFavs();
@@ -12232,10 +12409,15 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
       ()=>{ PB_STATE.venue = PB_STATE.venue === 'home' ? null : 'home'; repaint(); }, 'home'));
     filterHolder.appendChild(mk('Away', PB_STATE.venue === 'away',
       ()=>{ PB_STATE.venue = PB_STATE.venue === 'away' ? null : 'away'; repaint(); }, 'away'));
-    [['tallest','vs Tall'],['middle','vs Med'],['shortest','vs Short']].forEach(([k,l])=>{
-      filterHolder.appendChild(mk(l, PB_STATE.tier === k,
-        ()=>{ PB_STATE.tier = PB_STATE.tier === k ? null : k; repaint(); }, k));
-    });
+    // Opponent HEIGHT TIERS are a basketball matchup and mean nothing in baseball,
+    // where the matchup that matters is the pitcher's throwing hand. Each sport
+    // gets the filter its own game actually has.
+    if(sportDef().family === 'basketball'){
+      [['tallest','vs Tall'],['middle','vs Med'],['shortest','vs Short']].forEach(([k,l])=>{
+        filterHolder.appendChild(mk(l, PB_STATE.tier === k,
+          ()=>{ PB_STATE.tier = PB_STATE.tier === k ? null : k; repaint(); }, k));
+      });
+    }
   }
 
   function repaint(){
@@ -15676,33 +15858,15 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   const gameMarkets = marketsByKey(dk);
   const detailMarkets = marketsByKey(dkDetail);
 
-  // VSiN only publishes DraftKings Handle %/Bet % splits for full-game Moneyline, Spread,
-  // and Total \u2014 not for halves, team totals, player props, alt lines, or parlays. Looks
-  // up DATA.vsinSplits[shortTeam][market] (populated by the pipeline's VSiN scrape, if any)
-  // and returns {handle, bet} or null if unavailable.
-  function vsinSplitFor(shortTeam, market){
-    if(!DATA.vsinSplits || !shortTeam) return null;
-    const teamSplits = DATA.vsinSplits[shortTeam];
-    if(!teamSplits) return null;
-    const s = teamSplits[market];
-    if(!s || s.handle===undefined || s.bet===undefined) return null;
-    return s;
-  }
-  function vsinCellHtml(split){
-    if(!split) return '<span style="color:var(--sub);font-size:11px;">VSiN: \u2014</span>';
-    return `<span style="color:var(--navy2);font-size:11px;">VSiN: ${split.handle}% handle / ${split.bet}% bets</span>`;
-  }
-
   // Shared table renderer for Full Game / 1st Half / 2nd Half / Team Totals -- one row per
   // team/side (not the old side-by-side away|home grid), with a consistent column set across
   // every section so the layout reads the same regardless of which market you're looking at.
   function buildOddsTable(container, rows, opts){
     opts = opts || {};
-    const includeVsin = opts.includeVsin !== false;
     const wrap = document.createElement('div'); wrap.style.cssText = 'overflow-x:auto;margin:4px 0 12px;';
     const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:12.5px;';
     const thead = document.createElement('thead');
-    const headers = ['Bet Type','Live Total','Team','Odds','Via','L5','L10','L15'].concat(includeVsin?['VSiN']:[]).concat(['Track','']);
+    const headers = ['Bet Type','Live Total','Team','Odds','Via','L5','L10','L15','Track',''];
     thead.innerHTML = '<tr>' + headers.map(h=>`<th style="text-align:right;padding:6px 8px;border-bottom:2px solid var(--line);white-space:nowrap;color:var(--sub);font-size:11px;text-transform:uppercase;">${h}</th>`).join('') + '</tr>';
     const tbody = document.createElement('tbody');
     rows.forEach(r=>{
@@ -15745,11 +15909,6 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
 
       const cellsSoFar = [tdType, tdLiveTotal, tdTeam, tdOdds, tdVia, hrCell(r.hr5), hrCell(r.hr10), hrCell(r.hr15)];
 
-      if(includeVsin){
-        const tdVsin = document.createElement('td'); tdVsin.style.cssText='padding:7px 8px;white-space:nowrap;';
-        tdVsin.innerHTML = r.vsinSplit ? vsinCellHtml(r.vsinSplit) : '<span style="color:var(--sub);font-size:11px;">\u2014</span>';
-        cellsSoFar.push(tdVsin);
-      }
 
       const tdTrack = document.createElement('td'); tdTrack.style.cssText='padding:7px 8px;';
       if(r.trackBtn) tdTrack.appendChild(r.trackBtn); else tdTrack.textContent = '\u2014';
@@ -15787,8 +15946,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const homeTrack = (!half && home) ? makeTrackButton({label:`${ev.home_team} Moneyline`, price:home.price, betType:'moneyline', team:homeShort, opponent:awayShort, side:'team', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
       const awayHist = (!half && away) ? makeHistoryButton({label:`${ev.away_team} Moneyline`, betType:'moneyline', team:awayShort, opponent:homeShort, gameLabel, eventId: ev.id}) : null;
       const homeHist = (!half && home) ? makeHistoryButton({label:`${ev.home_team} Moneyline`, betType:'moneyline', team:homeShort, opponent:awayShort, gameLabel, eventId: ev.id}) : null;
-      rows.push({betType:'Moneyline', teamShort:awayShort, teamFull:ev.away_team, oddsText: away?`${away.price>0?'+':''}${away.price}`:null, viaText: bookSourceLabel(away, selectedBook), hr5:awayHr5, hr10:awayHr10, hr15:awayHr15, vsinSplit: half?null:vsinSplitFor(awayShort,'ml'), trackBtn:awayTrack, historyBtn:awayHist, liveKey: half?null:'ml-away', liveVerdict:{type:'ml', side:'away', half}});
-      rows.push({betType:'Moneyline', teamShort:homeShort, teamFull:ev.home_team, oddsText: home?`${home.price>0?'+':''}${home.price}`:null, viaText: bookSourceLabel(home, selectedBook), hr5:homeHr5, hr10:homeHr10, hr15:homeHr15, vsinSplit: half?null:vsinSplitFor(homeShort,'ml'), trackBtn:homeTrack, historyBtn:homeHist, liveKey: half?null:'ml-home', liveVerdict:{type:'ml', side:'home', half}});
+      rows.push({betType:'Moneyline', teamShort:awayShort, teamFull:ev.away_team, oddsText: away?`${away.price>0?'+':''}${away.price}`:null, viaText: bookSourceLabel(away, selectedBook), hr5:awayHr5, hr10:awayHr10, hr15:awayHr15, trackBtn:awayTrack, historyBtn:awayHist, liveKey: half?null:'ml-away', liveVerdict:{type:'ml', side:'away', half}});
+      rows.push({betType:'Moneyline', teamShort:homeShort, teamFull:ev.home_team, oddsText: home?`${home.price>0?'+':''}${home.price}`:null, viaText: bookSourceLabel(home, selectedBook), hr5:homeHr5, hr10:homeHr10, hr15:homeHr15, trackBtn:homeTrack, historyBtn:homeHist, liveKey: half?null:'ml-home', liveVerdict:{type:'ml', side:'home', half}});
     }
 
     // Spread
@@ -15805,8 +15964,8 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const homeTrack = (!half && home) ? makeTrackButton({label:`${ev.home_team} ${home.point>0?'+':''}${home.point}`, price:home.price, betType:'spread', team:homeShort, opponent:awayShort, side:'team', line:home.point, gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
       const awayHist = (!half && away) ? makeHistoryButton({label:`${ev.away_team} Spread`, betType:'spread', team:awayShort, opponent:homeShort, gameLabel, eventId: ev.id}) : null;
       const homeHist = (!half && home) ? makeHistoryButton({label:`${ev.home_team} Spread`, betType:'spread', team:homeShort, opponent:awayShort, gameLabel, eventId: ev.id}) : null;
-      rows.push({betType:'Spread', teamShort:awayShort, teamFull:ev.away_team, oddsText: away?`${away.point>0?'+':''}${away.point} (${away.price>0?'+':''}${away.price})`:null, viaText: bookSourceLabel(away, selectedBook), hr5:awayHr5, hr10:awayHr10, hr15:awayHr15, vsinSplit: half?null:vsinSplitFor(awayShort,'spread'), trackBtn:awayTrack, historyBtn:awayHist, liveKey: half?null:'spread-away', liveVerdict: away?{type:'spread', side:'away', point:away.point, half}:null});
-      rows.push({betType:'Spread', teamShort:homeShort, teamFull:ev.home_team, oddsText: home?`${home.point>0?'+':''}${home.point} (${home.price>0?'+':''}${home.price})`:null, viaText: bookSourceLabel(home, selectedBook), hr5:homeHr5, hr10:homeHr10, hr15:homeHr15, vsinSplit: half?null:vsinSplitFor(homeShort,'spread'), trackBtn:homeTrack, historyBtn:homeHist, liveKey: half?null:'spread-home', liveVerdict: home?{type:'spread', side:'home', point:home.point, half}:null});
+      rows.push({betType:'Spread', teamShort:awayShort, teamFull:ev.away_team, oddsText: away?`${away.point>0?'+':''}${away.point} (${away.price>0?'+':''}${away.price})`:null, viaText: bookSourceLabel(away, selectedBook), hr5:awayHr5, hr10:awayHr10, hr15:awayHr15, trackBtn:awayTrack, historyBtn:awayHist, liveKey: half?null:'spread-away', liveVerdict: away?{type:'spread', side:'away', point:away.point, half}:null});
+      rows.push({betType:'Spread', teamShort:homeShort, teamFull:ev.home_team, oddsText: home?`${home.point>0?'+':''}${home.point} (${home.price>0?'+':''}${home.price})`:null, viaText: bookSourceLabel(home, selectedBook), hr5:homeHr5, hr10:homeHr10, hr15:homeHr15, trackBtn:homeTrack, historyBtn:homeHist, liveKey: half?null:'spread-home', liveVerdict: home?{type:'spread', side:'home', point:home.point, half}:null});
     }
 
     // Total
@@ -15819,11 +15978,11 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const underTrack = (!half && under) ? makeTrackButton({label:`Game Total Under ${point}`, price:under.price, betType:'total', team:awayShort, opponent:homeShort, line:point, side:'under', gameLabel, gameDate, commenceTime:ev.commence_time, eventId: ev.id}, 10) : null;
       const overHist = (!half && over) ? makeHistoryButton({label:'Game Total Over', betType:'total', team:awayShort, opponent:homeShort, side:'over', gameLabel, eventId: ev.id}) : null;
       const underHist = (!half && under) ? makeHistoryButton({label:'Game Total Under', betType:'total', team:awayShort, opponent:homeShort, side:'under', gameLabel, eventId: ev.id}) : null;
-      rows.push({betType:'Total', teamLabel: over?`Over ${over.point}`:'Over', oddsText: over?`${over.price>0?'+':''}${over.price}`:null, viaText: bookSourceLabel(over, selectedBook), hr5, hr10, hr15, vsinSplit: half?null:vsinSplitFor(awayShort,'total'), trackBtn:overTrack, historyBtn:overHist, liveKey: half?null:'total-over', liveVerdict: over?{type:'total', side:'over', point:over.point, half}:null});
-      rows.push({betType:'Total', teamLabel: under?`Under ${under.point}`:'Under', oddsText: under?`${under.price>0?'+':''}${under.price}`:null, viaText: bookSourceLabel(under, selectedBook), hr5, hr10, hr15, vsinSplit: half?null:vsinSplitFor(homeShort,'total'), trackBtn:underTrack, historyBtn:underHist, liveKey: half?null:'total-under', liveVerdict: under?{type:'total', side:'under', point:under.point, half}:null});
+      rows.push({betType:'Total', teamLabel: over?`Over ${over.point}`:'Over', oddsText: over?`${over.price>0?'+':''}${over.price}`:null, viaText: bookSourceLabel(over, selectedBook), hr5, hr10, hr15, trackBtn:overTrack, historyBtn:overHist, liveKey: half?null:'total-over', liveVerdict: over?{type:'total', side:'over', point:over.point, half}:null});
+      rows.push({betType:'Total', teamLabel: under?`Under ${under.point}`:'Under', oddsText: under?`${under.price>0?'+':''}${under.price}`:null, viaText: bookSourceLabel(under, selectedBook), hr5, hr10, hr15, trackBtn:underTrack, historyBtn:underHist, liveKey: half?null:'total-under', liveVerdict: under?{type:'total', side:'under', point:under.point, half}:null});
     }
 
-    buildOddsTable(container, rows, {includeVsin: !half});
+    buildOddsTable(container, rows);
   }
 
   function buildTeamTotalsTable(container, market, withHitRate, half){
@@ -15857,10 +16016,10 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
       const overHist = (!half && over) ? makeHistoryButton({label:`${teamFullName} Team Total Over`, betType:'team_total', team:shortName, opponent:oppShort, side:'over', gameLabel, eventId: ev.id}) : null;
       const underHist = (!half && under) ? makeHistoryButton({label:`${teamFullName} Team Total Under`, betType:'team_total', team:shortName, opponent:oppShort, side:'under', gameLabel, eventId: ev.id}) : null;
 
-      rows.push({betType:'Team Total', teamShort:shortName, teamFull:teamFullName, sideSuffix:' Over', oddsText: over?`${over.point} (${over.price>0?'+':''}${over.price})`:null, viaText: bookSourceLabel(over, selectedBook), hr5:overHr5, hr10:overHr10, hr15:overHr15, vsinSplit:null, trackBtn:overTrack, historyBtn:overHist, liveKey: half?null:`teamtotal-${shortName}`, liveVerdict: over?{type:'teamtotal', side:'over', team:shortName, point:over.point, half}:null});
-      rows.push({betType:'Team Total', teamShort:shortName, teamFull:teamFullName, sideSuffix:' Under', oddsText: under?`${under.point} (${under.price>0?'+':''}${under.price})`:null, viaText: bookSourceLabel(under, selectedBook), hr5:underHr5, hr10:underHr10, hr15:underHr15, vsinSplit:null, trackBtn:underTrack, historyBtn:underHist, liveVerdict: under?{type:'teamtotal', side:'under', team:shortName, point:under.point, half}:null});
+      rows.push({betType:'Team Total', teamShort:shortName, teamFull:teamFullName, sideSuffix:' Over', oddsText: over?`${over.point} (${over.price>0?'+':''}${over.price})`:null, viaText: bookSourceLabel(over, selectedBook), hr5:overHr5, hr10:overHr10, hr15:overHr15, trackBtn:overTrack, historyBtn:overHist, liveKey: half?null:`teamtotal-${shortName}`, liveVerdict: over?{type:'teamtotal', side:'over', team:shortName, point:over.point, half}:null});
+      rows.push({betType:'Team Total', teamShort:shortName, teamFull:teamFullName, sideSuffix:' Under', oddsText: under?`${under.point} (${under.price>0?'+':''}${under.price})`:null, viaText: bookSourceLabel(under, selectedBook), hr5:underHr5, hr10:underHr10, hr15:underHr15, trackBtn:underTrack, historyBtn:underHist, liveVerdict: under?{type:'teamtotal', side:'under', team:shortName, point:under.point, half}:null});
     });
-    buildOddsTable(container, rows, {includeVsin: false});
+    buildOddsTable(container, rows);
   }
 
   const windowLabelText = windowSize==='all' ? 'Full Season' : `Last ${windowSize}`;
@@ -16285,7 +16444,7 @@ function renderGameOddsBlock(container, ev, detail, windowSize, onTitleClick, st
   const allAltPlayers = {};
   Object.keys(STAT_TAB_MARKETS).forEach(tabKey=>{
     const {ou: ouKey, alt: altKey} = STAT_TAB_MARKETS[tabKey];
-    const statKey = PROP_MARKET_TO_STAT[ouKey];
+    const statKey = propMarketStat(ouKey);
     const marketLabel = PROP_MARKET_LABEL[ouKey];
     const container = tabContents[tabKey];
 
@@ -16470,7 +16629,7 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   // Pts+Reb+Ast bet was that this market list didn't ask the book for one.
   ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists','player_points_rebounds','player_points_assists','player_rebounds_assists'].forEach(mkey=>{
     const market = detailMarkets[mkey]; if(!market) return;
-    const statKey = PROP_MARKET_TO_STAT[mkey];
+    const statKey = propMarketStat(mkey);
     const players = [...new Set(market.outcomes.map(o=>o.description))];
     players.forEach(pname=>{
       const overO = market.outcomes.find(o=>o.description===pname && o.name==='Over');
@@ -16544,7 +16703,7 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
     const altLegs = [];
     ALT_PROP_MARKETS.forEach(mkey=>{
       const market = detailMarkets[mkey]; if(!market) return;
-      const statKey = PROP_MARKET_TO_STAT[mkey];
+      const statKey = propMarketStat(mkey);
       (market.outcomes || []).forEach(o=>{
         if(!o || !o.description || o.point === undefined || o.point === null) return;
         const pname = o.description;
@@ -17614,13 +17773,15 @@ function nowInEastern(){
 // cron hasn't run yet.
 async function fetchCachedOddsEvents(workerBaseOverride){
   const workerBase = workerBaseOverride || (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-  const resp = await fetchJson(`${workerBase}/cachedodds/events`);
+  // The Worker keys its cache by sport and defaults to WNBA when the parameter is
+  // absent, so an old build keeps working; a current one asks for what it is showing.
+  const resp = await fetchJson(`${workerBase}/cachedodds/events?sport=${encodeURIComponent(PS_STATE.sport)}`);
   if(resp && resp.error) throw new Error(resp.error);
   return resp.data || [];
 }
 async function fetchCachedOddsDetail(eventId, workerBaseOverride){
   const workerBase = workerBaseOverride || (await loadSavedUrl()) || DEFAULT_WORKER_URL;
-  const resp = await fetchJson(`${workerBase}/cachedodds/detail?eventId=${eventId}`);
+  const resp = await fetchJson(`${workerBase}/cachedodds/detail?eventId=${eventId}&sport=${encodeURIComponent(PS_STATE.sport)}`);
   if(resp && resp.error) throw new Error(resp.error);
   return resp.data || null;
 }
@@ -20791,7 +20952,7 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
   // Pts+Reb+Ast bet was that this market list didn't ask the book for one.
   ['player_points','player_rebounds','player_assists','player_threes','player_points_rebounds_assists','player_points_rebounds','player_points_assists','player_rebounds_assists'].forEach(mkey=>{
     const market = markets[mkey]; if(!market) return;
-    const statKey = PROP_MARKET_TO_STAT[mkey];
+    const statKey = propMarketStat(mkey);
     const players = [...new Set(market.outcomes.map(o=>o.description))];
     players.forEach(pname=>{
       const over = market.outcomes.find(o=>o.description===pname&&o.name==='Over');
@@ -20811,7 +20972,7 @@ function gatherAllCapturedLegs(markets, ev, homeShort, awayShort, gameLabel, gam
   // the right number; thresholdToHit carries the literal milestone, which is what grades it.
   ALT_PROP_MARKETS.forEach(mkey=>{
     const market = markets[mkey]; if(!market) return;
-    const statKey = PROP_MARKET_TO_STAT[mkey];
+    const statKey = propMarketStat(mkey);
     (market.outcomes || []).forEach(o=>{
       if(!o || !o.description || o.point === undefined || o.point === null) return;
       const pname = o.description;
