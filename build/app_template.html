@@ -10136,6 +10136,10 @@ const SPORT_DEFS = {
     hasOdds: true, hasPlayerPage: true,
     // From db/seed.sql: a 44-game season supports a 10-game form window.
     formWindow: 10, priorWeightGames: 12, thinDataGames: 5,
+    // Games in a full regular season. Only used as the top of the "minimum games
+    // played" slider, so it can lag a schedule change by a year without breaking
+    // anything -- but a wrong number here makes a whole stretch of the slider dead.
+    seasonGames: 44,
     // The bars gatherCandidateLegs has always used, now stated rather than
     // hardcoded: 60% of each window. See the MLB block for why this is per-sport.
     gpFloors: {w10: 6, w15: 9},
@@ -10253,6 +10257,7 @@ const SPORT_DEFS = {
     // heavier prior -- a batter's 15 games say far less about him than a
     // basketball player's 10 say about her.
     formWindow: 15, priorWeightGames: 45, thinDataGames: 12,
+    seasonGames: 162,
 
     metrics: [
       {key:'h2h',     label:'H2H'},
@@ -10276,7 +10281,10 @@ const SPORT_DEFS = {
       {key:'rbi',    label:'RBIs',       stats:['rbi']},
       {key:'runs',   label:'Runs',       stats:['runs']},
       {key:'hrr',    label:'H+R+RBI',    stats:['hrr']},
-      {key:'bb',     label:'Walks',      stats:['bb']},
+      // "Walks" alone reads as a PITCHING stat to most people, so on a row that also
+      // carries the pitcher's version it says nothing about whose walk it is. Drawn /
+      // Allowed is the standard pair and names both sides.
+      {key:'bb',     label:'Walks Drawn',stats:['bb']},
       {key:'so_bat', label:'Batter Ks',  stats:['so_bat']},
       {key:'sb',     label:'Stolen Bases', stats:['sb']},
       // pitchers
@@ -10284,7 +10292,17 @@ const SPORT_DEFS = {
       {key:'outs',   label:'Outs',       stats:['outs']},
       {key:'er',     label:'Earned Runs',stats:['er']},
       {key:'hits_allowed', label:'Hits Allowed', stats:['hits_allowed']},
+      // propMarkets has mapped pitcher_walks to bb_pit since MLB went in, but no chip
+      // ever offered it, so the market was unreachable from the board.
+      {key:'bb_pit', label:'Walks Allowed', stats:['bb_pit']},
     ],
+
+    // WHICH STAT KEYS BELONG TO PITCHING. Declared here rather than inferred from
+    // the 'pitcher_' prefix on the Odds API market keys, because that prefix is
+    // someone else's naming convention and we already translate away from it. This
+    // is what lets the board split into hitters and pitchers: everything else in
+    // propMarkets is, by construction, a batting stat.
+    pitcherStats: ['so_pit', 'outs', 'er', 'hits_allowed', 'bb_pit'],
 
     profileStats: [
       {key:'hits_bat',    label:'H'},    {key:'total_bases', label:'TB'},
@@ -10320,7 +10338,7 @@ const SPORT_DEFS = {
     },
     propMarketLabels: {
       hits_bat:'Hits', total_bases:'Total Bases', hr:'Home Runs', rbi:'RBIs',
-      runs:'Runs', hrr:'H+R+RBI', bb:'Walks', so_bat:'Batter Ks', sb:'Stolen Bases',
+      runs:'Runs', hrr:'H+R+RBI', bb:'Walks Drawn', so_bat:'Batter Ks', sb:'Stolen Bases',
       so_pit:'Pitcher Ks', outs:'Outs', er:'Earned Runs',
       hits_allowed:'Hits Allowed', bb_pit:'Walks Allowed',
     },
@@ -10360,6 +10378,33 @@ function sportProfileStatsFor(playerName, team, sport){
   const rec = (((typeof sportDATA === 'function' ? sportDATA(sport) : null) || {})
                 .fullPlayerLogs || {})[playerName + '|' + team];
   return (rec && rec.isPitcher) ? def.profileStatsPitcher : (def.profileStats || []);
+}
+// The top of the minimum-games slider for the season window. 82 is a neutral
+// fallback rather than a guess at any real schedule: it is long enough not to clip
+// a sport we have not described yet, and short enough to stay usable.
+function sportSeasonGames(sport){ return sportDef(sport).seasonGames || 82; }
+function sportPitcherStats(sport){ return sportDef(sport).pitcherStats || []; }
+// Does this sport divide its players into two groups that bet nothing in common?
+// Basketball does not -- a center and a guard shoot the same ball at the same
+// markets -- so the answer is false there and the filter row simply is not built.
+function sportHasRoleFilter(sport){ return sportPitcherStats(sport).length > 0; }
+// 'pitcher', 'hitter', or null for a stat this sport does not price as a player
+// prop at all. Null must stay null: an unclassifiable leg is EXCLUDED by a role
+// filter, never quietly counted as whichever side is selected.
+function sportStatRole(statKey, sport){
+  if(!statKey || !sportHasRoleFilter(sport)) return null;
+  if(sportPitcherStats(sport).includes(statKey)) return 'pitcher';
+  const known = Object.values(sportDef(sport).propMarkets || {});
+  return known.includes(statKey) ? 'hitter' : null;
+}
+// The market chips one side of the split can actually bet. A chip survives only if
+// EVERY stat behind it belongs to that side, so a future combo spanning both is
+// dropped rather than shown under a heading half of it contradicts. 'All' carries
+// no stats and is always kept.
+function sportMarketsForRole(role, sport){
+  const all = sportMarkets(sport);
+  if(!role || role === 'all' || !sportHasRoleFilter(sport)) return all;
+  return all.filter(m => !m.stats || m.stats.every(s => sportStatRole(s, sport) === role));
 }
 function sportCombos(sport){ return sportDef(sport).combos || {}; }
 function sportStatLabel(statKey, sport){
@@ -10517,12 +10562,19 @@ function sportEmptyState(sport){
 //
 // So the fix is a separate path rather than a growing pile of `if(sport)` inside
 // the basketball one. What it deliberately does NOT do is fake the parts that
-// have no baseball equivalent yet: there is no minutes adjustment, no
-// defense-vs-position, and no projection edge, and each is left explicitly null
-// rather than defaulted to a number that would read as measured. The Edge column
-// stays blank on an MLB board until the count model is validated out of sample
-// for baseball -- an unvalidated number in a column called "Edge" is worse than
-// an empty one.
+// have no baseball equivalent: there is no minutes adjustment and no
+// defense-vs-position, and both stay explicitly null rather than defaulted to a
+// number that would read as measured.
+//
+// THE EDGE COLUMN. This file used to leave projEdge null and said so here: an
+// unvalidated number in a column called "Edge" is worse than an empty one. That
+// held while the count model was basketball-fitted. It no longer does -- mlbfit.py
+// fitted CM_DIST's baseball half on 61,643 MLB player-games and found the event
+// stats binomial rather than Poisson, so the DISTRIBUTION is measured. What is
+// still missing is the opportunity term: no lineup card, so no projected plate
+// appearances, which is why psEdge computes the mean from form and season rate and
+// labels itself as carrying no lineup adjustment. The number is honest about what
+// it is rather than absent.
 //
 // WHAT IT DOES USE. Hit rates come from the same hitRateFor / propHitRateSided /
 // altHitRateSided helpers the WNBA board uses, unchanged, because those read
@@ -10543,6 +10595,52 @@ function sportEmptyState(sport){
 // The integer IS the signal, and it is not a heuristic: a milestone is always a whole
 // number (nobody sells "1.5+ hits") and a half-point line never is.
 const glIsMilestone = point => Number.isInteger(point);
+
+// The roster feed spells handedness 'LEFT'/'RIGHT'; the logs carry 'L'/'R', because
+// that is what the platoon buttons on the profile compare against. Both spellings are
+// accepted here so this function cannot be the place the two conventions diverge.
+const glHandLetter = v => {
+  const c = (typeof v === 'string' ? v : '').trim().toUpperCase().slice(0, 1);
+  return (c === 'L' || c === 'R') ? c : null;
+};
+
+// TONIGHT'S PROBABLE STARTERS, READ OFF THE ODDS WE ALREADY HAVE.
+//
+// The vs-SP and platoon columns need to know who is starting. There is no probables
+// feed in the payload and adding one means a second source that can disagree with
+// the board -- but a sportsbook only posts strikeout, outs and earned-run props for
+// the two ANNOUNCED starters, so the pitcher markets in this very event are already
+// the answer. If the props are up, the starters are known; if they are not, the
+// column is honestly blank rather than guessing at a rotation.
+//
+// One name per club, and the one with the most outcomes wins a tie: a bullpen game
+// occasionally draws a prop for an opener, and the starter is the one the book has
+// built a full ladder around.
+function glProbableStarters(ctx){
+  const tally = {};
+  const def = sportDef(ctx.sport);
+  for(const mkey of Object.keys(def.propMarkets || {})){
+    if(sportStatRole(def.propMarkets[mkey], ctx.sport) !== 'pitcher') continue;
+    const market = ctx.detailMarkets[mkey];
+    if(!market || !Array.isArray(market.outcomes)) continue;
+    for(const o of market.outcomes){
+      const name = o && o.description;
+      if(!name) continue;
+      const team = findPlayerTeam(name, ctx.homeShort, ctx.awayShort);
+      if(!team) continue;
+      tally[team] = tally[team] || {};
+      tally[team][name] = (tally[team][name] || 0) + 1;
+    }
+  }
+  const out = {};
+  for(const team of Object.keys(tally)){
+    const best = Object.entries(tally[team]).sort((a, b) => b[1] - a[1])[0];
+    if(!best) continue;
+    const rec = ((sportDATA(ctx.sport) || {}).fullPlayerLogs || {})[best[0] + '|' + team];
+    out[team] = {name: best[0], hand: glHandLetter(rec && rec.throws)};
+  }
+  return out;
+}
 
 // One leg builder for both ladders. `alt` selects the alternate markets; whether an
 // individual level is scored as a milestone or as an ordinary line is then decided
@@ -10613,6 +10711,13 @@ function glLegsForMarket(ctx, mkey, alt){
         projEdge: null, agreementVerdict: null,
         betType: alt ? 'player_prop_alt' : 'player_prop',
         team, opponent, player: u.pname, statKey, market: label,
+        // The matchup, carried ON THE LEG rather than looked up later. The metric
+        // functions are handed a leg and nothing else, so a column that needs
+        // tonight's starter either gets it here or re-derives it from an event it
+        // cannot see. Null for a pitcher's own prop: a starter does not face a
+        // starter, and pretending otherwise would file his own hand as the opponent's.
+        oppSP:   ctx.starters[opponent] ? ctx.starters[opponent].name : null,
+        oppHand: ctx.starters[opponent] ? ctx.starters[opponent].hand : null,
         line: effLine, side,
         altPoint: alt ? u.point : undefined,
         thresholdToHit: milestone ? u.point
@@ -10636,6 +10741,7 @@ function gatherGenericPlayerLegs(ev, homeShort, awayShort, detailMarkets, QUAL, 
     gameLabel: `${ev.away_team} @ ${ev.home_team}`,
     gameDate: toEasternDateStr(ev.commence_time),
   };
+  ctx.starters = glProbableStarters(ctx);
   let legs = [];
   // Base ladders first, then alternates. Alt ladders are NOT collapsed here, for
   // exactly the reason the WNBA path documents: collapsing to the best hit rate
@@ -10870,19 +10976,92 @@ function psAvatar(player, team, size){
 // tier means anything in baseball.
 const PS_METRICS_FOR = (sport) => sportMetrics(sport);
 const PS_WINDOWS = {l5:5, l10:10, l15:15, l30:30, season:'all'};
-const psPct = r => (r && r.gp) ? {text:`${Math.round(r.rate*100)}%`, sort:r.rate, sub:`${r.hits}/${r.gp}`} : null;
+// `gp` and `hits` ride along beside the formatted strings so a caller that needs the
+// APPEARANCE COUNT -- the minimum-games filter -- reads the same number the sub-line
+// prints, instead of re-deriving it from the log and inventing a second answer.
+const psPct = r => (r && r.gp)
+  ? {text:`${Math.round(r.rate*100)}%`, sort:r.rate, sub:`${r.hits}/${r.gp}`, gp:r.gp, hits:r.hits}
+  : null;
 
-// Her record on this exact bet against tonight's opponent, this season.
-function psH2H(leg){
-  const pl = sportDATA().fullPlayerLogs[leg.player+'|'+leg.team];
-  if(!pl || !leg.opponent) return null;
-  const games = (pl.log||[]).filter(g=>!g.dnp && g.opp === leg.opponent);
-  if(!games.length) return null;
+// His record on this exact bet over an ARBITRARY subset of his games. Head-to-head,
+// the platoon split and the vs-starter split are the same arithmetic over three
+// different filters; writing it once is what stops them from disagreeing about how
+// an integer line is graded. Games with no value for the stat drop out of the
+// denominator rather than counting as misses -- the same correction altHitRateFor
+// needed, for the same reason.
+function psRateOverGames(games, leg){
   const threshold = Number.isInteger(leg.line) ? leg.line+1 : Math.ceil(leg.line);
-  const vals = games.map(g=>statValue(g, leg.statKey)).filter(v=>v!==null && v!==undefined);
+  const vals = (games||[]).map(g=>statValue(g, leg.statKey)).filter(v=>v!==null && v!==undefined);
   if(!vals.length) return null;
   const hits = vals.filter(v => leg.side==='under' ? v < threshold : v >= threshold).length;
-  return {text:`${Math.round(100*hits/vals.length)}%`, sort:hits/vals.length, sub:`${hits}/${vals.length}`};
+  return {hits, gp: vals.length, rate: hits/vals.length};
+}
+const psRateBox = (r, sub) => r
+  ? {text:`${Math.round(r.rate*100)}%`, sort:r.rate, sub:sub || `${r.hits}/${r.gp}`,
+     gp:r.gp, hits:r.hits}
+  : null;
+const psLogFor = leg => ((sportDATA().fullPlayerLogs[leg.player+'|'+leg.team]||{}).log)||[];
+
+// His record on this exact bet against tonight's opponent, this season.
+function psH2H(leg){
+  if(!leg.opponent) return null;
+  return psRateBox(psRateOverGames(psLogFor(leg).filter(g=>!g.dnp && g.opp === leg.opponent), leg));
+}
+
+// ---- baseball: the two matchup columns -------------------------------------
+// Both were declared in the registry and implemented NOWHERE. psMetricValue's
+// switch has cases for h2h, dvp, edge, size and prior, and everything else falls
+// through to a window lookup -- PS_WINDOWS has no 'pitcher' and no 'hand', so both
+// returned null for every leg on every MLB board since the sport was added. They
+// rendered as an em dash, which is also what "no data for this player" looks like,
+// which is exactly why it went unnoticed. Same class of bug as psSize reading
+// `.tier`.
+//
+// A PITCHER'S OWN PROP GETS NEITHER. A starter does not face a starter, and his
+// own throwing hand is not a matchup. Returning null is the honest answer; filing
+// him against himself would be a number.
+function psFacesAStarter(leg){
+  return sportDef().family !== 'basketball' && sportStatRole(leg.statKey) === 'hitter';
+}
+
+// His record against TONIGHT'S starting pitcher. Usually a small sample and often
+// none at all -- which is the truth about batter-vs-pitcher history, so the count
+// is always shown beside the rate rather than a bare percentage that hides an 0-for-3.
+function psPitcherMatchup(leg){
+  if(!psFacesAStarter(leg) || !leg.oppSP) return null;
+  const r = psRateOverGames(psLogFor(leg).filter(g=>!g.dnp && g.oppSP === leg.oppSP), leg);
+  return psRateBox(r, r ? `${r.hits}/${r.gp} vs ${leg.oppSP}` : null);
+}
+
+// The platoon split: his record against starters who throw the same hand as
+// tonight's. This is the one that actually populates -- a regular has faced a
+// hundred right-handers -- and it is the closest thing baseball has to the
+// defense-vs-position edge the WNBA board sorts by.
+function psHandMatchup(leg){
+  if(!psFacesAStarter(leg) || !leg.oppHand) return null;
+  const r = psRateOverGames(psLogFor(leg).filter(g=>!g.dnp && g.oppHand === leg.oppHand), leg);
+  return psRateBox(r, r ? `${r.hits}/${r.gp} vs ${leg.oppHand}HP` : null);
+}
+
+// The mean the count model reads for a baseball leg. There is no minutes model
+// here and no lineup card in the payload, so this is deliberately the plainest
+// defensible estimator: recent form shrunk toward his season rate by the prior
+// weight the registry already declares for the sport. The work is done downstream --
+// cmProbOver routes that mean through a distribution FITTED ON 61,643 MLB
+// player-games, so a 0.3-per-game home-run mean is read as a binomial event rather
+// than through a normal curve that puts mass on negative home runs.
+function psCountProj(leg){
+  const played = psLogFor(leg).filter(g=>!g.dnp);
+  const vals = played.map(g=>statValue(g, leg.statKey)).filter(v=>v!==null && v!==undefined);
+  if(vals.length < 8) return null;
+  const def = sportDef();
+  const w = def.formWindow || 10, K = def.priorWeightGames || 12;
+  const recent = vals.slice(-w);
+  const mean = a => a.reduce((x,y)=>x+y,0)/a.length;
+  const rMean = mean(recent), sMean = mean(vals), n = recent.length;
+  const sd = recent.length > 1
+    ? Math.sqrt(recent.reduce((a,v)=>a+(v-rMean)*(v-rMean),0)/(recent.length-1)) : 0;
+  return {mu: (n*rMean + K*sMean)/(n + K), sd, n, season: vals.length};
 }
 
 // Defense vs position for this stat. Above 1.05 favors the over, below 0.95
@@ -10908,31 +11087,45 @@ function psDvp(leg){
 // Edge in probability points against the de-vigged price. Same definition the
 // Bettor's Eye board uses, so the two screens can never disagree.
 function psEdge(leg){
-  if(typeof beNoVig !== 'function' || typeof beProject !== 'function') return null;
-  const p = beProject(leg.player, leg.team, leg.statKey);
-  if(!p) return null;
-  const log = (sportDATA().fullPlayerLogs[leg.player+'|'+leg.team]||{}).log||[];
-  const played = log.filter(g=>!g.dnp && (g.min||0)>0).slice(-10);
-  if(played.length < 5) return null;
-  const vals = played.map(g=>beStatValue(g, leg.statKey));
-  const m = vals.reduce((a,b)=>a+b,0)/vals.length;
-  const sd = Math.sqrt(vals.reduce((a,v)=>a+(v-m)*(v-m),0)/(vals.length-1));
-  if(!(sd>0)) return null;
+  if(typeof beNoVig !== 'function' || typeof cmProbOver !== 'function') return null;
+  let proj = null, sd = null, basis = '';
+  if(sportDef().family === 'basketball'){
+    if(typeof beProject !== 'function') return null;
+    const p = beProject(leg.player, leg.team, leg.statKey);
+    if(!p) return null;
+    const log = (sportDATA().fullPlayerLogs[leg.player+'|'+leg.team]||{}).log||[];
+    const played = log.filter(g=>!g.dnp && (g.min||0)>0).slice(-10);
+    if(played.length < 5) return null;
+    const vals = played.map(g=>beStatValue(g, leg.statKey));
+    const m = vals.reduce((a,b)=>a+b,0)/vals.length;
+    sd = Math.sqrt(vals.reduce((a,v)=>a+(v-m)*(v-m),0)/(vals.length-1));
+    if(!(sd>0)) return null;
+    proj = p.proj;
+  } else {
+    // BASEBALL HAS NO MINUTES, so beProject -- which is minutes-allocation from top
+    // to bottom -- returns null for every MLB leg and this column was blank on every
+    // baseball board. The count model is the part that IS fitted for baseball; what
+    // is missing is the opportunity term, and the sub-line says so rather than
+    // letting the number imply a lineup projection that does not exist.
+    const c = psCountProj(leg);
+    if(!c) return null;
+    proj = c.mu; sd = c.sd;
+    basis = ' · form+season, no lineup';
+  }
   // The projection is unchanged; only the distribution it is read through is.
   // cmProbOver routes per stat to whatever measured better out of sample --
   // Poisson for the low-count event stats, the incumbent normal for points and
   // the combos that contain it. See countmodel.js for the measurements.
-  const r = (typeof cmProbOver === 'function')
-    ? cmProbOver(p.proj, leg.line, leg.statKey, sd) : null;
+  const r = cmProbOver(proj, leg.line, leg.statKey, sd);
   if(!r) return null;
   // A push is not a win. On an integer line the two sides no longer sum to 1, so
   // the edge is taken against the probability of actually WINNING the bet, with
   // the push mass excluded from both sides rather than quietly credited to one.
   const prob = leg.side==='under' ? r.under : r.over;
   const pp = 100*(prob - beNoVig(leg.price));
-  const sub = r.push > 0.005
+  const sub = (r.push > 0.005
     ? `pp vs no-vig · ${Math.round(r.push*100)}% push`
-    : 'pp vs no-vig';
+    : 'pp vs no-vig') + basis;
   return {text:`${pp>=0?'+':''}${pp.toFixed(1)}`, sort:pp, sub};
 }
 
@@ -10982,6 +11175,11 @@ function psMetricValue(leg, key){
     case 'dvp':  return psDvp(leg);
     case 'edge': return psEdge(leg);
     case 'size': return psSize(leg);
+    // MLB's replacements for dvp and size. Declared in the registry from the day the
+    // sport was added and unhandled here until now, so both fell through to the
+    // window lookup below and came back null on every leg.
+    case 'pitcher': return psPitcherMatchup(leg);
+    case 'hand':    return psHandMatchup(leg);
     // No prior-season data is loaded, so this is honestly blank rather than
     // quietly falling back to the current season and mislabelling it.
     case 'prior': return null;
@@ -11169,7 +11367,7 @@ async function psLoadPool(force){
 // is kept as a read-only mirror of the first entry so anything still reading the old
 // single-value field gets something sane rather than undefined.
 const PS_STATE = {sport:'wnba', metric:'l10', markets:['all'], market:'all', screen:'props',
-                  positions:['all'], search:'', limit:PS_PAGE_SIZE};
+                  positions:['all'], role:'all', search:'', limit:PS_PAGE_SIZE};
 
 // ---- position chips (basketball only) --------------------------------------
 // Guard / Forward / Center, at most TWO at once. The cap is Jon's and it is the
@@ -11191,6 +11389,24 @@ function psLegPosition(leg){
   catch(e){ return null; }
 }
 
+// ---- role chips (baseball) --------------------------------------------------
+// A pitcher and a hitter share a board and nothing else. Mixed together, a starter's
+// strikeout line sits between two total-bases props and every scroll crosses the
+// divide. Single-select on purpose -- Jon asked for a switch, and "both" is what
+// 'All' already means, so a multi-select here would offer the same board twice.
+const PS_ROLES = [
+  {key:'all',     label:'All'},
+  {key:'hitter',  label:'Hitters'},
+  {key:'pitcher', label:'Pitchers'},
+];
+// Classified by the MARKET, not by the man. A two-way player's strikeout prop is a
+// pitching bet and his home-run prop is a batting one; keying off the roster's
+// isPitcher flag would file both under whichever he is listed as and hide one.
+function psLegRole(leg){
+  try{ return sportStatRole(leg && leg.statKey); }
+  catch(e){ return null; }
+}
+
 // Returns the row with an update(activeKey) method. Restyling in place rather
 // than rebuilding matters: these rows scroll horizontally, and tearing them down
 // on every tap resets the scroll position -- so a user who scrolls right to
@@ -11208,6 +11424,11 @@ function psChipRow(items, active, onPick, opts){
     + '-webkit-overflow-scrolling:touch;scrollbar-width:none;border-bottom:1px solid var(--line);'
     + 'background:var(--panel);white-space:nowrap;';
   wrap.className = 'ps-chiprow';
+  // WHICH row this is. Two rows on the MLB board both carry a chip keyed 'pitcher'
+  // -- the metric row's "vs SP" and the role switch -- so "the row containing a
+  // pitcher chip" is ambiguous for anything reading the DOM. Naming the row removes
+  // the ambiguity instead of relying on the keys inside it staying distinct.
+  if(opts.row) wrap.dataset.psRow = opts.row;
   if(opts.multi) wrap.setAttribute('aria-multiselectable', 'true');
   items.forEach(it=>{
     const b = document.createElement('button');
@@ -11431,38 +11652,52 @@ async function renderPropsScreen(){
   PS_STATE.search = '';
 
   // ---- rows 2 and 3 --------------------------------------------------------
+  // ORDER MATTERS. The role switch sits BETWEEN the metric row and the market row,
+  // because it is the market row it rewrites -- put it underneath and the chips
+  // above it change when it is tapped, which reads as the page glitching rather
+  // than as a control doing its job.
   const metricItems = psMetricItems();
   const row2Holder = document.createElement('div');
+  const roleHolder = document.createElement('div');
   const row3Holder = document.createElement('div');
   const row4Holder = document.createElement('div');
-  shell.appendChild(row2Holder); shell.appendChild(row3Holder); shell.appendChild(row4Holder);
+  shell.appendChild(row2Holder); shell.appendChild(roleHolder);
+  shell.appendChild(row3Holder); shell.appendChild(row4Holder);
   // The chip row and the filter sheet's "Sort By" hold ONE value between them.
   PS_STATE.metric = psF('props').sortBy || PS_STATE.metric;
   const row2 = psChipRow(metricItems, PS_STATE.metric, k=>{
     PS_STATE.metric = k; psF('props').sortBy = k; psSaveFilters();
     PS_STATE.limit = PS_PAGE_SIZE; row2.update(k); paint();
-  });
+  }, {row:'metric'});
   // Row 3 takes more than one category at a time. "All" is exclusive both ways:
   // picking it clears everything else, and picking any category clears All. And the
   // set can never empty out -- unticking the last remaining category falls back to
   // All rather than showing a blank board, which is what "nothing selected" would
   // otherwise mean.
-  const row3 = psChipRow(PS_MARKETS_FOR(PS_STATE.sport), PS_STATE.markets, k=>{
-    const cur = new Set(PS_STATE.markets);
-    if(k === 'all'){
-      PS_STATE.markets = ['all'];
-    } else {
-      cur.delete('all');
-      cur.has(k) ? cur.delete(k) : cur.add(k);
-      PS_STATE.markets = cur.size ? [...cur] : ['all'];
-    }
-    PS_STATE.limit = PS_PAGE_SIZE; row3.update(PS_STATE.markets); paint();
-  }, {multi:true});
-  row2Holder.appendChild(row2); row3Holder.appendChild(row3);
+  // Rebuilt rather than restyled when the role switch moves, because the SET of
+  // chips changes and not just which of them is lit. Losing the horizontal scroll
+  // position is correct here: the row the user was scrolled into no longer exists.
+  let row3 = null;
+  function buildRow3(){
+    row3Holder.innerHTML = '';
+    row3 = psChipRow(sportMarketsForRole(PS_STATE.role, PS_STATE.sport), PS_STATE.markets, k=>{
+      const cur = new Set(PS_STATE.markets);
+      if(k === 'all'){
+        PS_STATE.markets = ['all'];
+      } else {
+        cur.delete('all');
+        cur.has(k) ? cur.delete(k) : cur.add(k);
+        PS_STATE.markets = cur.size ? [...cur] : ['all'];
+      }
+      PS_STATE.limit = PS_PAGE_SIZE; row3.update(PS_STATE.markets); paint();
+    }, {multi:true, row:'market'});
+    row3Holder.appendChild(row3);
+  }
+  row2Holder.appendChild(row2); buildRow3();
 
-  // ---- row 4: position, basketball only -------------------------------------
-  // Baseball has no G/F/C, and the registry does not describe a position filter for
-  // it, so the row is absent rather than present-and-inert.
+  // ---- row 4: position (basketball) or hitters/pitchers (baseball) -----------
+  // Baseball has no G/F/C and basketball has no pitchers, so exactly one of these
+  // rows is built. Neither sport gets the other's row greyed out and inert.
   let row4 = null;
   if(sportDef().family === 'basketball'){
     row4 = psChipRow(PS_POSITIONS, PS_STATE.positions, k=>{
@@ -11483,8 +11718,21 @@ async function renderPropsScreen(){
         PS_STATE.positions = cur.size ? [...cur] : ['all'];
       }
       PS_STATE.limit = PS_PAGE_SIZE; row4.update(PS_STATE.positions); paint();
-    }, {multi:true});
+    }, {multi:true, row:'position'});
     row4Holder.appendChild(row4);
+  } else if(sportHasRoleFilter()){
+    row4 = psChipRow(PS_ROLES, PS_STATE.role, k=>{
+      PS_STATE.role = k;
+      // Market picks the new side cannot bet are DROPPED, not carried invisibly.
+      // Keeping "Home Runs" selected under Pitchers leaves an empty board with no
+      // visible cause, because the chip explaining it is no longer on screen.
+      const offered = sportMarketsForRole(k, PS_STATE.sport).map(m => m.key);
+      const kept = PS_STATE.markets.filter(x => offered.includes(x));
+      PS_STATE.markets = kept.length ? kept : ['all'];
+      PS_STATE.limit = PS_PAGE_SIZE;
+      row4.update(k); buildRow3(); paint();
+    }, {row:'role'});
+    roleHolder.appendChild(row4);
   }
 
   // ---- body ----------------------------------------------------------------
@@ -11536,6 +11784,11 @@ async function renderPropsScreen(){
     // rather than kept: "we do not know" is not the same as "matches".
     if(!PS_STATE.positions.includes('all')){
       rows = rows.filter(l => PS_STATE.positions.includes(psLegPosition(l)));
+    }
+    // Gated on the sport, not only on the value: leaving Pitchers selected and
+    // switching to the WNBA must not silently empty a board that has no pitchers.
+    if(PS_STATE.role && PS_STATE.role !== 'all' && sportHasRoleFilter()){
+      rows = rows.filter(l => psLegRole(l) === PS_STATE.role);
     }
     if(PS_STATE.search){
       const q = PS_STATE.search;
@@ -12611,10 +12864,19 @@ function pbChart(games, statKey, line){
       // the cleared/missed judgment through their own fill, so a red rule was
       // reading as "this bet is bad" when it only ever meant "here is the number".
       stroke:'var(--blue)', 'stroke-width':2, 'stroke-dasharray':'6 4'}));
+    // The in-chart label was left red when the rule itself went blue, so the chart
+    // drew a blue line and captioned it in the color the line had stopped being.
     const lt = el('text', {x:W-PAD_R, y:y(line)-6, 'text-anchor':'end',
-      'font-size':11, fill:'var(--red)', 'font-weight':700, 'font-family':'var(--sans)'});
+      'font-size':11, fill:'var(--blue)', 'font-weight':700, 'font-family':'var(--sans)'});
     lt.textContent = `line ${line}`;
     svg.appendChild(lt);
+    // AND IT BELONGS IN THE KEY. The legend explained mean, median and mode -- three
+    // lines the reader did not ask about -- while the one line the whole page is about
+    // was the only rule on the chart with no entry. Placed FIRST, because it is the
+    // reference every bar is being read against; the centers describe the bars, this
+    // is the thing they are compared to.
+    legendMarks.unshift({v: line, dash: '6 4', color: 'var(--blue)', tag: 'line',
+      label: `line ${line}`});
   }
 
   // Five x labels: date above, matchup below. One per bar would be unreadable.
@@ -13561,6 +13823,12 @@ const psFilterDefaults = () => ({
   games: null,                    // null = every game; otherwise a list of eventIds
   sortBy: 'l10',                  // shares one value with the row-2 chips
   hitRates: {l5:null, l10:null, l15:null, l30:null, season:null},  // null = not applied
+  // MINIMUM GAMES PLAYED, per window. Jon's case: "last 30 games, but only players
+  // who actually appeared in at least 17 of them." A hit rate of 3-for-3 and one of
+  // 17-for-30 both read as a percentage, and the first is noise wearing the second's
+  // clothes -- this is the floor that separates them. Same null-means-unset rule as
+  // hitRates: a window with no floor set must not exclude anyone.
+  minGames: {l5:null, l10:null, l15:null, l30:null, season:null},
   propTypes: null,                // null = every market; otherwise a list of statKeys
   oddsMin: PS_MIN_PRICE,
   oddsMax: null,
@@ -13602,6 +13870,17 @@ function psApplyFilters(legs, page){
       if(min === null || min === undefined) continue;
       const v = psMetricValue(l, key);
       if(!v || v.sort * 100 < min) return false;
+    }
+    // Appearance floors, same shape. `gp` is the DENOMINATOR the card already shows
+    // -- "17/30" means he played 17 of the last 30 -- so the number set here is the
+    // number read off the card, not a second definition of the same word. A leg with
+    // no value for the window is dropped rather than kept: an unknown appearance
+    // count is not evidence of a sufficient one.
+    for(const key of Object.keys(f.minGames || {})){
+      const min = f.minGames[key];
+      if(min === null || min === undefined) continue;
+      const v = psMetricValue(l, key);
+      if(!v || !v.gp || v.gp < min) return false;
     }
     return true;
   });
@@ -13991,6 +14270,59 @@ function psFilterSheet(page, onApply){
     s4.appendChild(row);
   });
 
+  // ---- 4b. minimum games played --------------------------------------------
+  // Deliberately its own section rather than a second slider inside Hit Rates.
+  // They answer different questions -- "how often did he clear it" and "how much of
+  // this window did he actually play" -- and stacking ten sliders under one heading
+  // would make the pair look like one control with a wide range.
+  const s4b = section('Minimum Games Played');
+  const gpNote = document.createElement('div');
+  gpNote.className = 'footnote';
+  gpNote.style.cssText = 'margin-bottom:8px;';
+  gpNote.textContent = 'Out of each window. L30 set to 17 keeps only players who appeared '
+    + 'in at least 17 of their last 30 — so a 3-for-3 hit rate cannot outrank a 17-for-30 one.';
+  s4b.appendChild(gpNote);
+  const GP_MAX = {l5:5, l10:10, l15:15, l30:30, season:sportSeasonGames(PS_STATE.sport)};
+  [['l5','L5'],['l10','L10'],['l15','L15'],['l30','L30'],['season',psSeasonLabel(PS_STATE.sport)]]
+  .forEach(([key,label])=>{
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:9px;';
+    const l = document.createElement('div');
+    l.textContent = label;
+    l.style.cssText = 'width:56px;font-weight:700;font-size:13px;';
+    const slider = document.createElement('input');
+    slider.type = 'range'; slider.min = '0'; slider.max = String(GP_MAX[key]); slider.step = '1';
+    // A stored floor above this window's length would peg the thumb at the far end
+    // and read as "max" while actually excluding everyone. Clamp on the way in.
+    const stored = f.minGames[key];
+    if(stored !== null && stored !== undefined && stored > GP_MAX[key]) f.minGames[key] = GP_MAX[key];
+    slider.value = f.minGames[key] === null ? '0' : String(f.minGames[key]);
+    slider.dataset.psGp = key;
+    slider.style.cssText = 'flex:1;';
+    const val = document.createElement('div');
+    val.style.cssText = 'width:52px;text-align:right;font-weight:800;font-size:13px;';
+    const paint = ()=>{
+      const applied = f.minGames[key] !== null;
+      val.textContent = applied ? `${f.minGames[key]}+` : 'any';
+      val.style.color = applied ? 'var(--ink)' : 'var(--sub)';
+      l.style.color = applied ? 'var(--ink)' : 'var(--sub)';
+      slider.style.opacity = applied ? '1' : '.45';
+    };
+    slider.addEventListener('input', ()=>{
+      const v = parseInt(slider.value, 10);
+      f.minGames[key] = v === 0 ? null : v;
+      paint();
+    });
+    const clear = document.createElement('button');
+    clear.textContent = '×';
+    clear.title = `Clear the ${label} games-played filter`;
+    clear.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--sub);font-size:17px;';
+    clear.addEventListener('click', ()=>{ f.minGames[key] = null; slider.value = '0'; paint(); });
+    paint();
+    row.appendChild(l); row.appendChild(slider); row.appendChild(val); row.appendChild(clear);
+    s4b.appendChild(row);
+  });
+
   // ---- 5. prop type --------------------------------------------------------
   const s5 = section('Prop Type');
   const typeWrap = document.createElement('div');
@@ -14112,6 +14444,7 @@ function psActiveFilterCount(page){
   if(f.oddsMin !== d.oddsMin) n++;
   if(f.oddsMax !== null) n++;
   n += Object.values(f.hitRates).filter(v => v !== null && v !== undefined).length;
+  n += Object.values(f.minGames || {}).filter(v => v !== null && v !== undefined).length;
   return n;
 }
 
