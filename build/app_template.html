@@ -10639,6 +10639,14 @@ function gatherGenericPlayerLegs(ev, homeShort, awayShort, detailMarkets, QUAL, 
 // ============================================================================
 
 const PS_MIN_PRICE = -150;          // Jon's floor for this board: browse wide, not curated
+// The other end of the band, used by the Markets page. Anything longer than +199 is
+// priced at about a one-in-three shot or worse; those legs are numerous, and on a
+// league-wide ranked list they crowd out everything else while resting on whatever
+// handful of games they happened to land in.
+const PS_MAX_PRICE = 199;
+// One definition of the band, so the Markets page and anything that verifies it
+// cannot disagree about whether the boundary is inclusive.
+const psInMarketBand = price => price >= PS_MIN_PRICE && price <= PS_MAX_PRICE;
 const PS_PAGE_SIZE = 40;            // rows rendered per batch; the pool is 300-600
 const PS_FAVS_KEY = 'be_favs_v1';
 
@@ -10777,11 +10785,32 @@ function psSize(leg){
     if(!tierData) return null;
     groupTier = cachedOpponentGroupTier(leg.player, leg.team, leg.opponent, tierData);
   }catch(e){ return null; }
-  if(!groupTier || !groupTier.tier) return null;
+  // THE FIELD IS `groupTier`, NOT `tier`. computePositionGroupTierVsOpponent returns
+  // {bucket, opp, rows, groupTier, weightedHeight, excludedForInjury}; this read
+  // `.tier`, which is undefined on every object it has ever been handed, so the
+  // guard below rejected every leg and this chip was blank for the entire life of
+  // the Props board. Nothing threw and nothing logged -- a missing metric renders as
+  // an em dash, which is also what "no data for this player" looks like.
+  if(!groupTier || !groupTier.groupTier) return null;
+  const tier = groupTier.groupTier;
   let r = null;
-  try{ r = tierHitRateForLeg(leg, groupTier.tier, tierData); }catch(e){ return null; }
+  try{ r = tierHitRateForLeg(leg, tier, tierData); }catch(e){ return null; }
   if(!r || !r.gp) return null;
-  return {text:`${Math.round(r.rate*100)}%`, sort:r.rate, sub:`${r.hits}/${r.gp} vs ${groupTier.tier}`};
+  // The headline stays the HIT RATE, because that is what the column sorts by and a
+  // column whose visible number disagrees with its own ordering reads as broken --
+  // the same trap the Proj Min column fell into. The size Jon asked for goes in the
+  // sub-line, where it belongs: the group's minutes-weighted height, the tier that
+  // height falls in, and the record against it.
+  const h = groupTier.weightedHeight;
+  const ht = (h === null || h === undefined || !isFinite(h))
+    ? null : `${Math.floor(h / 12)}'${Math.round(h % 12)}"`;
+  const label = tier.charAt(0).toUpperCase() + tier.slice(1);
+  return {
+    text: `${Math.round(r.rate * 100)}%`,
+    sort: r.rate,
+    sub: `${r.hits}/${r.gp} vs ${ht ? ht + ' ' : ''}${label}`
+        + (groupTier.excludedForInjury ? ` · ${groupTier.excludedForInjury} out` : ''),
+  };
 }
 
 function psMetricValue(leg, key){
@@ -10976,7 +11005,28 @@ async function psLoadPool(force){
 // `markets` is a LIST, not a single key -- the category row is multi-select. `market`
 // is kept as a read-only mirror of the first entry so anything still reading the old
 // single-value field gets something sane rather than undefined.
-const PS_STATE = {sport:'wnba', metric:'l10', markets:['all'], market:'all', screen:'props', search:'', limit:PS_PAGE_SIZE};
+const PS_STATE = {sport:'wnba', metric:'l10', markets:['all'], market:'all', screen:'props',
+                  positions:['all'], search:'', limit:PS_PAGE_SIZE};
+
+// ---- position chips (basketball only) --------------------------------------
+// Guard / Forward / Centre, at most TWO at once. The cap is Jon's and it is the
+// right one: with only three buckets, picking all three is the same as picking
+// none, so a third selection would be a no-op dressed up as a filter. 'All' stays
+// exclusive, exactly like the market row above it.
+const PS_POSITIONS = [
+  {key:'all', label:'All'},
+  {key:'G',   label:'G'},
+  {key:'F',   label:'F'},
+  {key:'C',   label:'C'},
+];
+const PS_MAX_POSITIONS = 2;
+// The bucket a leg's player falls in, or null when position is unknown -- which
+// must mean "excluded from a position filter", never "counts as whichever bucket
+// happens to be selected".
+function psLegPosition(leg){
+  try{ return positionBucket(getPlayerPosition(leg.player, leg.team)) || null; }
+  catch(e){ return null; }
+}
 
 // Returns the row with an update(activeKey) method. Restyling in place rather
 // than rebuilding matters: these rows scroll horizontally, and tearing them down
@@ -11056,6 +11106,42 @@ function psStatBox(label, val, emphasis, key){
   return box;
 }
 
+// ---- defence-rank shading --------------------------------------------------
+// The whole card is tinted by how the opponent defends THIS stat against THIS
+// player's position. Basketball only for now; baseball's equivalent is a separate
+// question Jon and I have not settled.
+//
+// THE SCALE IS SIDE-AWARE, and that is the part it would be easy to get wrong.
+// Rank 1 is the stingiest defence in the league and rank `of` the most generous.
+// Generous is good news for an Over and bad news for an Under, so the raw rank
+// cannot drive the colour directly -- doing that would paint the best Unders on the
+// board red. The rank is normalised to 0..1, then flipped for the under side, so
+// green always means "this matchup favours the bet as written".
+function psDefShade(leg){
+  if(sportDef().family !== 'basketball') return null;
+  if(!leg.opponent) return null;
+  let r = null, bucket = null;
+  try{
+    bucket = positionBucket(getPlayerPosition(leg.player, leg.team));
+    r = bucket ? getDefenseRank(leg.opponent, leg.statKey, bucket) : null;
+  }catch(e){ return null; }
+  if(!r || !r.rank || !r.of || r.of < 2) return null;
+  const generous = (r.rank - 1) / (r.of - 1);          // 0 = stingiest, 1 = most generous
+  const favourable = leg.side === 'under' ? 1 - generous : generous;
+  const band = favourable >= 2/3 ? 'good' : (favourable <= 1/3 ? 'bad' : 'mid');
+  // Translucent rather than solid: the card sits on var(--panel), which differs
+  // between the two layout modes, and a hard-coded pastel would fight it.
+  const tint = {good: 'rgba(45,138,86,0.11)', mid: 'rgba(214,158,20,0.13)',
+                bad: 'rgba(190,32,45,0.09)'}[band];
+  const words = {good: 'a favourable matchup', mid: 'a middling matchup',
+                 bad: 'a tough matchup'}[band];
+  const posName = (typeof POSITION_LABEL !== 'undefined' && POSITION_LABEL[bucket]) || bucket;
+  return {band, tint,
+    title: `${leg.opponent} ranks ${r.rank} of ${r.of} for ${leg.market || leg.statKey} allowed `
+      + `to ${posName} (1 = stingiest, ${r.of} = most generous). For this ${leg.side}, that is `
+      + `${words}. Shading is matchup context, not a prediction.`};
+}
+
 function psCard(leg, favs, onToggleFav){
   const card = document.createElement('div');
   card.className = 'ps-card';
@@ -11064,8 +11150,13 @@ function psCard(leg, favs, onToggleFav){
   // than as "div.ps-card" -- which is what makes Most Researched possible.
   card.dataset.beProp = 'prop:' + psFavKey(leg);
   card.addEventListener('click', ()=>{ if(typeof psRecordResearch === 'function') psRecordResearch(leg); });
-  card.style.cssText = 'border:1px solid var(--line);border-radius:12px;background:var(--panel);'
+  const shade = psDefShade(leg);
+  card.style.cssText = 'border:1px solid var(--line);border-radius:12px;'
+    + `background:${shade ? shade.tint : 'var(--panel)'};`
     + 'padding:12px 12px 10px;margin:0 0 10px;';
+  // On the card, not on a child: the tooltip has to be reachable from anywhere in
+  // the tinted area, because the tint is what raises the question.
+  if(shade) card.title = shade.title;
 
   // --- top: avatar + name/bet on the left, odds + edge on the right ---------
   const top = document.createElement('div');
@@ -11178,7 +11269,8 @@ async function renderPropsScreen(){
   const metricItems = psMetricItems();
   const row2Holder = document.createElement('div');
   const row3Holder = document.createElement('div');
-  shell.appendChild(row2Holder); shell.appendChild(row3Holder);
+  const row4Holder = document.createElement('div');
+  shell.appendChild(row2Holder); shell.appendChild(row3Holder); shell.appendChild(row4Holder);
   // The chip row and the filter sheet's "Sort By" hold ONE value between them.
   PS_STATE.metric = psF('props').sortBy || PS_STATE.metric;
   const row2 = psChipRow(metricItems, PS_STATE.metric, k=>{
@@ -11203,12 +11295,58 @@ async function renderPropsScreen(){
   }, {multi:true});
   row2Holder.appendChild(row2); row3Holder.appendChild(row3);
 
+  // ---- row 4: position, basketball only -------------------------------------
+  // Baseball has no G/F/C, and the registry does not describe a position filter for
+  // it, so the row is absent rather than present-and-inert.
+  let row4 = null;
+  if(sportDef().family === 'basketball'){
+    row4 = psChipRow(PS_POSITIONS, PS_STATE.positions, k=>{
+      const cur = new Set(PS_STATE.positions);
+      if(k === 'all'){
+        PS_STATE.positions = ['all'];
+      } else {
+        cur.delete('all');
+        if(cur.has(k)) cur.delete(k);
+        else if(cur.size < PS_MAX_POSITIONS) cur.add(k);
+        else {
+          // AT THE CAP, DO NOTHING RATHER THAN SILENTLY SWAPPING. Dropping the
+          // oldest pick to make room means a tap quietly unselects something the
+          // user chose and did not touch -- the chip they just pressed stays dark
+          // and a different one goes out, which reads as a bug. Refusing is legible.
+          return;
+        }
+        PS_STATE.positions = cur.size ? [...cur] : ['all'];
+      }
+      PS_STATE.limit = PS_PAGE_SIZE; row4.update(PS_STATE.positions); paint();
+    }, {multi:true});
+    row4Holder.appendChild(row4);
+  }
+
   // ---- body ----------------------------------------------------------------
   const status = document.createElement('div');
   status.className = 'footnote';
   status.style.cssText = 'padding:10px 14px 0;';
   status.textContent = 'Loading today’s props…';
   shell.appendChild(status);
+  // A COLOUR KEY, because a tint nobody can decode is decoration. Same reasoning as
+  // buildColorKey on the bet tables: the mark is only information if the page says
+  // what it means.
+  if(sportDef().family === 'basketball'){
+    const key = document.createElement('div');
+    key.className = 'footnote';
+    key.style.cssText = 'padding:6px 14px 0;display:flex;gap:12px;flex-wrap:wrap;align-items:center;';
+    key.appendChild(document.createTextNode('Card colour = opponent defence vs this position:'));
+    [['rgba(45,138,86,0.11)', 'favourable'], ['rgba(214,158,20,0.13)', 'middling'],
+     ['rgba(190,32,45,0.09)', 'tough']].forEach(([c, l])=>{
+      const chip = document.createElement('span');
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:5px;';
+      const sw = document.createElement('span');
+      sw.style.cssText = `width:14px;height:14px;border-radius:4px;border:1px solid var(--line);background:${c};`;
+      chip.appendChild(sw); chip.appendChild(document.createTextNode(l));
+      key.appendChild(chip);
+    });
+    shell.appendChild(key);
+  }
   const list = document.createElement('div');
   list.style.cssText = 'padding:10px 14px 0;';
   shell.appendChild(list);
@@ -11229,6 +11367,11 @@ async function renderPropsScreen(){
     let rows = (typeof psApplyFilters === 'function') ? psApplyFilters(pool, 'props') : pool;
     const keys = psMarketStats(PS_STATE.markets);
     if(keys) rows = rows.filter(l => keys.includes(l.statKey));
+    // A leg whose player has no position on file is dropped by ANY position filter
+    // rather than kept: "we do not know" is not the same as "matches".
+    if(!PS_STATE.positions.includes('all')){
+      rows = rows.filter(l => PS_STATE.positions.includes(psLegPosition(l)));
+    }
     if(PS_STATE.search){
       const q = PS_STATE.search;
       rows = rows.filter(l => (l.player||'').toLowerCase().includes(q)
@@ -13627,7 +13770,7 @@ async function renderMarketsScreen(){
   const sub = document.createElement('div');
   sub.className = 'footnote';
   sub.style.cssText = 'margin-bottom:12px;';
-  sub.textContent = `Every list uses the same ${PS_MIN_PRICE} price floor as the Props board.`;
+  sub.textContent = `Every list is priced between ${PS_MIN_PRICE} and +${PS_MAX_PRICE}.`;
   shell.appendChild(h); shell.appendChild(sub);
   if(!sportHasOdds(PS_STATE.sport)){
     shell.appendChild(sportHasData(PS_STATE.sport)
@@ -13649,9 +13792,17 @@ async function renderMarketsScreen(){
   let pool = [];
   try{ pool = await psLoadPool(); }
   catch(e){ status.textContent = `Couldn’t load the board: ${e.message}`; return; }
-  // Markets is a league-wide view, so it uses the price floor only -- the Props
+  // Markets is a league-wide view, so it uses the price BAND only -- the Props
   // page's filters are that page's, not a global setting.
-  pool = pool.filter(l => l.price >= PS_MIN_PRICE);
+  //
+  // A CEILING AS WELL AS A FLOOR, and the ceiling is the interesting half. The floor
+  // (-150) drops the heavy favourites that are all price and no information. The
+  // ceiling drops the other end: past +199 a leg is a longshot the book has priced at
+  // roughly one-in-three or worse, and on a league-wide list those crowd out
+  // everything a sane bet looks like purely by being numerous. Ranked lists are
+  // where that does the most damage, because a longshot's hit rate is computed off
+  // the handful of games it happened to land in.
+  pool = pool.filter(l => psInMarketBand(l.price));
   status.remove();
   if(!pool.length){
     const e = document.createElement('div');
