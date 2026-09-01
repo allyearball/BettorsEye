@@ -51,6 +51,17 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   #hdrRight{grid-column:3;justify-self:end;display:flex;align-items:center;gap:6px;}
   #hdrLeft select{font-family:var(--sans);font-size:13px;font-weight:700;padding:7px 8px;border-radius:8px;
     background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.3);color:#fff;min-height:38px;}
+  /* THE OPEN LIST IS NOT THE CLOSED CONTROL. The select sits in the black app bar,
+     so white text is right for the closed state -- but on desktop the native option
+     popup inherits that color onto the operating system's own white menu, giving
+     white on white: unreadable until an item is highlighted and the OS forces its
+     own contrast. Styling the options fixes the popup and leaves the closed
+     control, and the highlighted row, exactly as they were. */
+  #hdrLeft select option{color:#111;background:#fff;font-weight:700;}
+  @media (prefers-color-scheme: dark){
+    /* Where the OS menu is dark, the same reasoning runs the other way. */
+    #hdrLeft select option{color:#f2f4f7;background:#22262b;}
+  }
   #hdrRight button.hdr-icon{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.3);color:#fff;
     width:38px;height:38px;min-width:38px;min-height:38px;padding:0;border-radius:8px;cursor:pointer;
     font-size:16px;line-height:1;display:flex;align-items:center;justify-content:center;}
@@ -10618,6 +10629,138 @@ function gatherGenericPlayerLegs(ev, homeShort, awayShort, detailMarkets, QUAL, 
 }
 // >>> END MODULE generic_legs.js
 
+// <<< MODULE correlate.js
+// ============================================================================
+// FOLLOW-ONS: if this bet lands, what else tends to land?
+//
+// You are looking at one prop -- A'ja over 20.5 points. This answers the next
+// question: among her teammates' props on tonight's board, which ones hit most
+// often IN THE GAMES WHERE THIS ONE DID.
+//
+// WHAT MAKES THIS HONEST RATHER THAN A NUMBER GENERATOR:
+//
+//   1. THE LIFT, NOT THE RATE. "Hits 85% of the time when A'ja goes over" sounds
+//      like a finding until you notice the same player hits 82% of the time in
+//      general. What matters is the DIFFERENCE between the conditional rate and
+//      that player's own baseline over the same games. A high rate with no lift is
+//      a good bet that has nothing to do with the anchor.
+//   2. THE SAMPLE IS ON SCREEN, ALWAYS. Every row shows "8 of 9", not just "89%".
+//      Below a floor of MIN_SHARED games the row does not appear at all -- three
+//      for three is not information, and rendering it as 100% would be the single
+//      most misleading thing this screen could do.
+//   3. BOTH LEGS ARE REAL BETS. The follow-on is priced on tonight's board, not a
+//      line invented from a median. A correlation you cannot act on is trivia.
+//
+// WHAT THIS IS NOT: a claim that one causes the other, and not a recommendation to
+// parlay them. Correlated legs are exactly what a book limits and prices against,
+// and stacking them multiplies variance rather than diversifying it -- the screen
+// says so, because a list of "these go together" invites precisely that.
+// ============================================================================
+
+// Below this many shared games the pair is not shown. Six is the same floor the
+// board's own windows use, and it is the point below which one game moves the
+// percentage by more than fifteen points.
+const CORR_MIN_SHARED = 6;
+// A lift smaller than this is noise dressed as a signal at these sample sizes.
+const CORR_MIN_LIFT = 0.08;
+
+// Did this leg hit in this game? Shared by the anchor and the follow-on so the two
+// can never disagree about what "hit" means.
+function corrLegHit(game, leg){
+  const v = statValue(game, leg.statKey);
+  if(v === null || v === undefined) return null;
+  const threshold = Number.isInteger(leg.line) ? leg.line + 1 : Math.ceil(leg.line);
+  return leg.side === 'under' ? v < threshold : v >= threshold;
+}
+
+// A player's games keyed by date, so two logs can be matched game for game. Dates
+// rather than game ids because the ids are not on the log rows in either sport.
+function corrGamesByDate(player, team){
+  const rec = ((sportDATA() || {}).fullPlayerLogs || {})[player + '|' + team];
+  if(!rec) return null;
+  const out = new Map();
+  (rec.log || []).forEach(g => { if(!g.dnp && g.date) out.set(g.date, g); });
+  return out;
+}
+
+// One anchor, one candidate follow-on. Returns null unless there is enough to say.
+function corrPair(anchor, follow){
+  if(!anchor || !follow) return null;
+  if(anchor.team !== follow.team) return null;                    // teammates only
+  if(anchor.player === follow.player) return null;                // not itself
+  const a = corrGamesByDate(anchor.player, anchor.team);
+  const b = corrGamesByDate(follow.player, follow.team);
+  if(!a || !b) return null;
+
+  let shared = 0, anchorHits = 0, bothHit = 0, followHits = 0;
+  a.forEach((ag, date) => {
+    const bg = b.get(date);
+    if(!bg) return;
+    const ah = corrLegHit(ag, anchor);
+    const bh = corrLegHit(bg, follow);
+    if(ah === null || bh === null) return;      // a stat this player does not record
+    shared++;
+    if(bh) followHits++;                        // the baseline, over the SAME games
+    if(ah){ anchorHits++; if(bh) bothHit++; }
+  });
+
+  if(anchorHits < CORR_MIN_SHARED) return null;
+  const conditional = bothHit / anchorHits;
+  // THE BASELINE IS OVER THE SHARED GAMES, not over the follow-on player's whole
+  // season. Comparing a conditional rate from ten shared games against a baseline
+  // from forty would fold in every game the anchor did not play, which is a
+  // different population and would manufacture lift out of availability.
+  const baseline = shared ? followHits / shared : null;
+  if(baseline === null) return null;
+  const lift = conditional - baseline;
+  return {
+    player: follow.player, team: follow.team, statKey: follow.statKey,
+    market: follow.market, line: follow.line, side: follow.side, price: follow.price,
+    shared, anchorHits, bothHit, conditional, baseline, lift,
+    leg: follow,
+  };
+}
+
+// Every follow-on worth showing for one anchor, best lift first.
+// `pool` is tonight's board -- the follow-ons are real, priced bets.
+function corrFollowOns(anchor, pool, opts){
+  opts = opts || {};
+  const minLift = opts.minLift === undefined ? CORR_MIN_LIFT : opts.minLift;
+  const out = [];
+  (pool || []).forEach(follow => {
+    const r = corrPair(anchor, follow);
+    if(!r) return;
+    if(r.lift < minLift) return;
+    out.push(r);
+  });
+  // Ties on lift break on sample size: given two identical lifts, the one measured
+  // over more games is the one to look at first.
+  out.sort((x, y) => (y.lift - x.lift) || (y.anchorHits - x.anchorHits));
+  return opts.limit ? out.slice(0, opts.limit) : out;
+}
+
+// The sentence a row is worth. Kept next to the maths so the wording cannot drift
+// from what was actually computed.
+function corrRowText(anchor, r){
+  const pct = v => `${Math.round(v * 100)}%`;
+  const sign = r.lift >= 0 ? '+' : '';
+  return {
+    head: `${r.player} ${r.side === 'under' ? 'u' : 'o'} ${r.line} ${r.market || r.statKey}`,
+    rate: pct(r.conditional),
+    detail: `${r.bothHit} of ${r.anchorHits}`,
+    lift: `${sign}${Math.round(r.lift * 100)} vs ${pct(r.baseline)} baseline`,
+    title: `In the ${r.anchorHits} games where ${anchor.player} `
+      + `${anchor.side === 'under' ? 'stayed under' : 'cleared'} ${anchor.line} `
+      + `${anchor.market || anchor.statKey}, ${r.player} hit this ${r.bothHit} times `
+      + `(${pct(r.conditional)}). Across all ${r.shared} games the two played together `
+      + `${r.player} hit it ${pct(r.baseline)} of the time, so the anchor is worth `
+      + `${sign}${Math.round(r.lift * 100)} points. Measured, not modeled -- and it is `
+      + `association, not cause. Betting both together is a correlated parlay: books `
+      + `price and limit those, and it multiplies your variance rather than spreading it.`,
+  };
+}
+// >>> END MODULE correlate.js
+
 // <<< MODULE props_screen.js
 // ============================================================================
 // THE PROPS SCREEN -- the new primary surface.
@@ -12254,7 +12397,19 @@ function pbChart(games, statKey, line){
 
   // 2px of surface between neighbours, per the mark spec.
   const slot = plotW / games.length;
-  const bw = Math.max(3, Math.min(34, slot - 2));
+  // THE OUTLINE IS THE WIDER SHAPE, the green bar the narrower one nested inside it.
+  // It was the other way round -- the outline sat at 0.58 of the bar -- on the
+  // reasoning that points is what the bet is on and should dominate. Jon wants the
+  // opposite emphasis, and it reads better: the outline is a frame around the bar
+  // rather than a second bar competing with it, so at a glance you see one shape
+  // with something inside it instead of two shapes fighting.
+  const OUTLINE_W = g => Math.max(4, Math.min(38, slot - 1));
+  // Narrowed whenever ANY outline is on screen -- the percentage series or the
+  // companion row. Keying it to pctDef alone left the rebounds and assists charts
+  // with a bar and a companion box of near-identical width, which is the muddy
+  // two-shapes reading this change exists to remove.
+  const hasOutline = !!pctDef || !!comp;
+  const bw = Math.max(3, Math.min(34, slot - 2) * (hasOutline ? 0.58 : 1));
   const tip = document.createElement('div');
   tip.style.cssText = 'position:absolute;pointer-events:none;opacity:0;transition:opacity .1s;'
     + 'background:var(--ink);color:var(--panel);font-size:11.5px;padding:6px 9px;border-radius:6px;'
@@ -12298,10 +12453,9 @@ function pbChart(games, statKey, line){
   // Each rectangle spans from the baseline to the percentage, so it reads against
   // the right axis the same way the bars read against the left.
   if(pctDef){
-    // Narrower than the points bars and centered inside them, so when both series
-    // are on neither hides the other -- at equal width the outline sat flush on
-    // the bar edge and the two read as one muddy shape.
-    const pw = Math.max(3, Math.min(34, slot - 2) * (showBars ? 0.58 : 1));
+    // WIDER than the points bars, and the bars are centered inside it. See
+    // OUTLINE_W above for why this way round.
+    const pw = OUTLINE_W();
     games.forEach((g, i)=>{
       const p = pctVals[i];
       const x = PAD_L + i*slot + (slot - pw)/2;
@@ -12336,15 +12490,25 @@ function pbChart(games, statKey, line){
   if(comp){
     const cy = PAD_T + plotH + 6;
     const bh = 17;
-    const cbw = Math.max(3, Math.min(34, slot - 3));
+    const cbw = OUTLINE_W();
+    // LABEL EVERY NTH BOX, DO NOT SHRINK THE TYPE. This used to drop to 9px and then
+    // give up entirely below 16px wide, so a full season either read as a smear of
+    // unreadable digits or as a row of empty boxes. Neither is worth having. The
+    // stride is set by how much room a two-character number actually needs, so the
+    // labels that DO appear stay at a legible size and simply become sparser as the
+    // window grows -- every game at L10, roughly every third at a full season.
+    const MIN_LABEL_PX = 20;
+    const stride = Math.max(1, Math.ceil(MIN_LABEL_PX / slot));
     games.forEach((g, i)=>{
       const raw = g[comp.key];
       const x = PAD_L + i*slot + (slot - cbw)/2;
       svg.appendChild(el('rect', {x, y: cy, width: cbw, height: bh, rx: 3, ry: 3,
         fill: 'none', stroke: 'var(--ink)', 'stroke-width': 1, opacity: .75}));
-      if(cbw >= 16){
+      // The most recent game is always labeled whatever the stride, because it is
+      // the one people look at first and an unlabeled last box reads as missing data.
+      if(i % stride === 0 || i === games.length - 1){
         const t = el('text', {x: x + cbw/2, y: cy + bh - 5, 'text-anchor':'middle',
-          'font-size': cbw >= 22 ? 10.5 : 9, fill:'var(--ink)',
+          'font-size': 10.5, fill:'var(--ink)',
           'font-family':'var(--sans)', 'font-weight':600});
         t.textContent = comp.fmt(raw);
         svg.appendChild(t);
@@ -12641,6 +12805,9 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   const oddsHolder = document.createElement('div');
   oddsHolder.style.cssText = 'margin-top:20px;';
   container.appendChild(oddsHolder);
+  const corrHolder = document.createElement('div');
+  corrHolder.style.cssText = 'margin-top:22px;';
+  container.appendChild(corrHolder);
 
   // The line to draw: whatever today's board has for this player and stat.
   function currentLine(){
@@ -12658,6 +12825,10 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   const statRow = psChipRow(pbStats, PB_STATE.stat, k=>{
     PB_STATE.stat = k; statRow.update(k); repaint();
     if(typeof window.__pbRepaintOdds === 'function') window.__pbRepaintOdds();
+      // The follow-on list is anchored to the CURRENT stat, so it has to move with
+      // the chips exactly as the odds table does -- otherwise switching to Rebounds
+      // leaves a list computed from the Points anchor sitting underneath it.
+      if(typeof window.__pbRepaintCorr === 'function') window.__pbRepaintCorr();
   });
   statHolder.appendChild(statRow);
 
@@ -12904,16 +13075,93 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   if(typeof locMaybeAsk === 'function'){
     setTimeout(()=>locMaybeAsk(()=>{
       if(typeof window.__pbRepaintOdds === 'function') window.__pbRepaintOdds();
+      // The follow-on list is anchored to the CURRENT stat, so it has to move with
+      // the chips exactly as the odds table does -- otherwise switching to Rebounds
+      // leaves a list computed from the Points anchor sitting underneath it.
+      if(typeof window.__pbRepaintCorr === 'function') window.__pbRepaintCorr();
     }), 300);
   }
+
+  // ---- follow-ons ----------------------------------------------------------
+  // Its own async block rather than a tail on the odds one: the follow-on list is
+  // useful even when the odds table fails, and hanging it off that block's success
+  // is exactly the mistake the location prompt above documents.
+  (async ()=>{
+    let pool = [];
+    try{ pool = await psLoadPool(); }catch(e){ return; }
+    const paintCorr = ()=>{
+      corrHolder.innerHTML = '';
+      // The anchor is this player's own leg on tonight's board for whatever stat the
+      // chart is showing, so the section follows the stat chips rather than sitting
+      // on one fixed market.
+      const anchors = pool.filter(l => l.player === playerName && l.team === team
+                                    && l.statKey === PB_STATE.stat);
+      if(!anchors.length) return;
+      // The best-priced side, which is the one a person is most likely looking at.
+      const anchor = anchors.sort((a, b) => b.price - a.price)[0];
+      const rows = corrFollowOns(anchor, pool, {limit: 6});
+      const h = document.createElement('div');
+      h.style.cssText = 'font-weight:800;font-size:14px;margin-bottom:2px;';
+      h.textContent = 'If this lands, what else tends to?';
+      const sub = document.createElement('div');
+      sub.className = 'footnote';
+      sub.style.cssText = 'margin-bottom:8px;';
+      sub.textContent = `Teammates' props on tonight's board, measured in the games where `
+        + `${playerName} ${anchor.side === 'under' ? 'stayed under' : 'cleared'} `
+        + `${anchor.line} ${anchor.market || anchor.statKey}.`;
+      corrHolder.appendChild(h); corrHolder.appendChild(sub);
+      if(!rows.length){
+        const e = document.createElement('div');
+        e.className = 'footnote';
+        // Named precisely. "Nothing found" reads as a failure; this is a result.
+        e.textContent = `No teammate prop clears the bar tonight — that needs at least `
+          + `${CORR_MIN_SHARED} shared games and a lift of ${Math.round(CORR_MIN_LIFT * 100)} `
+          + `points over that player's own rate.`;
+        corrHolder.appendChild(e);
+        return;
+      }
+      rows.forEach(r => {
+        const t = corrRowText(anchor, r);
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;'
+          + 'border-bottom:1px solid var(--line);cursor:pointer;';
+        row.title = t.title;
+        const left = document.createElement('div');
+        left.style.cssText = 'flex:1;min-width:0;';
+        left.innerHTML = `<div style="font-weight:700;font-size:13.5px;">${t.head}</div>`
+          + `<div style="font-size:11.5px;color:var(--sub);">${t.lift}</div>`;
+        const right = document.createElement('div');
+        right.style.cssText = 'text-align:right;flex:0 0 auto;';
+        right.innerHTML = `<div style="font-weight:800;font-size:14px;">${t.rate}</div>`
+          + `<div style="font-size:11px;color:var(--sub);">${t.detail}</div>`;
+        row.appendChild(left); row.appendChild(right);
+        row.addEventListener('click', ()=>renderPlayerPage(r.player, r.team));
+        corrHolder.appendChild(row);
+      });
+      const note = document.createElement('div');
+      note.className = 'footnote';
+      note.style.cssText = 'margin-top:8px;';
+      // Said on the screen, not only in a tooltip: a list headed "these go together"
+      // is an invitation to parlay them, and that is the one use the numbers do not
+      // support.
+      note.textContent = 'Association, not cause. Betting these together is a correlated '
+        + 'parlay — books price and limit those, and it multiplies variance rather than spreading it.';
+      corrHolder.appendChild(note);
+    };
+    window.__pbRepaintCorr = paintCorr;
+    paintCorr();
+  })();
 
   (async ()=>{
     oddsHolder.innerHTML = '<div class="footnote">Loading odds…</div>';
     let cached = [];
     try{
       const events = await fetchCachedOddsEvents();
-      const todayStr = new Date().toDateString();
-      const todays = (events||[]).filter(ev => new Date(ev.commence_time).toDateString() === todayStr);
+      // THE SAME SLATE RULE THE BOARDS USE. This carried its own copy of the
+      // today-only filter, so on any evening after the last tip-off the profile's
+      // odds table went blank while the Props board -- already fixed -- showed
+      // tomorrow's. One definition, or the two screens disagree about what is on.
+      const todays = psSlateEvents(events);
       for(const ev of todays){
         let d = null; try{ d = await fetchCachedOddsDetail(ev.id); }catch(e){}
         cached.push({ev, detail: d});
