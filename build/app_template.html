@@ -12021,6 +12021,19 @@ function pbRatio(made, att){
 // would have nothing to draw.
 const PB_SERIES = {pts: true, pct: null};
 
+// Where a team name goes. renderTeamPage is the BASKETBALL team page; sports
+// without one land on the Stats directory with that club expanded, which is the
+// same destination in spirit -- "show me this team". Shared by the badge, the team
+// name in the identity block, and anything added later.
+function pbOpenTeam(team){
+  if(sportDef().family === 'basketball' && typeof renderTeamPage === 'function'){
+    renderTeamPage(team);
+    return;
+  }
+  try{ const open = tsLoadOpen(); open.add(team); tsSaveOpen(open); }catch(e){}
+  renderTeamsScreen();
+}
+
 // ---- center and spread lines ------------------------------------------------
 // Mean, median and mode over the games actually on screen, so they move with the
 // timeline and the filters rather than describing some other set of games.
@@ -12407,7 +12420,11 @@ function pbChart(games, statKey, line){
   // Tonight's line, drawn across so the bars can be read against it.
   if(line !== null && line !== undefined){
     svg.appendChild(el('line', {x1:PAD_L, x2:W-PAD_R, y1:y(line), y2:y(line),
-      stroke:'var(--red)', 'stroke-width':2, 'stroke-dasharray':'6 4'}));
+      // BLUE, not red. Red is being retired across the app; and on this chart in
+      // particular the line is a REFERENCE, not a warning -- the bars already carry
+      // the cleared/missed judgment through their own fill, so a red rule was
+      // reading as "this bet is bad" when it only ever meant "here is the number".
+      stroke:'var(--blue)', 'stroke-width':2, 'stroke-dasharray':'6 4'}));
     const lt = el('text', {x:W-PAD_R, y:y(line)-6, 'text-anchor':'end',
       'font-size':11, fill:'var(--red)', 'font-weight':700, 'font-family':'var(--sans)'});
     lt.textContent = `line ${line}`;
@@ -12533,9 +12550,21 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   const nm = document.createElement('div');
   nm.textContent = playerName;
   nm.style.cssText = 'font-size:22px;font-weight:800;line-height:1.15;';
+  // The team name inside the frame opens the team, same as the byline above the
+  // frame (which has always been a link) and same as the badge below it. Three
+  // affordances, ONE destination function -- the badge used to own that logic
+  // inline, and a second copy here is how the two start disagreeing about where a
+  // baseball club goes.
   const tm = document.createElement('div');
   tm.textContent = FULL_TEAM_NAME[team] || team;
-  tm.style.cssText = 'font-size:14px;color:var(--ink);margin-top:3px;';
+  tm.setAttribute('role', 'link');
+  tm.tabIndex = 0;
+  tm.title = `Open ${FULL_TEAM_NAME[team] || team}`;
+  tm.style.cssText = 'font-size:14px;color:var(--ink);margin-top:3px;cursor:pointer;'
+    + 'text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;';
+  const goTeam = ()=>pbOpenTeam(team);
+  tm.addEventListener('click', e=>{ e.stopPropagation(); goTeam(); });
+  tm.addEventListener('keydown', e=>{ if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); goTeam(); } });
   const pos = document.createElement('div');
   const position = (bio && bio.pos)
     || (sportDef().family === 'basketball' && typeof getPlayerPosition === 'function'
@@ -12560,19 +12589,7 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   actions.appendChild(pbCircleBtn(
     `<span style="font-size:12px;letter-spacing:.02em;">${psAbbr(team)}</span>`,
     FULL_TEAM_NAME[team] || team,
-    ()=>{
-      // renderTeamPage is the basketball team page. Sports without one land on the
-      // Stats directory with their club expanded, which is the same destination in
-      // spirit -- "show me this team".
-      if(sportDef().family === 'basketball' && typeof renderTeamPage === 'function'){
-        renderTeamPage(team);
-      } else {
-        try{
-          const open = tsLoadOpen(); open.add(team); tsSaveOpen(open);
-        }catch(e){}
-        renderTeamsScreen();
-      }
-    },
+    ()=>pbOpenTeam(team),
     {id:'team', bg: psColor(team), color:'#fff', border: psColor(team)}));
 
   const favs = psLoadFavs();
