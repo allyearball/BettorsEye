@@ -10178,6 +10178,18 @@ const SPORT_DEFS = {
       {key:'pa',  label:'P+A'},   {key:'ra',  label:'R+A'},
     ],
     statLabels: {pts:'PTS', reb:'REB', ast:'AST', tpm:'3PM', pra:'PRA', pr:'P+R', pa:'P+A', ra:'R+A'},
+    // THE BOX SCORE, as a box score is actually printed. `pair` renders made-attempted
+    // in one column (5-11) rather than as two, because that is how anyone reading a
+    // basketball line expects to see shooting -- and it keeps the table narrow enough
+    // to scan on a phone.
+    boxScoreCols: [
+      {key:'min', label:'MIN'}, {key:'pts', label:'PTS'},
+      {key:'fgm', label:'FG',  pair:'fga'}, {key:'tpm', label:'3P', pair:'tpa'},
+      {key:'ftm', label:'FT',  pair:'fta'},
+      {key:'oreb', label:'OR'}, {key:'dreb', label:'DR'}, {key:'reb', label:'REB'},
+      {key:'ast', label:'AST'}, {key:'stl', label:'STL'}, {key:'blk', label:'BLK'},
+      {key:'to', label:'TO'}, {key:'pf', label:'PF'}, {key:'plusMinus', label:'+/-'},
+    ],
     combos: {pra:['pts','reb','ast'], pr:['pts','reb'], pa:['pts','ast'], ra:['reb','ast']},
 
     // The Odds API market key -> our stat key.
@@ -10337,6 +10349,21 @@ const SPORT_DEFS = {
       bb:'BB', so_bat:'K', sb:'SB',
       so_pit:'K', outs:'OUTS', er:'ER', hits_allowed:'H ALW', bb_pit:'BB ALW',
     },
+    // Two box scores, because baseball prints two. A pitcher's line is IP/H/R/ER/BB/K,
+    // not AB/R/H/RBI -- handing him the batting columns is the same mistake
+    // profileStats made, one table further along.
+    boxScoreCols: [
+      {key:'ab', label:'AB'}, {key:'runs', label:'R'}, {key:'hits_bat', label:'H'},
+      {key:'rbi', label:'RBI'}, {key:'hr', label:'HR'}, {key:'total_bases', label:'TB'},
+      {key:'bb', label:'BB'}, {key:'so_bat', label:'K'}, {key:'sb', label:'SB'},
+    ],
+    boxScoreColsPitcher: [
+      // Outs are STORED as outs and READ as innings. 19 outs is 6.1, not 6.33 -- a
+      // decimal division here would print an inning count no box score has ever shown.
+      {key:'outs', label:'IP', fmt:'ip'}, {key:'hits_allowed', label:'H'},
+      {key:'er', label:'ER'}, {key:'bb_pit', label:'BB'}, {key:'so_pit', label:'K'},
+      {key:'pitches', label:'P'},
+    ],
     // H+R+RBI is a real and heavily-bet market with no single column behind it.
     // Same treatment as PRA in basketball: derived, never stored twice.
     combos: {hrr:['hits_bat','runs','rbi']},
@@ -10423,6 +10450,15 @@ function sportMarketsForRole(role, sport){
   // every other reader, the bet line on the card included.
   return all.filter(m => !m.stats || m.stats.every(s => sportStatRole(s, sport) === role))
             .map(m => m.short ? Object.assign({}, m, {label: m.short}) : m);
+}
+// The box-score columns for ONE player, which is not the same question as for a
+// sport -- see sportProfileStatsFor, same split for the same reason.
+function sportBoxScoreCols(playerName, team, sport){
+  const def = sportDef(sport);
+  if(!def.boxScoreColsPitcher) return def.boxScoreCols || [];
+  const rec = (((typeof sportDATA === 'function' ? sportDATA(sport) : null) || {})
+                .fullPlayerLogs || {})[playerName + '|' + team];
+  return (rec && rec.isPitcher) ? def.boxScoreColsPitcher : (def.boxScoreCols || []);
 }
 function sportCombos(sport){ return sportDef(sport).combos || {}; }
 function sportStatLabel(statKey, sport){
@@ -11626,6 +11662,141 @@ function psChipRow(items, active, onPick, opts){
   return wrap;
 }
 
+// ---- which games are behind a box ------------------------------------------
+// THE LIST MUST BE THE DENOMINATOR, NOT A SECOND OPINION ABOUT IT. Every box shows
+// "17/30"; opening it has to produce exactly those 17 rows out of exactly those 30
+// games, or the table quietly contradicts the number that was clicked. So each case
+// below reproduces the SAME filter its metric used -- and the harness asserts, for
+// every box on every card, that the row count equals the gp the box printed.
+//
+// The metrics with no game list behind them return null and stay unclickable: Edge
+// is a projection, DvP and vs Lineup are opponent-season indices, prior has no data.
+// A box that cannot show its work does not offer to.
+function psMetricGames(leg, key){
+  const log = psLogFor(leg);
+  const has = g => { const v = statValue(g, leg.statKey); return v !== null && v !== undefined; };
+  let games = null;
+  switch(key){
+    case 'h2h':
+      if(!leg.opponent) return null;
+      games = log.filter(g => !g.dnp && g.opp === leg.opponent);
+      break;
+    case 'pitcher':
+      if(!psFacesAStarter(leg) || !leg.oppSP) return null;
+      games = log.filter(g => !g.dnp && g.oppSP === leg.oppSP);
+      break;
+    case 'hand':
+      if(!psFacesAStarter(leg) || !leg.oppHand) return null;
+      games = log.filter(g => !g.dnp && g.oppHand === leg.oppHand);
+      break;
+    case 'size': {
+      if(sportDef().family !== 'basketball' || !leg.opponent) return null;
+      try{
+        const td = cachedHeightTierData(leg.player, leg.team);
+        if(!td) return null;
+        const gt = cachedOpponentGroupTier(leg.player, leg.team, leg.opponent, td);
+        if(!gt || !gt.groupTier) return null;
+        games = (td.allGames || []).filter(g => g.tier === gt.groupTier);
+      }catch(e){ return null; }
+      break;
+    }
+    // dvp, lineup, edge and prior have no per-game list to show.
+    case 'dvp': case 'lineup': case 'edge': case 'prior':
+      return null;
+    default: {
+      const w = PS_WINDOWS[key];
+      if(!w) return null;
+      games = windowSlice(log, w).filter(g => !g.dnp);
+    }
+  }
+  return games ? games.filter(has) : null;
+}
+
+// Did this game clear the bet AS WRITTEN? Same threshold rule the hit rates use, so
+// the check marks and the percentage cannot disagree.
+function psGameCleared(g, leg){
+  const threshold = Number.isInteger(leg.line) ? leg.line + 1 : Math.ceil(leg.line);
+  const v = statValue(g, leg.statKey);
+  if(v === null || v === undefined) return null;
+  return leg.side === 'under' ? v < threshold : v >= threshold;
+}
+
+// Outs stored, innings printed: 19 outs is 6.1, never 6.33.
+function psCellText(g, col){
+  const v = g[col.key];
+  if(v === null || v === undefined) return '—';
+  if(col.fmt === 'ip') return `${Math.floor(v / 3)}.${v % 3}`;
+  if(col.pair){
+    const a = g[col.pair];
+    return (a === null || a === undefined) ? String(v) : `${v}-${a}`;
+  }
+  return String(v);
+}
+
+// A one-line caption above the table, so the drawer says what it is showing without
+// the reader having to remember which box they pressed.
+function psBoxScoreHeader(leg, label, games){
+  const d = document.createElement('div');
+  d.className = 'footnote';
+  d.dataset.psBoxHead = '1';
+  const cleared = games.filter(g => psGameCleared(g, leg)).length;
+  d.style.cssText = 'padding:9px 2px 0;font-weight:700;';
+  d.textContent = `${label} · ${cleared} of ${games.length} cleared `
+    + `${leg.side === 'under' ? 'under' : 'over'} ${leg.line} ${leg.market || leg.statKey}`;
+  return d;
+}
+
+// The table itself. Newest game first, because the question a bettor is asking is
+// "what has he done lately" and the top of a table is where an eye lands.
+function psBoxScoreTable(leg, key, games){
+  const wrap = document.createElement('div');
+  wrap.dataset.psBox = key;
+  // Its own horizontal scroll container. Fourteen basketball columns do not fit a
+  // phone, and the page body must never scroll sideways to accommodate them.
+  wrap.style.cssText = 'margin-top:9px;border:1px solid var(--line);border-radius:9px;'
+    + 'overflow-x:auto;-webkit-overflow-scrolling:touch;background:var(--panel);';
+  const cols = sportBoxScoreCols(leg.player, leg.team);
+  const t = document.createElement('table');
+  t.style.cssText = 'border-collapse:collapse;font-size:11.5px;width:100%;'
+    + 'font-family:var(--sans);white-space:nowrap;';
+  const head = document.createElement('tr');
+  const th = (txt, align) => {
+    const c = document.createElement('th');
+    c.textContent = txt;
+    c.style.cssText = `text-align:${align||'right'};padding:5px 7px;font-size:10px;`
+      + 'letter-spacing:.05em;text-transform:uppercase;color:var(--sub);font-weight:800;'
+      + 'border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);';
+    return c;
+  };
+  head.appendChild(th('Date', 'left'));
+  head.appendChild(th('Opp', 'left'));
+  cols.forEach(c => head.appendChild(th(c.label)));
+  head.appendChild(th(leg.side === 'under' ? 'U' : 'O'));
+  t.appendChild(head);
+
+  [...games].reverse().forEach(g=>{
+    const tr = document.createElement('tr');
+    tr.dataset.psBoxRow = g.date || '';
+    const td = (txt, align, extra) => {
+      const c = document.createElement('td');
+      c.textContent = txt;
+      c.style.cssText = `text-align:${align||'right'};padding:5px 7px;`
+        + 'border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;'
+        + (extra || '');
+      return c;
+    };
+    tr.appendChild(td((g.date || '').slice(5).replace('-', '/'), 'left'));
+    tr.appendChild(td((g.homeAway === 'home' ? '' : '@') + psAbbr(g.opp), 'left'));
+    cols.forEach(c => tr.appendChild(td(psCellText(g, c))));
+    const cleared = psGameCleared(g, leg);
+    tr.appendChild(td(cleared ? '✓' : '·', 'right',
+      cleared ? 'color:var(--green);font-weight:800;' : 'color:var(--sub);'));
+    t.appendChild(tr);
+  });
+  wrap.appendChild(t);
+  return wrap;
+}
+
 function psStatBox(label, val, emphasis, key){
   const box = document.createElement('div');
   // State carried in data attributes, not only in a background color. A test
@@ -11922,10 +12093,50 @@ function psCard(leg, favs, onToggleFav){
   // sport whose metrics differ -- MLB swaps DvP for vs SP and vs. Size for vs L/R --
   // gets the right boxes without this list being edited.
   const boxes = psMetricItems().filter(m => m.key !== 'prior').map(m => [m.key, m.label]);
+  // ---- open a box to see the games behind it -------------------------------
+  // The percentage is the claim; this is the evidence. One box open at a time, and
+  // the open one is outlined heavily in ink -- a second highlight state distinct
+  // from the filled navy of "this is the metric the board is sorted by", because a
+  // box can be either, both or neither and the two facts must stay readable apart.
+  const drawer = document.createElement('div');
+  let openKey = null;
+  const closeAll = ()=>{
+    drawer.innerHTML = '';
+    [...strip.children].forEach(b => { b.style.borderWidth = '1px'; b.style.borderColor = 'var(--line)';
+      delete b.dataset.psOpen; b.setAttribute('aria-expanded', 'false'); });
+  };
   boxes.forEach(([key, label])=>{
-    strip.appendChild(psStatBox(label, psMetricValue(leg, key), key === PS_STATE.metric, key));
+    const val = psMetricValue(leg, key);
+    const box = psStatBox(label, val, key === PS_STATE.metric, key);
+    const games = val ? psMetricGames(leg, key) : null;
+    if(games && games.length){
+      box.dataset.psOpens = String(games.length);
+      box.style.cursor = 'pointer';
+      box.setAttribute('role', 'button');
+      box.setAttribute('tabindex', '0');
+      box.setAttribute('aria-expanded', 'false');
+      box.title = `Show the ${games.length} game(s) behind this`;
+      const toggle = ()=>{
+        const wasOpen = openKey === key;
+        closeAll();
+        if(wasOpen){ openKey = null; return; }
+        openKey = key;
+        box.style.borderWidth = '2.5px';
+        box.style.borderColor = 'var(--ink)';
+        box.dataset.psOpen = '1';
+        box.setAttribute('aria-expanded', 'true');
+        drawer.appendChild(psBoxScoreHeader(leg, label, games));
+        drawer.appendChild(psBoxScoreTable(leg, key, games));
+      };
+      box.addEventListener('click', e => { e.stopPropagation(); toggle(); });
+      box.addEventListener('keydown', e => {
+        if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); e.stopPropagation(); toggle(); }
+      });
+    }
+    strip.appendChild(box);
   });
   card.appendChild(strip);
+  card.appendChild(drawer);
   return card;
 }
 
@@ -14282,9 +14493,15 @@ function psStreakChance(leg, streak, boardSize){
   const pRun = 1 - psNoRunProbability(p, m, streak.wins);
   const expected = pRun * Math.max(1, boardSize || 1);
   // Bands are about how many you would expect to see tonight, not about the bet.
-  const band = expected >= 1 ? 'noise' : (expected >= 0.25 ? 'uncommon' : 'rare');
-  const label = {noise: 'Noise', uncommon: 'Uncommon', rare: 'Rare'}[band];
-  const nice = expected >= 1 ? `~${Math.round(expected)} like this tonight`
+  const band = expected >= 1 ? 'common' : (expected >= 0.25 ? 'uncommon' : 'rare');
+  // "NOISE" WAS THE WRONG WORD AND IT WAS THE WRONG WORD IN A REVEALING WAY. Sitting
+  // in a column beside a price, next to a player's name, on a page of bets, it reads
+  // as a verdict on the BET -- "this one is noise, skip it" -- which is the opposite
+  // of what the number says. It only ever described the STREAK: how ordinary a run
+  // that long is on a board this size. Common / Uncommon / Rare are frequencies on
+  // their face and cannot be misread as advice.
+  const label = {common: 'Common', uncommon: 'Uncommon', rare: 'Rare'}[band];
+  const nice = expected >= 1 ? `${Math.round(expected)} like it tonight`
              : `${expected.toFixed(2)} expected`;
   return {band, pRun, expected, text: label, sub: nice,
     title: `${streak.wins} in a row. At ${leg.price > 0 ? '+' : ''}${leg.price} the market puts this `
@@ -14784,7 +15001,10 @@ async function renderMarketsScreen(){
   sub.className = 'footnote';
   sub.style.cssText = 'margin-bottom:12px;';
   sub.textContent = `Every list is priced between ${PS_MIN_PRICE} and +${PS_MAX_PRICE}. `
-    + `The right-hand column says how many streaks that long tonight's board would produce by chance.`;
+    + `The right-hand column rates the STREAK, not the bet: how many runs that long `
+    + `tonight's board would throw up by chance alone. "Common" means a streak like `
+    + `that is unremarkable on a board this size — it says nothing about whether the `
+    + `prop is worth backing.`;
   shell.appendChild(h); shell.appendChild(sub);
   if(!sportHasOdds(PS_STATE.sport)){
     shell.appendChild(sportHasData(PS_STATE.sport)
@@ -14875,6 +15095,24 @@ async function renderMarketsScreen(){
         : 'No views recorded yet. This fills in once the Worker endpoint is live and props are being opened.';
       sec.appendChild(n);
     }
+
+    // A HEADER FOR THE RIGHT-HAND COLUMN. It was previously unlabelled: a bare word
+    // in the margin of a row, with nothing on the page saying what question it
+    // answered. One line of explanation at the top of the page was not enough --
+    // by the fourth list the reader has scrolled well past it.
+    const cols = document.createElement('div');
+    cols.dataset.psCols = spec.key;
+    cols.style.cssText = 'display:flex;align-items:baseline;justify-content:flex-end;'
+      + 'gap:8px;padding:0 2px 4px;font-size:10px;letter-spacing:.06em;'
+      + 'text-transform:uppercase;color:var(--sub);font-weight:800;';
+    const colLabel = document.createElement('div');
+    colLabel.textContent = 'streak vs chance';
+    colLabel.style.cssText = 'flex:0 0 92px;text-align:right;';
+    colLabel.title = 'How ordinary a run this long is. It rates the STREAK, not the bet: '
+      + 'across every prop on tonight\'s board, how many runs this long would turn up '
+      + 'by chance alone at these prices.';
+    cols.appendChild(colLabel);
+    sec.appendChild(cols);
 
     const listEl = document.createElement('div');
     sec.appendChild(listEl);
@@ -14986,7 +15224,7 @@ function psMarketRow(leg, rank, note, chance){
     const c = document.createElement('div');
     c.style.cssText = 'text-align:right;flex:0 0 92px;';
     c.title = chance.title;
-    const color = {noise:'var(--sub)', uncommon:'var(--ink)', rare:'var(--green)'}[chance.band];
+    const color = {common:'var(--sub)', uncommon:'var(--ink)', rare:'var(--green)'}[chance.band];
     const weight = chance.band === 'rare' ? 800 : 700;
     c.innerHTML = `<div style="font-weight:${weight};font-size:12.5px;color:${color};">${chance.text}</div>`
       + `<div style="font-size:10.5px;color:var(--sub);line-height:1.25;">${chance.sub}</div>`;
