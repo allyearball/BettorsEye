@@ -10212,6 +10212,12 @@ const SPORT_DEFS = {
     // the ingest has already applied its own floor (20 batting / 5 pitching games),
     // so this is the second gate, not the only one.
     gpFloors: {w10: 4, w15: 5},
+    // No baseball equivalent of "still inside the first quarter". The WNBA's 25
+    // minutes stands in for a game-clock the app cannot see; a baseball game has no
+    // comparable early window, and the first plate appearance of a player prop can
+    // resolve in the opening minute. So a started game leaves the board at once --
+    // which is safe now that the board rolls to the next slate instead of going blank.
+    inPlayGraceMinutes: 0,
     // Abbreviation and primary colour per club, the same job PS_TEAM does for the
     // WNBA. Without these every badge would read the first three letters of the
     // city -- "CHI" for both Chicago clubs, "NEW" for both New York clubs.
@@ -10832,13 +10838,56 @@ function psSaveFavs(set){
 }
 const psFavKey = leg => `${leg.player}|${leg.team}|${leg.statKey}|${leg.side}|${leg.line}`;
 
+// ---- which games are on the board ------------------------------------------
+// "TODAY'S GAMES" IS A BASKETBALL ASSUMPTION. The WNBA plays a three-hour evening
+// window, so today's calendar date and "the next slate" are the same thing for
+// almost the whole day. Baseball runs from 1pm to 10pm Eastern, and by late
+// evening today's slate is over while tomorrow's has not begun -- so a filter on
+// today's date returned games that had all started, the eligibility check then
+// dropped every one of them, and the board was empty. Measured at 22:49 ET: 20
+// events cached, 6 of them today and all 6 started 68 to 188 minutes ago, the
+// other 14 tomorrow's.
+//
+// So the rule is now THE NEXT SLATE, not today's date: of the games that can still
+// be bet, take the earliest date that has any and show that whole day. Today's
+// remaining games whenever there are any, tomorrow's once there are not. The WNBA
+// behaves exactly as before during the hours anyone looks at it, and stops going
+// blank after the last tip-off.
+function psSlateGraceMinutes(){
+  // A basketball quarter is not a unit baseball has. The registry carries a per-
+  // sport value; anything without one keeps the existing quarter estimate.
+  const g = sportDef().inPlayGraceMinutes;
+  return (g === undefined || g === null) ? TOP_BETS_QUARTER_GRACE_MINUTES : g;
+}
+function psSlateEvents(events){
+  const now = new Date();
+  const grace = psSlateGraceMinutes();
+  const playable = (events || []).filter(ev =>
+    (now - new Date(ev.commence_time)) / 60000 < grace);
+  if(!playable.length) return [];
+  playable.sort((a, b) => new Date(a.commence_time) - new Date(b.commence_time));
+  const day = new Date(playable[0].commence_time).toDateString();
+  return playable.filter(ev => new Date(ev.commence_time).toDateString() === day);
+}
+// Which day the board is actually showing, so the screen can say so when it is not
+// today. A board silently displaying tomorrow's games reads as today's.
+function psSlateLabel(events){
+  if(!events || !events.length) return null;
+  const d = new Date(events[0].commence_time);
+  const today = new Date();
+  const tomorrow = new Date(today.getTime() + 86400000);
+  if(d.toDateString() === today.toDateString()) return null;
+  if(d.toDateString() === tomorrow.toDateString()) return 'tomorrow';
+  return d.toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric'});
+}
+
 // ---- the pool --------------------------------------------------------------
 function psGatherProps(cachedFetch, selectedBook){
   selectedBook = selectedBook || 'best';
-  const todayStr = new Date().toDateString();
-  const now = new Date();
-  const games = (cachedFetch||[]).filter(({ev}) =>
-    new Date(ev.commence_time).toDateString() === todayStr && isEligibleForTopBets(ev, now));
+  // The slate was already chosen in psLoadPool; re-deriving it here (as this used
+  // to, with its own copy of the today-plus-eligibility test) is how the fetched
+  // list and the rendered list get to disagree.
+  const games = (cachedFetch || []);
   let pool = [];
   games.forEach(({ev, detail})=>{
     const homeShort = SHORT_TEAM_NAME[ev.home_team] || ev.home_team;
@@ -10899,8 +10948,8 @@ async function psLoadPool(force){
   if(!force && _psPool && _psPoolSport === PS_STATE.sport
      && (Date.now() - _psPoolAt) < PS_POOL_TTL_MS) return _psPool;
   const events = await fetchCachedOddsEvents();
-  const todayStr = new Date().toDateString();
-  const todays = (events||[]).filter(ev => new Date(ev.commence_time).toDateString() === todayStr);
+  const todays = psSlateEvents(events);
+  window.__psSlateLabel = psSlateLabel(todays);
   const cached = [];
   for(const ev of todays){
     let detail = null;
@@ -11216,8 +11265,12 @@ async function renderPropsScreen(){
       else { favs.add(k); btn.textContent='★'; btn.style.color='#E8A33D'; }
       psSaveFavs(favs);
     })));
+    // Naming the day when it is not today. Once the last game of a slate starts the
+    // board rolls to the next one, and a list of tomorrow's games with no label on
+    // it reads as tonight's.
     status.textContent = `${rows.length} prop(s) — sorted by `
-      + (metricItems.find(m=>m.key===PS_STATE.metric)||{}).label;
+      + (metricItems.find(m=>m.key===PS_STATE.metric)||{}).label
+      + (window.__psSlateLabel ? ` · ${window.__psSlateLabel}'s slate` : '');
     if(rows.length > PS_STATE.limit){
       const more = document.createElement('button');
       more.textContent = `Show ${Math.min(PS_PAGE_SIZE, rows.length - PS_STATE.limit)} more`;
@@ -11749,7 +11802,7 @@ const PB_TIMELINES = [
 // `from`/`to` are ISO dates from the calendar picker. When either is set the timeline
 // becomes 'custom' and no chip is lit -- a date range and "L10" are two answers to the
 // same question, so exactly one of them is ever in force.
-const PB_STATE = {stat:'pts', timeline:'l10', venue:null, tier:null, from:null, to:null};
+const PB_STATE = {stat:'pts', timeline:'l10', venue:null, tier:null, from:null, to:null, hand:null};
 
 // ---- the companion box under each bar --------------------------------------
 // The number behind the number: what she was doing to produce the bar.
@@ -11934,6 +11987,13 @@ function pbGamesFor(player, team, opponent){
   if(PB_STATE.from) games = games.filter(g => g.date >= PB_STATE.from);
   if(PB_STATE.to)   games = games.filter(g => g.date <= PB_STATE.to);
   if(PB_STATE.venue) games = games.filter(g => (g.homeAway === 'home') === (PB_STATE.venue === 'home'));
+  // The platoon split. `oppHand` is the opposing STARTER's throwing hand, stamped by
+  // the ingest -- a game with no starter recorded (an opener, a bullpen game, a name
+  // the roster join missed) carries no hand and is excluded from BOTH sides rather
+  // than being filed into one. An unknown counted as right-handed would inflate the
+  // sample of the split most players see most often, which is exactly the split you
+  // would least want overstated.
+  if(PB_STATE.hand) games = games.filter(g => g.oppHand === PB_STATE.hand);
   if(PB_STATE.tier){
     // THE TIER KEYS ARE LOWERCASE. computeHeightTierData tags each game
     // 'shortest' | 'middle' | 'tallest'; an earlier version of this compared
@@ -12601,8 +12661,8 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
       filterHolder.appendChild(srow);
     }
 
-    filterHolder.appendChild(mk('All', !PB_STATE.venue && !PB_STATE.tier,
-      ()=>{ PB_STATE.venue = null; PB_STATE.tier = null; repaint(); }, 'all'));
+    filterHolder.appendChild(mk('All', !PB_STATE.venue && !PB_STATE.tier && !PB_STATE.hand,
+      ()=>{ PB_STATE.venue = null; PB_STATE.tier = null; PB_STATE.hand = null; repaint(); }, 'all'));
     filterHolder.appendChild(mk('Home', PB_STATE.venue === 'home',
       ()=>{ PB_STATE.venue = PB_STATE.venue === 'home' ? null : 'home'; repaint(); }, 'home'));
     filterHolder.appendChild(mk('Away', PB_STATE.venue === 'away',
@@ -12615,6 +12675,23 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
         filterHolder.appendChild(mk(l, PB_STATE.tier === k,
           ()=>{ PB_STATE.tier = PB_STATE.tier === k ? null : k; repaint(); }, k));
       });
+    } else {
+      // THE PLATOON SPLIT, AND ONLY FOR HITTERS. A batter's record against left- and
+      // right-handed starters comes straight off his own log (`oppHand`). The mirror
+      // image for a pitcher -- his line against left- and right-handed BATTERS -- is
+      // not derivable from a box score at all: it needs the handedness of each batter
+      // he actually faced, which lives in play-by-play this ingest does not fetch.
+      // So the buttons appear where the data supports them and are absent where it
+      // does not, rather than being shown and quietly returning an empty chart.
+      const rec = (sportDATA().fullPlayerLogs || {})[playerName + '|' + team];
+      const isPitcher = !!(rec && rec.isPitcher);
+      const known = rec ? (rec.log || []).some(g => g.oppHand) : false;
+      if(!isPitcher && known){
+        [['L','vs LHP'],['R','vs RHP']].forEach(([k,l])=>{
+          filterHolder.appendChild(mk(l, PB_STATE.hand === k,
+            ()=>{ PB_STATE.hand = PB_STATE.hand === k ? null : k; repaint(); }, 'hand-' + k));
+        });
+      }
     }
   }
 
