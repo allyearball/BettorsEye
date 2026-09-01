@@ -37,10 +37,10 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   *{box-sizing:border-box;}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;}
   /* ============ The app bar. One black row on EVERY page: sport dropdown left,
-     wordmark centred, search / menu / settings right. Previously the logo sat left
+     wordmark centered, search / menu / settings right. Previously the logo sat left
      with a "Data through ..." tag beside it, and the search + hamburger lived inside
      the Props screen's own first row -- which meant they existed on exactly one page.
-     Grid rather than flex so the wordmark is centred against the VIEWPORT, not against
+     Grid rather than flex so the wordmark is centered against the VIEWPORT, not against
      whatever the two side groups happen to measure. ============ */
   header{background:#000000;color:#fff;padding:10px 14px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;}
   header h1{font-size:18px;margin:0;font-weight:800;text-transform:lowercase;grid-column:2;justify-self:center;white-space:nowrap;}
@@ -1703,7 +1703,7 @@ function renderLeagueStatsPage(year, mode, windowMode){
   });
   makeTable(main, LEAGUE_DEF_COLS, defRows, {defaultSort:'oppPts', defaultDir:'asc', noHideDNP:true});
 
-  // Team Height, directly beneath the defensive totals. Deliberately NOT labelled with
+  // Team Height, directly beneath the defensive totals. Deliberately NOT labeled with
   // windowLabelText like the tables around it: this one ignores the window selector entirely and
   // is always the last five games, so the heading has to say so or it reads as a bug.
   const tHeight = document.createElement('div'); tHeight.className='section-title';
@@ -3597,7 +3597,7 @@ function renderPlayerPage(playerName, team, returnTo, windowMode, year, month){
     // Opens on whichever tab was last used, not always the first -- so Back from a box score
     // or a tier page returns you to the tab you left. Clamped in case the remembered index is
     // from a page with more tabs than this one.
-    // TWO BEHAVIOURS THAT LOOK LIKE ONE, AND BOTH MATTER.
+    // TWO BEHAVIORS THAT LOOK LIKE ONE, AND BOTH MATTER.
     //
     // Bets is the LANDING tab: arriving at a player from anywhere opens on it,
     // because it is the summary the other tabs elaborate on, and a user who once
@@ -5800,7 +5800,7 @@ function betIsDemoted(bet){ return !!(bet && bet.agreementVerdict === 'demote');
 //     itself: a rotation regular who does not appear in it did not play. That is LOOKAHEAD. It is
 //     a good approximation, because a starter's absence is almost always on the injury report
 //     hours before tip, but it is knowledge the app did not strictly have, and a replay built on
-//     it is a mild upper bound rather than a faithful re-run. Every reconstructed row is labelled
+//     it is a mild upper bound rather than a faithful re-run. Every reconstructed row is labeled
 //     as such, and `reconstructed:true` is on the object, so this can never be mistaken for a
 //     stored projection.
 // These functions deliberately DUPLICATE the shape of rosterDisruption / projectMinutesForTeam /
@@ -6015,9 +6015,9 @@ function replayTrackedPick(bet){
 // not an edge; it is the removal of a negative one. Nothing here justifies a claim that this model
 // picks winners, and the column tooltip says so in as many words.
 //
-// EVERY FEATURE COMES OFF THE PLAYER'S OWN GAME LOG. Usage, rest, starter rate and opponent defence
+// EVERY FEATURE COMES OFF THE PLAYER'S OWN GAME LOG. Usage, rest, starter rate and opponent defense
 // were all fitted and then dropped -- the first three fitted to near-zero weight, and opponent
-// defence because the fitter's version is team-level while this app's is position-bucketed. Those
+// defense because the fitter's version is team-level while this app's is position-bucketed. Those
 // are different quantities, and feeding one into a weight fitted on the other would look like
 // opponent strength was priced in when it was not.
 const ADVANCED_MODEL = {
@@ -9631,7 +9631,7 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
 // TWO WAYS TO HANDLE THAT, AND ONLY ONE IS HONEST. Lowering the bar for these players would mean
 // quietly changing what "75%" means depending on who is injured, and there is no backtest to
 // justify a specific new number (see below). So the 75% list is left EXACTLY as it was, and the
-// bets it rejects on role-change grounds get their own clearly-labelled board underneath, where
+// bets it rejects on role-change grounds get their own clearly-labeled board underneath, where
 // what qualifies them is stated plainly: not a hit rate, a projected edge.
 //
 // WHAT IS NOT KNOWN. Whether the 75% bar should move for these games is an empirical question
@@ -9671,7 +9671,7 @@ function computeStandardTopBets(cachedFetch, topN, selectedBook){
 // the standard deviation of the last ten games, and read a normal CDF. For a
 // points line of 18.5 on a mean of 17 that is defensible. For a threes line of
 // 1.5 on a mean of 0.9 it is not: 89% of WNBA player-games produce 0, 1 or 2
-// threes, so the quantity being modelled has eleven possible values and the
+// threes, so the quantity being modeled has eleven possible values and the
 // normal spreads mass across the gaps and below zero.
 //
 // WHAT THE DATA SAID (dispersion.py and countfit.py, 18,871 real player-games
@@ -10004,7 +10004,7 @@ function paTurnDistribution(muT, sdT, slot){
   const acc = new Map();
   let total = 0;
   for(let t = lo; t <= hi; t++){
-    // Normal density over integer team totals, normalised at the end.
+    // Normal density over integer team totals, normalized at the end.
     const z = (t - muT) / sd;
     const w = Math.exp(-0.5 * z * z);
     const turns = paTurns(t, slot);
@@ -10086,7 +10086,7 @@ function paProbOver(rate, slot, line, statKey, muT, sdT){
 // sport-aware: PS_STATE.sport was read in exactly five places, all of them
 // season LABELS. Every market list, metric, stat key and short label was a
 // basketball literal, and DATA was a single WNBA blob. Selecting MLB would have
-// relabelled the season and then shown WNBA players under it -- which is worse
+// relabeled the season and then shown WNBA players under it -- which is worse
 // than not offering MLB at all, because it looks like it worked.
 //
 // So the rule this file establishes: anything that differs between leagues and
@@ -10106,7 +10106,7 @@ const SPORT_DEFS = {
 
   // ---- WNBA ---------------------------------------------------------------
   // The shipped sport. Every value here was previously a literal somewhere in
-  // the file; moving them has to be behaviour-preserving, which is what the
+  // the file; moving them has to be behavior-preserving, which is what the
   // sportsreg harness checks.
   wnba: {
     key: 'wnba', label: 'WNBA', family: 'basketball',
@@ -10136,7 +10136,7 @@ const SPORT_DEFS = {
       {key:'l10',    label:'L10'},
       {key:'l15',    label:'L15'},
       {key:'l30',    label:'L30'},
-      {key:'season', label:null},          // labelled per sport at render
+      {key:'season', label:null},          // labeled per sport at render
       {key:'dvp',    label:'DvP'},
       {key:'edge',   label:'Edge'},
       {key:'prior',  label:null},
@@ -10184,7 +10184,7 @@ const SPORT_DEFS = {
   // meantime -- the sport is selectable, and every surface says plainly that
   // there is nothing behind it yet instead of showing WNBA rows.
   //
-  // THE TWO METRICS THAT ARE NOT PORTS. `dvp` (defence vs position) has no
+  // THE TWO METRICS THAT ARE NOT PORTS. `dvp` (defense vs position) has no
   // baseball analogue: the matchup variable is the opposing STARTING PITCHER,
   // an individual who changes every game, so it is replaced by `pitcher`.
   // `size` (opponent height tiers) is meaningless here and is replaced by
@@ -10218,7 +10218,7 @@ const SPORT_DEFS = {
     // resolve in the opening minute. So a started game leaves the board at once --
     // which is safe now that the board rolls to the next slate instead of going blank.
     inPlayGraceMinutes: 0,
-    // Abbreviation and primary colour per club, the same job PS_TEAM does for the
+    // Abbreviation and primary color per club, the same job PS_TEAM does for the
     // WNBA. Without these every badge would read the first three letters of the
     // city -- "CHI" for both Chicago clubs, "NEW" for both New York clubs.
     teams: {
@@ -10480,14 +10480,14 @@ function sportEmptyState(sport){
 //      does not carry. Reading them threw a TypeError, which psGatherProps caught
 //      and turned into `legs = []`. So even a market list that DID match would
 //      never have been reached.
-//   3. Every surviving leg was then filtered through minutes projections, defence
+//   3. Every surviving leg was then filtered through minutes projections, defense
 //      vs position and the WNBA injury report. None of those mean anything in
 //      baseball, and two of them read basketball-only structures.
 //
 // So the fix is a separate path rather than a growing pile of `if(sport)` inside
 // the basketball one. What it deliberately does NOT do is fake the parts that
 // have no baseball equivalent yet: there is no minutes adjustment, no
-// defence-vs-position, and no projection edge, and each is left explicitly null
+// defense-vs-position, and no projection edge, and each is left explicitly null
 // rather than defaulted to a number that would read as measured. The Edge column
 // stays blank on an MLB board until the count model is validated out of sample
 // for baseball -- an unvalidated number in a column called "Edge" is worse than
@@ -10505,7 +10505,7 @@ function sportEmptyState(sport){
 // IN BOTH. DraftKings' WNBA alt markets are MILESTONES -- point 20 means "20+", and
 // 20 is literally the number to reach. The MLB alt markets the same API returns are
 // ordinary half-point lines -- point 1.5 means "Over 1.5", which needs 2. Reading a
-// baseball 1.5 as a milestone gives a leg labelled "1.5+ Hits" stored against an
+// baseball 1.5 as a milestone gives a leg labeled "1.5+ Hits" stored against an
 // effective line of 1.0, which is neither what the book offered nor comparable with
 // anything else on the board.
 //
@@ -10651,7 +10651,7 @@ const PS_PAGE_SIZE = 40;            // rows rendered per batch; the pool is 300-
 const PS_FAVS_KEY = 'be_favs_v1';
 
 // ---- sports ----------------------------------------------------------------
-// The list and the season labelling both come from the registry in sports.js
+// The list and the season labeling both come from the registry in sports.js
 // now. These two names are kept because a dozen call sites use them, but they
 // are thin: PS_SPORTS is whatever the registry says is active, and the label
 // rule lives in one place rather than being reimplemented per screen.
@@ -10659,7 +10659,7 @@ const PS_SPORTS = sportList();
 const psSeasonLabel = (sport, season) => sportSeasonLabel(sport, season);
 
 // ---- team identity ---------------------------------------------------------
-// Abbreviation and colour per franchise. Neither exists anywhere else in the
+// Abbreviation and color per franchise. Neither exists anywhere else in the
 // file, and the card needs both.
 const PS_TEAM = {
   Aces:      {abbr:'LVA', color:'#000000', city:'Las Vegas'},
@@ -10684,7 +10684,7 @@ const PS_TEAM = {
 const psAbbr  = t => (sportTeam(t) || {}).abbr  || (t||'').slice(0,3).toUpperCase();
 const psColor = t => (sportTeam(t) || {}).color || '#2F6B52';
 
-// PLAYER IMAGE. Initials on the team colour -- no external host, no licensing
+// PLAYER IMAGE. Initials on the team color -- no external host, no licensing
 // question, and it looks deliberate rather than broken. When headshots arrive
 // with redistribution rights, this is the only function that changes.
 function psAvatar(player, team, size){
@@ -10722,7 +10722,7 @@ function psH2H(leg){
   return {text:`${Math.round(100*hits/vals.length)}%`, sort:hits/vals.length, sub:`${hits}/${vals.length}`};
 }
 
-// Defence vs position for this stat. Above 1.05 favours the over, below 0.95
+// Defense vs position for this stat. Above 1.05 favors the over, below 0.95
 // the under -- so for an Under bet the scale is inverted before sorting, or
 // "best DvP" would mean the opposite thing on half the board.
 function psDvp(leg){
@@ -10854,8 +10854,8 @@ function psMetricItems(sport){
   }));
 }
 
-// ---- favourites ------------------------------------------------------------
-// Per-device, in localStorage. Deliberately not on the Worker yet: a favourite
+// ---- favorites ------------------------------------------------------------
+// Per-device, in localStorage. Deliberately not on the Worker yet: a favorite
 // is a personal bookmark, and shipping it server-side means a schema, an
 // endpoint and a migration for something that works offline today.
 function psLoadFavs(){
@@ -11009,7 +11009,7 @@ const PS_STATE = {sport:'wnba', metric:'l10', markets:['all'], market:'all', scr
                   positions:['all'], search:'', limit:PS_PAGE_SIZE};
 
 // ---- position chips (basketball only) --------------------------------------
-// Guard / Forward / Centre, at most TWO at once. The cap is Jon's and it is the
+// Guard / Forward / Center, at most TWO at once. The cap is Jon's and it is the
 // right one: with only three buckets, picking all three is the same as picking
 // none, so a third selection would be a no-op dressed up as a filter. 'All' stays
 // exclusive, exactly like the market row above it.
@@ -11080,7 +11080,7 @@ function psChipRow(items, active, onPick, opts){
 
 function psStatBox(label, val, emphasis, key){
   const box = document.createElement('div');
-  // State carried in data attributes, not only in a background colour. A test
+  // State carried in data attributes, not only in a background color. A test
   // (or a future stylesheet, or assistive tech) should not have to infer which
   // box is active by sampling computed styles.
   if(key) box.dataset.psKey = key;
@@ -11106,17 +11106,17 @@ function psStatBox(label, val, emphasis, key){
   return box;
 }
 
-// ---- defence-rank shading --------------------------------------------------
+// ---- defense-rank shading --------------------------------------------------
 // The whole card is tinted by how the opponent defends THIS stat against THIS
 // player's position. Basketball only for now; baseball's equivalent is a separate
 // question Jon and I have not settled.
 //
 // THE SCALE IS SIDE-AWARE, and that is the part it would be easy to get wrong.
-// Rank 1 is the stingiest defence in the league and rank `of` the most generous.
+// Rank 1 is the stingiest defense in the league and rank `of` the most generous.
 // Generous is good news for an Over and bad news for an Under, so the raw rank
-// cannot drive the colour directly -- doing that would paint the best Unders on the
-// board red. The rank is normalised to 0..1, then flipped for the under side, so
-// green always means "this matchup favours the bet as written".
+// cannot drive the color directly -- doing that would paint the best Unders on the
+// board red. The rank is normalized to 0..1, then flipped for the under side, so
+// green always means "this matchup favors the bet as written".
 function psDefShade(leg){
   if(sportDef().family !== 'basketball') return null;
   if(!leg.opponent) return null;
@@ -11127,13 +11127,13 @@ function psDefShade(leg){
   }catch(e){ return null; }
   if(!r || !r.rank || !r.of || r.of < 2) return null;
   const generous = (r.rank - 1) / (r.of - 1);          // 0 = stingiest, 1 = most generous
-  const favourable = leg.side === 'under' ? 1 - generous : generous;
-  const band = favourable >= 2/3 ? 'good' : (favourable <= 1/3 ? 'bad' : 'mid');
+  const favorable = leg.side === 'under' ? 1 - generous : generous;
+  const band = favorable >= 2/3 ? 'good' : (favorable <= 1/3 ? 'bad' : 'mid');
   // Translucent rather than solid: the card sits on var(--panel), which differs
   // between the two layout modes, and a hard-coded pastel would fight it.
   const tint = {good: 'rgba(45,138,86,0.11)', mid: 'rgba(214,158,20,0.13)',
                 bad: 'rgba(190,32,45,0.09)'}[band];
-  const words = {good: 'a favourable matchup', mid: 'a middling matchup',
+  const words = {good: 'a favorable matchup', mid: 'a middling matchup',
                  bad: 'a tough matchup'}[band];
   const posName = (typeof POSITION_LABEL !== 'undefined' && POSITION_LABEL[bucket]) || bucket;
   return {band, tint,
@@ -11168,12 +11168,14 @@ function psCard(leg, favs, onToggleFav){
   mid.style.cssText = 'min-width:0;';
   const nameRow = document.createElement('div');
   nameRow.style.cssText = 'display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;';
-  const nm = document.createElement('span');
-  nm.textContent = leg.player;
-  nm.style.cssText = 'font-weight:800;font-size:15px;color:var(--ink);';
-  const ab = document.createElement('span');
-  ab.textContent = psAbbr(leg.team);
-  ab.style.cssText = 'font-size:12px;font-weight:700;color:var(--sub);';
+  // Both the name and the team abbreviation open that player's Bets page. Separate
+  // elements with their own listeners rather than one big clickable card, because
+  // the card ALREADY has a click handler (research tracking) and the whole card
+  // being a link would make the star and the odds box un-tappable.
+  const nm = psNameLink(leg.player, leg.player, leg.team,
+    {css:'font-weight:800;font-size:15px;color:var(--ink);'});
+  const ab = psNameLink(psAbbr(leg.team), leg.player, leg.team,
+    {css:'font-size:12px;font-weight:700;color:var(--sub);'});
   nameRow.appendChild(nm); nameRow.appendChild(ab);
   const betLine = document.createElement('div');
   betLine.textContent = `${leg.side === 'under' ? 'u' : 'o'} ${leg.line} ${leg.market || PROP_MARKET_LABEL[leg.statKey] || leg.statKey}`;
@@ -11328,15 +11330,15 @@ async function renderPropsScreen(){
   status.style.cssText = 'padding:10px 14px 0;';
   status.textContent = 'Loading today’s props…';
   shell.appendChild(status);
-  // A COLOUR KEY, because a tint nobody can decode is decoration. Same reasoning as
+  // A COLOR KEY, because a tint nobody can decode is decoration. Same reasoning as
   // buildColorKey on the bet tables: the mark is only information if the page says
   // what it means.
   if(sportDef().family === 'basketball'){
     const key = document.createElement('div');
     key.className = 'footnote';
     key.style.cssText = 'padding:6px 14px 0;display:flex;gap:12px;flex-wrap:wrap;align-items:center;';
-    key.appendChild(document.createTextNode('Card colour = opponent defence vs this position:'));
-    [['rgba(45,138,86,0.11)', 'favourable'], ['rgba(214,158,20,0.13)', 'middling'],
+    key.appendChild(document.createTextNode('Card color = opponent defense vs this position:'));
+    [['rgba(45,138,86,0.11)', 'favorable'], ['rgba(214,158,20,0.13)', 'middling'],
      ['rgba(190,32,45,0.09)', 'tough']].forEach(([c, l])=>{
       const chip = document.createElement('span');
       chip.style.cssText = 'display:inline-flex;align-items:center;gap:5px;';
@@ -11760,7 +11762,7 @@ function locPrompt(onDone){
   const finish = (v)=>{ locSave(v); back.remove(); if(onDone) onDone(v); };
 
   // Declining is recorded, not ignored. An unrecorded "no" means asking again
-  // tomorrow, which is the behaviour people hate most.
+  // tomorrow, which is the behavior people hate most.
   no.addEventListener('click', ()=>finish({decision:'declined', state:null, at:new Date().toISOString()}));
 
   yes.addEventListener('click', async ()=>{
@@ -11929,7 +11931,7 @@ function locSettingsSection(){
 // Bars start at zero because a truncated baseline misrepresents magnitude, which
 // is the whole job of a bar. Where a live line exists it is drawn as a dashed
 // reference and the bars are tinted by whether they cleared it; the line itself
-// carries that meaning, so the colour is reinforcement rather than the only cue.
+// carries that meaning, so the color is reinforcement rather than the only cue.
 // Five x labels rather than one per bar, because forty date labels is noise.
 // ============================================================================
 
@@ -11937,7 +11939,7 @@ function locSettingsSection(){
 // H/TB/HR/RBI/R/H+R+RBI/BB/K for baseball.
 const PB_STATS_FOR = (sport) => sportProfileStats(sport);
 const PB_TIMELINES = [
-  {key:'season', label:null},          // labelled per sport at render
+  {key:'season', label:null},          // labeled per sport at render
   {key:'h2h',    label:'H2H'},
   {key:'l5',  label:'L5'},  {key:'l10', label:'L10'},
   {key:'l15', label:'L15'}, {key:'l30', label:'L30'},
@@ -11957,13 +11959,13 @@ const PB_STATE = {stat:'pts', timeline:'l10', venue:null, tier:null, from:null, 
 // fga, fgPct, tpm, tpa, tpPct, ftm, fta, ftPct, oreb, dreb, reb, ast, stl, blk,
 // to, pf, plusMinus and nothing else. Rather than invent it or silently show
 // something else under an "assists opportunity" label, the assists chart shows
-// MINUTES, labelled as minutes, and the chart says so. Getting real potential
+// MINUTES, labeled as minutes, and the chart says so. Getting real potential
 // assists means a tracking feed (Sportradar carries it for the WNBA; SportsDataIO
 // does not expose it on the standard tier).
 const PB_COMPANION = {
   // pts has no companion box: it gets the dual-axis series selector instead (see
   // PB_PCT below), which is a fuller version of the same idea -- a second series
-  // with its own axis rather than a labelled number under the bar.
+  // with its own axis rather than a labeled number under the bar.
   tpm: {key:'tpa',   label:'3PA',  fmt: v => v === null || v === undefined ? '—' : String(v)},
   reb: {key:'oreb',  label:'OREB', fmt: v => v === null || v === undefined ? '—' : String(v)},
   ast: {key:'min',   label:'MIN',  fmt: v => v === null || v === undefined ? '—' : String(Math.round(v)),
@@ -12019,7 +12021,7 @@ function pbRatio(made, att){
 // would have nothing to draw.
 const PB_SERIES = {pts: true, pct: null};
 
-// ---- centre and spread lines ------------------------------------------------
+// ---- center and spread lines ------------------------------------------------
 // Mean, median and mode over the games actually on screen, so they move with the
 // timeline and the filters rather than describing some other set of games.
 //
@@ -12029,7 +12031,7 @@ const PB_SERIES = {pts: true, pct: null};
 // one. So: a mode is only drawn when some value actually repeats, and when
 // several tie for most frequent the lowest is used and the label says how many
 // games sit there.
-function pbCentres(vals){
+function pbCenters(vals){
   const v = (vals || []).filter(x => x !== null && x !== undefined && isFinite(x));
   if(!v.length) return null;
   const sorted = v.slice().sort((a,b)=>a-b);
@@ -12096,7 +12098,7 @@ async function pbShare(player, team){
                    text: `${player} (${psAbbr(team)}) betting profile`, url};
   if(navigator.share){
     try{ await navigator.share(payload); return 'shared'; }
-    catch(e){ if(e && e.name === 'AbortError') return 'cancelled'; }
+    catch(e){ if(e && e.name === 'AbortError') return 'canceled'; }
   }
   try{ await navigator.clipboard.writeText(url); return 'copied'; }
   catch(e){ return 'failed'; }
@@ -12141,7 +12143,7 @@ function pbGamesFor(player, team, opponent){
     // THE TIER KEYS ARE LOWERCASE. computeHeightTierData tags each game
     // 'shortest' | 'middle' | 'tallest'; an earlier version of this compared
     // against 'Shortest' | 'Middle' | 'Tallest' -- the capitalisation used by the
-    // unrelated team-defence-rank tiers -- so it matched nothing and every height
+    // unrelated team-defense-rank tiers -- so it matched nothing and every height
     // filter returned an empty chart.
     //
     // The tier itself is exactly the Production tab's calculation, not a
@@ -12283,7 +12285,7 @@ function pbChart(games, statKey, line){
   // Each rectangle spans from the baseline to the percentage, so it reads against
   // the right axis the same way the bars read against the left.
   if(pctDef){
-    // Narrower than the points bars and centred inside them, so when both series
+    // Narrower than the points bars and centered inside them, so when both series
     // are on neither hides the other -- at equal width the outline sat flush on
     // the bar edge and the two read as one muddy shape.
     const pw = Math.max(3, Math.min(34, slot - 2) * (showBars ? 0.58 : 1));
@@ -12342,31 +12344,31 @@ function pbChart(games, statKey, line){
   }
 
   // ---- mean, median and mode ------------------------------------------------
-  // Three different dash patterns rather than three colours: the chart already
-  // spends colour on cleared-versus-missed and on the betting line, and a fourth
+  // Three different dash patterns rather than three colors: the chart already
+  // spends color on cleared-versus-missed and on the betting line, and a fourth
   // and fifth hue would compete with the thing the reader is actually here for.
   // Long dash = mean, fine dot = median, dash-dot = mode, which is also the order
   // of how much they are usually trusted.
-  // CENTRES FOR EACH SERIES THAT IS SHOWING, on its own axis and in its own colour.
+  // CENTERS FOR EACH SERIES THAT IS SHOWING, on its own axis and in its own color.
   //
   // Points reads against the left axis in ink; the shooting percentage reads
   // against the right axis in orange. Both sets can be up at once, which is the
   // point -- "his mean is 24 on 47% shooting" is one sentence, and forcing the
   // reader to toggle between them to see both halves of it defeats the dual axis.
   //
-  // Colour separates the SERIES; the dash pattern separates mean from median from
+  // Color separates the SERIES; the dash pattern separates mean from median from
   // mode. Two independent encodings for two independent facts, so six lines stay
   // readable. Legend text stays ink for both -- only the swatch carries the hue.
   const PCT_COLOR = '#D2600A';
-  const centreSeries = [];
+  const centerSeries = [];
   if(showBars){
-    centreSeries.push({
+    centerSeries.push({
       vals, toY: y, top, color: 'var(--ink)', tag: 'stat',
       fmt: v => (v % 1 ? v.toFixed(1) : String(v)),
     });
   }
   if(pctDef){
-    centreSeries.push({
+    centerSeries.push({
       vals: pctVals.filter(v => v !== null && v !== undefined),
       toY: yPct, top: 1, color: PCT_COLOR, tag: 'pct',
       fmt: v => `${(v*100).toFixed(1)}%`,
@@ -12374,28 +12376,28 @@ function pbChart(games, statKey, line){
   }
 
   let legendMarks = [];
-  centreSeries.forEach(ser=>{
-    const centres = pbCentres(ser.vals);
-    if(!centres) return;
+  centerSeries.forEach(ser=>{
+    const centers = pbCenters(ser.vals);
+    if(!centers) return;
     const marks = [
-      {v: centres.mean,   dash: '10 5', label: `mean ${ser.fmt(centres.mean)}`},
-      {v: centres.median, dash: '2 4',  label: `median ${ser.fmt(centres.median)}`},
+      {v: centers.mean,   dash: '10 5', label: `mean ${ser.fmt(centers.mean)}`},
+      {v: centers.median, dash: '2 4',  label: `median ${ser.fmt(centers.median)}`},
     ];
-    if(centres.mode !== null){
-      marks.push({v: centres.mode, dash: '12 4 2 4',
-        label: `mode ${ser.fmt(centres.mode)}${centres.modeTies > 1 ? ` (${centres.modeTies} tied)` : ''} ×${centres.modeN}`});
+    if(centers.mode !== null){
+      marks.push({v: centers.mode, dash: '12 4 2 4',
+        label: `mode ${ser.fmt(centers.mode)}${centers.modeTies > 1 ? ` (${centers.modeTies} tied)` : ''} ×${centers.modeN}`});
     }
     // THE LINES GO ON THE CHART; THE LABELS GO IN A LEGEND UNDERNEATH.
     //
     // They used to be 10px text printed inside the plot at the left edge, stacked
-    // apart by hand when two centres landed close together. At the width an SVG
+    // apart by hand when two centers landed close together. At the width an SVG
     // gets on a phone that renders around 6px -- too small to read, and sitting on
     // top of the bars it was meant to describe. A legend below the chart can use
     // real body text, and the dash swatch carries the mapping instead of position.
     marks.forEach(mk=>{
       if(!(mk.v >= 0) || mk.v > ser.top) return;
       svg.appendChild(el('line', {x1:PAD_L, x2:W-PAD_R, y1:ser.toY(mk.v), y2:ser.toY(mk.v),
-        'data-pb-centre': mk.dash, 'data-pb-centre-series': ser.tag,
+        'data-pb-center': mk.dash, 'data-pb-center-series': ser.tag,
         stroke: ser.color, 'stroke-width':1.5, 'stroke-dasharray':mk.dash, opacity:.7}));
     });
     marks.filter(mk => mk.v >= 0 && mk.v <= ser.top)
@@ -12455,8 +12457,8 @@ function pbChart(games, statKey, line){
       const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
       ln.setAttribute('x1', 0); ln.setAttribute('x2', 30);
       ln.setAttribute('y1', 5); ln.setAttribute('y2', 5);
-      // Only the SWATCH is coloured. The label stays ink so the legend reads as one
-      // block of text rather than two competing colours of writing.
+      // Only the SWATCH is colored. The label stays ink so the legend reads as one
+      // block of text rather than two competing colors of writing.
       ln.setAttribute('stroke', mk.color || 'var(--ink)');
       ln.setAttribute('stroke-width', 2);
       ln.setAttribute('stroke-dasharray', mk.dash);
@@ -12554,7 +12556,7 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
   const actions = document.createElement('div');
   actions.style.cssText = 'display:flex;gap:10px;margin-top:12px;align-items:center;';
   // No logo images ship with the app, so the badge is the abbreviation on the
-  // team's colour -- deliberate rather than a broken <img>.
+  // team's color -- deliberate rather than a broken <img>.
   actions.appendChild(pbCircleBtn(
     `<span style="font-size:12px;letter-spacing:.02em;">${psAbbr(team)}</span>`,
     FULL_TEAM_NAME[team] || team,
@@ -12792,7 +12794,7 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
       Object.entries(PB_PCT).forEach(([k, d])=>{
         const b = mk(d.label, PB_SERIES.pct === k, ()=>{
           // Only ONE percentage at a time -- three series on one axis with no
-          // colour left to distinguish them would be unreadable.
+          // color left to distinguish them would be unreadable.
           const turningOff = PB_SERIES.pct === k;
           if(turningOff && !PB_SERIES.pts) return;    // would empty the chart
           PB_SERIES.pct = turningOff ? null : k;
@@ -12963,13 +12965,13 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
 // who is available tonight. The app already had this problem once, in the team
 // height tables: a per-player window kept a traded player topping her old team's
 // rotation indefinitely, and the fix was to anchor the window to the TEAM'S last
-// five games instead. The same anchor decides the colour here.
+// five games instead. The same anchor decides the color here.
 //
 // But "no appearance in the team's last five" catches two different people: the
-// player who was traded away, and the player who is injured. Greying an injured
+// player who was traded away, and the player who is injured. Graying an injured
 // starter as though she had left the franchise would be wrong, so the injury
 // list is consulted and those players stay in normal weight with their status
-// shown. What is left in grey is genuinely "not with this team any more, as far
+// shown. What is left in gray is genuinely "not with this team any more, as far
 // as the game logs can tell" -- which is stated on the screen rather than
 // implied, because a game log cannot actually see a transaction.
 // ============================================================================
@@ -12986,7 +12988,7 @@ function tsSaveOpen(s){
 }
 
 // Every player with a logged game for this team this season, with the roster
-// status the colour depends on.
+// status the color depends on.
 function tsRoster(team){
   const rec = sportDATA().teams[team];
   if(!rec || !rec.summaryFull) return [];
@@ -13101,7 +13103,7 @@ function tsPlayerRow(p){
   const name = document.createElement('div');
   name.style.cssText = 'flex:1 1 auto;min-width:0;';
   const n1 = document.createElement('div');
-  // The one visual difference Jon asked for: departed players in a dark grey
+  // The one visual difference Jon asked for: departed players in a dark gray
   // rather than the ink black everyone else gets.
   n1.style.cssText = 'font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;'
     + 'text-overflow:ellipsis;color:' + (p.departed ? '#6b7280' : 'var(--ink)') + ';';
@@ -13163,7 +13165,7 @@ function renderTeamsScreen(){
   sub.className = 'footnote';
   sub.style.cssText = 'margin-bottom:12px;';
   sub.innerHTML = `Every team, and every player with a logged game this season. Tap a team to `
-    + `expand it, or a player to open ${sportPronoun('possessive')} profile. Names in <span style="color:#6b7280;font-weight:700;">grey</span> `
+    + `expand it, or a player to open ${sportPronoun('possessive')} profile. Names in <span style="color:#6b7280;font-weight:700;">gray</span> `
     + `have not appeared in that team's last ${TS_ROSTER_WINDOW} games and are not on its injury `
     + `report — most likely traded or released, though a game log cannot see a transaction directly.`;
   head.appendChild(sub);
@@ -13333,6 +13335,83 @@ function psStreak(leg){
     else done = true;
   }
   return {wins, losses, gp: played.length};
+}
+
+// ---- is that streak actually surprising? ------------------------------------
+// The Markets page used to carry a footnote saying a long run is not evidence of an
+// edge, that runs of five and six happen by chance across a few hundred props, and
+// that "the version worth trusting compares each streak against how often a run that
+// long would occur anyway at that price -- and that comparison is not built yet".
+// This is that comparison.
+//
+// THE TRAP THE FOOTNOTE WAS WARNING ABOUT is that people compute the wrong
+// probability. Six straight hits at an even price is 0.5^6, about 1 in 64 -- but
+// that is the chance of a SPECIFIC six-game sequence. What you are actually looking
+// at is the chance of a run of six appearing ANYWHERE in a player's 20-game log,
+// which is 12.2% at the same price -- eight times likelier. And then you are looking
+// across a whole board of players, which multiplies it again.
+//
+// So two corrections, in order:
+//   1. any run of >= k in m games, not one specific run;
+//   2. times the number of props on tonight's board.
+// What comes out is the number of streaks this long you would EXPECT to see tonight
+// if nothing but chance were operating. If that number is 14, the one you are
+// looking at is not telling you anything.
+
+// P(no run of >= k successes in m Bernoulli(p) trials). A DP over the length of the
+// current trailing run: state[j] is the probability of still being alive with j
+// successes in a row. Verified against brute-force enumeration over all 2^m
+// sequences for 392 combinations of p, m and k before it was written here.
+function psNoRunProbability(p, m, k){
+  // Order matters. A run of length 0 is unavoidable -- every sequence contains one --
+  // so that case is 0, not 1. Returning 1 there would have been harmless today
+  // (psStreakChance never asks below k=2) but wrong, and a helper that is wrong in a
+  // corner nobody currently visits is a trap for whoever visits it next.
+  if(k <= 0) return 0;
+  if(!(m > 0)) return 1;
+  if(!(p > 0)) return 1;
+  if(p >= 1) return k > m ? 1 : 0;
+  let state = new Array(k).fill(0);
+  state[0] = 1;
+  for(let t = 0; t < m; t++){
+    const next = new Array(k).fill(0);
+    for(let j = 0; j < k; j++){
+      const pr = state[j];
+      if(!pr) continue;
+      next[0] += pr * (1 - p);              // a miss resets the run
+      if(j + 1 < k) next[j + 1] += pr * p;  // a hit extends it; reaching k is death
+    }
+    state = next;
+  }
+  return state.reduce((a, b) => a + b, 0);
+}
+
+// The verdict for one leg. `boardSize` is how many props are on the board tonight --
+// the multiplicity correction, and the half most people leave out.
+function psStreakChance(leg, streak, boardSize){
+  if(!streak || !streak.wins || streak.wins < 2) return null;
+  if(typeof beNoVig !== 'function') return null;
+  // THE PRICE, not the player's own hit rate. The question the footnote posed is
+  // "how often would a run this long happen anyway AT THAT PRICE" -- using the
+  // player's realised rate instead would ask whether the streak is surprising given
+  // the streak, which is circular.
+  const p = beNoVig(leg.price);
+  if(!(p > 0) || !(p < 1)) return null;
+  const m = streak.gp || 0;
+  if(m < streak.wins) return null;
+  const pRun = 1 - psNoRunProbability(p, m, streak.wins);
+  const expected = pRun * Math.max(1, boardSize || 1);
+  // Bands are about how many you would expect to see tonight, not about the bet.
+  const band = expected >= 1 ? 'noise' : (expected >= 0.25 ? 'uncommon' : 'rare');
+  const label = {noise: 'Noise', uncommon: 'Uncommon', rare: 'Rare'}[band];
+  const nice = expected >= 1 ? `~${Math.round(expected)} like this tonight`
+             : `${expected.toFixed(2)} expected`;
+  return {band, pRun, expected, text: label, sub: nice,
+    title: `${streak.wins} in a row. At ${leg.price > 0 ? '+' : ''}${leg.price} the market puts this `
+      + `side at ${Math.round(p * 100)}%, and a run of ${streak.wins} or more turns up somewhere in `
+      + `${m} games ${Math.round(pRun * 1000) / 10}% of the time at that price. Across the `
+      + `${boardSize} props on tonight's board that is ${nice}. `
+      + `This says whether the STREAK is surprising -- not whether the bet is good.`};
 }
 
 // ---- "most researched" -----------------------------------------------------
@@ -13555,7 +13634,7 @@ function psFilterSheet(page, onApply){
   const s3 = section('Sort By');
   const sortWrap = document.createElement('div');
   // Same list, same labels, one definition -- see psMetricItems. This used to be a
-  // second copy of the season/prior labelling and could disagree with row 2.
+  // second copy of the season/prior labeling and could disagree with row 2.
   const sortItems = psMetricItems();
   sortItems.forEach(it=>{
     const b = pill(it.label, f.sortBy === it.key, ()=>{
@@ -13582,7 +13661,7 @@ function psFilterSheet(page, onApply){
   const hrNote = document.createElement('div');
   hrNote.className = 'footnote';
   hrNote.style.cssText = 'margin-bottom:8px;';
-  hrNote.textContent = 'Grey means not applied. Set a minimum on any window to require it.';
+  hrNote.textContent = 'Gray means not applied. Set a minimum on any window to require it.';
   s4.appendChild(hrNote);
   [['l5','L5'],['l10','L10'],['l15','L15'],['l30','L30'],['season',psSeasonLabel(PS_STATE.sport)]].forEach(([key,label])=>{
     const row = document.createElement('div');
@@ -13770,7 +13849,8 @@ async function renderMarketsScreen(){
   const sub = document.createElement('div');
   sub.className = 'footnote';
   sub.style.cssText = 'margin-bottom:12px;';
-  sub.textContent = `Every list is priced between ${PS_MIN_PRICE} and +${PS_MAX_PRICE}.`;
+  sub.textContent = `Every list is priced between ${PS_MIN_PRICE} and +${PS_MAX_PRICE}. `
+    + `The right-hand column says how many streaks that long tonight's board would produce by chance.`;
   shell.appendChild(h); shell.appendChild(sub);
   if(!sportHasOdds(PS_STATE.sport)){
     shell.appendChild(sportHasData(PS_STATE.sport)
@@ -13796,7 +13876,7 @@ async function renderMarketsScreen(){
   // page's filters are that page's, not a global setting.
   //
   // A CEILING AS WELL AS A FLOOR, and the ceiling is the interesting half. The floor
-  // (-150) drops the heavy favourites that are all price and no information. The
+  // (-150) drops the heavy favorites that are all price and no information. The
   // ceiling drops the other end: past +199 a leg is a longshot the book has priced at
   // roughly one-in-three or worse, and on a league-wide list those crowd out
   // everything a sane bet looks like purely by being numerous. Ranked lists are
@@ -13874,7 +13954,8 @@ async function renderMarketsScreen(){
         listEl.appendChild(e);
         return;
       }
-      rows.slice(0, shown).forEach((r, i)=> listEl.appendChild(psMarketRow(r.leg, i+1, r.note)));
+      rows.slice(0, shown).forEach((r, i)=> listEl.appendChild(
+        psMarketRow(r.leg, i+1, r.note, psStreakChance(r.leg, psStreak(r.leg), pool.length))));
       const cap = PS_MARKET_STEPS[PS_MARKET_STEPS.length - 1];
       if(shown < Math.min(rows.length, cap)){
         const more = document.createElement('button');
@@ -13912,7 +13993,30 @@ async function renderMarketsScreen(){
   body.appendChild(caveat);
 }
 
-function psMarketRow(leg, rank, note){
+// A name that opens that player's Bets page. Its own element rather than markup
+// inside innerHTML, because it needs a listener AND it needs to stop the click
+// bubbling to the row -- the row records research on click, and without the stop a
+// tap on the name would both navigate and log, in that order, from a page that is
+// already being torn down.
+function psNameLink(text, player, team, opts){
+  const a = document.createElement('span');
+  a.textContent = text;
+  a.setAttribute('role', 'link');
+  a.tabIndex = 0;
+  a.style.cssText = (opts && opts.css || '')
+    + 'cursor:pointer;text-decoration:underline;text-decoration-style:dotted;'
+    + 'text-underline-offset:2px;';
+  const go = (ev)=>{
+    ev.stopPropagation();
+    if(typeof psRecordResearch === 'function'){ try{ psRecordResearch({player, team}); }catch(e){} }
+    renderPlayerPage(player, team);
+  };
+  a.addEventListener('click', go);
+  a.addEventListener('keydown', e=>{ if(e.key === 'Enter' || e.key === ' ') go(e); });
+  return a;
+}
+
+function psMarketRow(leg, rank, note, chance){
   const row = document.createElement('div');
   row.className = 'ps-mrow';
   row.dataset.beProp = 'prop:' + psFavKey(leg);
@@ -13924,16 +14028,36 @@ function psMarketRow(leg, rank, note){
   row.appendChild(psAvatar(leg.player, leg.team, 32));
   const t = document.createElement('div');
   t.style.cssText = 'flex:1;min-width:0;';
-  t.innerHTML = `<div style="font-weight:700;font-size:14px;">${leg.player} `
-    + `<span style="color:var(--sub);font-size:11.5px;font-weight:600;">${psAbbr(leg.team)}</span></div>`
-    + `<div style="font-size:12.5px;color:var(--sub);">${leg.side==='under'?'u':'o'} ${leg.line} `
-    + `${leg.market || PROP_MARKET_LABEL[leg.statKey] || leg.statKey}</div>`;
+  const nameLine = document.createElement('div');
+  nameLine.style.cssText = 'font-weight:700;font-size:14px;';
+  nameLine.appendChild(psNameLink(leg.player, leg.player, leg.team));
+  nameLine.appendChild(document.createTextNode(' '));
+  nameLine.appendChild(psNameLink(psAbbr(leg.team), leg.player, leg.team,
+    {css:'color:var(--sub);font-size:11.5px;font-weight:600;'}));
+  const betLine = document.createElement('div');
+  betLine.style.cssText = 'font-size:12.5px;color:var(--sub);';
+  betLine.textContent = `${leg.side==='under'?'u':'o'} ${leg.line} `
+    + `${leg.market || PROP_MARKET_LABEL[leg.statKey] || leg.statKey}`;
+  t.appendChild(nameLine); t.appendChild(betLine);
   row.appendChild(t);
   const n = document.createElement('div');
   n.style.cssText = 'text-align:right;';
   n.innerHTML = `<div style="font-weight:800;font-size:13px;">${note}</div>`
     + `<div style="font-size:11.5px;color:var(--sub);">${leg.price>0?'+':''}${leg.price}</div>`;
   row.appendChild(n);
+  // The rightmost column: how many streaks this long tonight's board would throw up
+  // by chance alone. Only where there IS a streak -- a blank is honest, an invented
+  // verdict is not.
+  if(chance){
+    const c = document.createElement('div');
+    c.style.cssText = 'text-align:right;flex:0 0 92px;';
+    c.title = chance.title;
+    const color = {noise:'var(--sub)', uncommon:'var(--ink)', rare:'var(--green)'}[chance.band];
+    const weight = chance.band === 'rare' ? 800 : 700;
+    c.innerHTML = `<div style="font-weight:${weight};font-size:12.5px;color:${color};">${chance.text}</div>`
+      + `<div style="font-size:10.5px;color:var(--sub);line-height:1.25;">${chance.sub}</div>`;
+    row.appendChild(c);
+  }
   row.addEventListener('click', ()=>psRecordResearch(leg));
   return row;
 }
@@ -14166,7 +14290,7 @@ const CLV_PANEL_DEF =
   + 'after removing the bookmaker’s margin from both ends — using the real two-way de-vig where '
   + 'the archive has both sides of a market, and a fitted ' + CLV_FALLBACK_OVERROUND + ' overround where '
   + 'it has only one. <b>Why this and not hit rate:</b> a hit rate can be pushed to 60% by taking '
-  + 'favourites, which pays nothing; CLV cannot be gamed that way, and it answers in weeks rather than '
+  + 'favorites, which pays nothing; CLV cannot be gamed that way, and it answers in weeks rather than '
   + 'seasons because it does not wait for results. <b>Positive mean CLV over 200+ bets is the first '
   + 'real evidence of an edge this app could produce.</b> Picks whose line itself moved are excluded '
   + 'rather than fudged: a different line is a different bet.';
@@ -14638,7 +14762,7 @@ const BETTORS_EYE_DEF =
   + BE_MIN_SHORTFALL + ' minutes short of its normal rotation, or a player whose projected minutes '
   + 'move by ' + BE_MIN_DMIN + '+. Ranked by how far our projection sits from the market price '
   + 'with the bookmaker’s margin removed, in probability points. '
-  + '<b>Rows the market has already priced are shown and labelled, not hidden</b> — on this '
+  + '<b>Rows the market has already priced are shown and labeled, not hidden</b> — on this '
   + 'channel the books move about 4.5&times; further than our model does, so "do not bet this" is '
   + 'usually the more valuable answer. '
   + 'Measured on 617 graded picks at real book prices — see Methodology.';
@@ -15597,7 +15721,7 @@ const SPECIALS_MARKET_LABEL = STAT_KEY_LABEL; // same prop-stat keys; kept as a 
 // once), which meant "the price cutoff" was really four cutoffs free to drift apart in silence.
 //
 // NOTE THE DIRECTION: a floor of -125 is STRICTER than -165, not looser. -140 clears -165 and does
-// NOT clear -125, so raising the floor removes heavy favourites rather than admitting them.
+// NOT clear -125, so raising the floor removes heavy favorites rather than admitting them.
 //
 // Measured on 617 real graded picks from the App Tracker (bt/floorcheck.js), moving from -165 to
 // -125 removes 242 of them -- the -165..-126 band, which hit 56.6% at an average price of -144 for
@@ -16977,7 +17101,7 @@ function gatherCandidateLegs(ev, homeShort, awayShort, gameMarkets, detailMarket
   // team-level legs read DATA.fullTeamGames and DATA.teamRecords (which only the WNBA
   // blob carries, so an MLB slate threw a TypeError here before the first prop was
   // ever considered), and the qualification bars run through minutes projections and
-  // defence-vs-position. A baseball payload came out of this function as an empty
+  // defense-vs-position. A baseball payload came out of this function as an empty
   // array every single time, which is exactly what an empty MLB board looks like.
   //
   // So a non-basketball sport takes its own path rather than threading `if(sport)`
@@ -19704,7 +19828,7 @@ async function renderAppTrackerPage(){
       const entries = [];
       for(let r=1; r<=30; r++){
         const rec = record(list.filter(b=>b.snapshotRank===r), 30);
-        entries.push({r, rec}); // always all 30 -- ranks with no graded picks yet are shown greyed out, not hidden, so nothing ever looks "missing"
+        entries.push({r, rec}); // always all 30 -- ranks with no graded picks yet are shown grayed out, not hidden, so nothing ever looks "missing"
       }
       const group = document.createElement('div');
       const groupLabel = document.createElement('div'); groupLabel.style.cssText = 'font-weight:800;color:var(--navy2);font-size:13px;margin-bottom:6px;'; groupLabel.textContent = label;
@@ -21309,7 +21433,7 @@ async function renderBetTrackerPage(){
 // where we want ALL available lines, not just ones clearing a confidence bar).
 // ==================== Alternate ("X+") player-prop lines ====================
 // The books post a whole ladder of milestone lines per player -- 10+, 12+, 14+ points and so on --
-// priced from heavy favourite to long shot. The app has understood the `player_prop_alt` bet type
+// priced from heavy favorite to long shot. The app has understood the `player_prop_alt` bet type
 // and rendered the ladders on Live Lines for a long time, but NEITHER leg gatherer ever emitted
 // them, so no alternate has ever reached a betting table.
 //
