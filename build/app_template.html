@@ -9767,6 +9767,171 @@ function cmMean(rate, opportunity){
 }
 // >>> END MODULE countmodel.js
 
+// <<< MODULE pa_model.js
+// ============================================================================
+// PLATE APPEARANCES -- baseball's opportunity term.
+//
+// This is the direct analogue of the WNBA minutes model. Every projection is
+// rate x opportunity; in basketball the opportunity is minutes on the floor, in
+// baseball it is trips to the plate. What makes baseball easier is that the
+// opportunity is not a continuous allocation problem -- it follows from two
+// things, both measurable.
+//
+// FACT 1: THE SLOT IDENTITY. If a team takes T plate appearances in a game, the
+// batter in slot i gets exactly
+//
+//     turns(T, i) = ceil((T - i + 1) / 9)
+//
+// Verified on 37,494 starter-games from the 2026 season: where the starter batted
+// his slot alone this holds on 97.6% of them. So the nine slots are NOT nine free
+// parameters. Project T and all nine follow, which is one thing to model instead
+// of nine.
+//
+// FACT 2: THE STARTER DOES NOT ALWAYS FINISH THE SLOT. When he is pinch-hit for,
+// his own PA falls short of the slot's turns -- the identity drops to 20.9% exact
+// in those games, which is what gave the pooled figure of 85.5%. The replacement
+// rate rises monotonically down the order, 11.5% at leadoff to 23.6% in the nine
+// hole, because that is who managers hit for.
+//
+// AND THE THING MOST EASILY MISSED: the home side does not bat in the ninth when
+// it is already ahead. Home teams average 37.47 plate appearances against the away
+// side's 39.09 -- a gap of 1.6, or about a fifth of a turn for every batter in the
+// order. A model that ignores this over-projects every home hitter.
+// ============================================================================
+
+// Fitted on 4,116 team-games, 2026 (see pa_constants.json / mlbfit.py).
+const PA_CONST = {
+  leagueTeamPA: 38.28,     // mean plate appearances per team per game
+  homeDelta: -0.81,        // home bats less: no ninth when already ahead
+  awayDelta: +0.81,
+  teamPAsd: 6.17,          // game-to-game spread within a team
+  // Team identity is worth far less than it looks. The spread of SEASON means
+  // across the 30 clubs is only 1.32, against a game-to-game sd of 6.17 -- so a
+  // team's trailing average is mostly noise. Shrinkage weight n/(n+K) with
+  //     K = teamPAsd^2 / teamMeanSpread^2 = 6.17^2 / 1.32^2 ~= 22
+  // means a team needs ~22 games before its own average carries half the weight.
+  // Skipping this would let a hot week of run-scoring inflate every batter's
+  // projected opportunity, which is exactly the mistake the WNBA minutes model
+  // had to be corrected for.
+  shrinkGames: 22,
+  // Share of the slot's turns the STARTER actually takes, by slot. Already folds
+  // in both the chance of being replaced and how much of the slot he keeps when
+  // he is: slot 1 keeps 96.0% of its turns, slot 9 only 90.8%.
+  keptShare: {1:0.960, 2:0.963, 3:0.963, 4:0.961, 5:0.953, 6:0.940, 7:0.933, 8:0.919, 9:0.908},
+  replaceRate: {1:0.115, 2:0.108, 3:0.108, 4:0.127, 5:0.141, 6:0.158, 7:0.184, 8:0.210, 9:0.236},
+  keptIfReplaced: {1:0.747, 2:0.750, 3:0.758, 4:0.770, 5:0.734, 6:0.693, 7:0.694, 8:0.664, 9:0.652},
+};
+
+// ---- projecting the team's plate appearances --------------------------------
+// Shrunk toward the league mean, then adjusted for which dugout. `trailingMean`
+// and `games` describe the team's own recent scoring; pass nulls and it returns
+// the league baseline for that side, which is the honest answer on opening day.
+function paProjectTeamPA(trailingMean, games, isHome){
+  const side = isHome ? PA_CONST.homeDelta : PA_CONST.awayDelta;
+  const base = PA_CONST.leagueTeamPA + side;
+  if(!Number.isFinite(trailingMean) || !Number.isFinite(games) || games <= 0) return base;
+  const w = games / (games + PA_CONST.shrinkGames);
+  // The trailing mean carries its own side bias if it was measured over a mix of
+  // home and away games, so it is shrunk toward the LEAGUE mean and the side
+  // adjustment applied afterwards, rather than shrinking toward the side baseline.
+  return w * trailingMean + (1 - w) * PA_CONST.leagueTeamPA + side;
+}
+
+// ---- the slot identity ------------------------------------------------------
+function paTurns(teamPA, slot){
+  if(!Number.isFinite(teamPA) || !(slot >= 1 && slot <= 9)) return null;
+  return Math.max(0, Math.ceil((teamPA - slot + 1) / 9));
+}
+
+// The DISTRIBUTION of turns, not just the count at the mean.
+//
+// This matters more than it looks. turns() is a CEILING, so E[turns(T)] is not
+// turns(E[T]) -- at a mean of 38.3 the leadoff man's turns at the mean is 5, while
+// his actual average is 4.50, because T varies by ±6 and the ceiling rounds a
+// fractional expectation up every time. Taking the ceiling of the mean would
+// over-project the top of the order by half a plate appearance.
+function paTurnDistribution(muT, sdT, slot){
+  const sd = Number.isFinite(sdT) && sdT > 0 ? sdT : PA_CONST.teamPAsd;
+  if(!Number.isFinite(muT) || !(slot >= 1 && slot <= 9)) return [];
+  const lo = Math.max(9, Math.floor(muT - 4 * sd));
+  const hi = Math.ceil(muT + 4 * sd);
+  const acc = new Map();
+  let total = 0;
+  for(let t = lo; t <= hi; t++){
+    // Normal density over integer team totals, normalised at the end.
+    const z = (t - muT) / sd;
+    const w = Math.exp(-0.5 * z * z);
+    const turns = paTurns(t, slot);
+    acc.set(turns, (acc.get(turns) || 0) + w);
+    total += w;
+  }
+  if(!total) return [];
+  return [...acc.entries()]
+    .map(([turns, w]) => ({turns, p: w / total}))
+    .sort((a, b) => a.turns - b.turns);
+}
+
+// ---- the starter's own plate appearances ------------------------------------
+// Turns belong to the SLOT; this converts them to what the man who started there
+// actually gets, using the measured share for his slot.
+function paExpectedPA(slot, muT, sdT){
+  const dist = paTurnDistribution(muT, sdT, slot);
+  if(!dist.length) return null;
+  const turns = dist.reduce((a, d) => a + d.turns * d.p, 0);
+  return turns * (PA_CONST.keptShare[slot] || 0.94);
+}
+
+// The full distribution over the starter's plate appearances: turns, then a
+// two-branch split on whether he was pinch-hit for. Kept separate from the
+// expectation because a probability model wants the whole distribution, not a
+// point -- see paProbOver.
+function paDistribution(slot, muT, sdT){
+  const turnDist = paTurnDistribution(muT, sdT, slot);
+  const r = PA_CONST.replaceRate[slot] ?? 0.15;
+  const keptIf = PA_CONST.keptIfReplaced[slot] ?? 0.70;
+  const acc = new Map();
+  turnDist.forEach(({turns, p}) => {
+    const full = turns;
+    const cut = Math.max(1, Math.round(turns * keptIf));
+    acc.set(full, (acc.get(full) || 0) + p * (1 - r));
+    acc.set(cut, (acc.get(cut) || 0) + p * r);
+  });
+  return [...acc.entries()]
+    .map(([pa, p]) => ({pa, p}))
+    .filter(d => d.pa > 0)
+    .sort((a, b) => a.pa - b.pa);
+}
+
+// ---- the probability the product actually shows -----------------------------
+// P(over) for a batter, compounding the stat distribution over the UNCERTAINTY IN
+// HIS OPPORTUNITY rather than conditioning on a single plate-appearance count.
+//
+// The correction is modest -- plate-appearance uncertainty adds a few percent to
+// the variance where the binomial correction removed 28% -- but it is free, and
+// conditioning on a point estimate would quietly understate the tails on exactly
+// the props where the lineup is uncertain.
+function paProbOver(rate, slot, line, statKey, muT, sdT){
+  if(!Number.isFinite(rate) || rate < 0) return null;
+  const paDist = paDistribution(slot, muT, sdT);
+  if(!paDist.length) return null;
+  const spec = (typeof cmDistFor === 'function') ? cmDistFor(statKey) : {dist:'poisson', k:null};
+  const isInteger = Math.abs(line - Math.round(line)) < 1e-9;
+  const threshold = isInteger ? Math.round(line) + 1 : Math.ceil(line);
+
+  let over = 0, push = 0;
+  paDist.forEach(({pa, p}) => {
+    const mu = rate * pa;
+    // Binomial gets its n from the plate appearances in THIS branch, which is the
+    // whole reason the mixture exists.
+    const s = spec.dist === 'binomial' ? {dist:'binomial', n: pa} : spec;
+    over += p * cmSfAtLeast(threshold, mu, s);
+    if(isInteger) push += p * cmPmf(Math.round(line), mu, s);
+  });
+  return {over, push, under: Math.max(0, 1 - over - push),
+          dist: spec.dist, expectedPA: paDist.reduce((a, d) => a + d.pa * d.p, 0)};
+}
+// >>> END MODULE pa_model.js
+
 // <<< MODULE sports.js
 // ============================================================================
 // THE SPORT REGISTRY -- the client-side twin of the D1 `sport` table.
@@ -10355,6 +10520,10 @@ function psChipRow(items, active, onPick, opts){
   wrap.update = (next)=>{
     const test = (key)=> Array.isArray(next) ? next.includes(key) : key === next;
     [...wrap.children].forEach(b=>{
+      // Children without a key are not chips -- the Bets tab puts its calendar
+      // button inside this row so it scrolls with them. Restyling it here would
+      // wipe whatever state its own painter had set.
+      if(!b.dataset.key) return;
       const on = test(b.dataset.key);
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
       b.style.borderColor = on ? 'var(--navy2)' : 'var(--line)';
@@ -11510,6 +11679,7 @@ function pbChart(games, statKey, line){
   const centreY = onPct ? yPct : y;
   const centreTop = onPct ? 1 : top;
   const fmtC = onPct ? (v => `${(v*100).toFixed(1)}%`) : (v => v % 1 ? v.toFixed(1) : String(v));
+  let legendMarks = [];
   const centres = pbCentres(centreVals);
   if(centres){
     const marks = [
@@ -11520,22 +11690,20 @@ function pbChart(games, statKey, line){
       marks.push({v: centres.mode, dash: '12 4 2 4',
         label: `mode ${fmtC(centres.mode)}${centres.modeTies > 1 ? ` (${centres.modeTies} tied)` : ''} ×${centres.modeN}`});
     }
-    // Drawn before nothing else moves them; stacked labels are nudged apart so
-    // two centres a hair apart do not print on top of each other.
-    const used = [];
+    // THE LINES GO ON THE CHART; THE LABELS GO IN A LEGEND UNDERNEATH.
+    //
+    // They used to be 10px text printed inside the plot at the left edge, stacked
+    // apart by hand when two centres landed close together. At the width an SVG
+    // gets on a phone that renders around 6px -- too small to read, and sitting on
+    // top of the bars it was meant to describe. A legend below the chart can use
+    // real body text, and the dash swatch carries the mapping instead of position.
     marks.forEach(mk=>{
       if(!(mk.v >= 0) || mk.v > centreTop) return;
       svg.appendChild(el('line', {x1:PAD_L, x2:W-PAD_R, y1:centreY(mk.v), y2:centreY(mk.v),
         'data-pb-centre': mk.dash,
         stroke:'var(--ink)', 'stroke-width':1.5, 'stroke-dasharray':mk.dash, opacity:.62}));
-      let ly = centreY(mk.v) - 4;
-      while(used.some(u => Math.abs(u - ly) < 11)) ly -= 11;
-      used.push(ly);
-      const t = el('text', {x: PAD_L + 4, y: ly, 'text-anchor':'start',
-        'font-size':10, fill:'var(--ink)', 'font-weight':700, 'font-family':'var(--sans)', opacity:.78});
-      t.textContent = mk.label;
-      svg.appendChild(t);
     });
+    legendMarks = marks.filter(mk => mk.v >= 0 && mk.v <= centreTop);
   }
 
   // Tonight's line, drawn across so the bars can be read against it.
@@ -11569,6 +11737,42 @@ function pbChart(games, statKey, line){
 
   wrap.appendChild(tip);
   wrap.appendChild(svg);
+
+  // ---- the legend ----------------------------------------------------------
+  if(legendMarks.length){
+    const leg = document.createElement('div');
+    leg.dataset.pbLegend = statKey;
+    leg.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center;'
+      + 'margin:8px 0 2px;padding:0 2px;';
+    legendMarks.forEach(mk=>{
+      const item = document.createElement('span');
+      item.dataset.pbLegendItem = mk.label.split(' ')[0];
+      item.style.cssText = 'display:inline-flex;align-items:center;gap:7px;'
+        + 'font-size:13px;font-family:var(--sans);color:var(--ink);white-space:nowrap;';
+      // The swatch repeats the exact dash pattern of its line, so the mapping is
+      // shown rather than described.
+      const sw = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      sw.setAttribute('width', '30'); sw.setAttribute('height', '10');
+      sw.setAttribute('aria-hidden', 'true');
+      sw.style.cssText = 'flex:0 0 30px;overflow:visible;';
+      const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      ln.setAttribute('x1', 0); ln.setAttribute('x2', 30);
+      ln.setAttribute('y1', 5); ln.setAttribute('y2', 5);
+      ln.setAttribute('stroke', 'var(--ink)');
+      ln.setAttribute('stroke-width', 2);
+      ln.setAttribute('stroke-dasharray', mk.dash);
+      ln.setAttribute('opacity', .72);
+      sw.appendChild(ln);
+      const txt = document.createElement('span');
+      // The value is the point of the label, so it carries the weight.
+      const bits = mk.label.split(' ');
+      txt.innerHTML = `${bits[0]} <b style="font-variant-numeric:tabular-nums;">`
+        + `${bits.slice(1).join(' ')}</b>`;
+      item.appendChild(sw); item.appendChild(txt);
+      leg.appendChild(item);
+    });
+    wrap.appendChild(leg);
+  }
 
   // A summary line under the chart, because a bar chart answers "how much" and
   // a bettor's actual question is "how often".
@@ -11725,21 +11929,18 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
     PB_STATE.from = null; PB_STATE.to = null;
     PB_STATE.timeline = k; tlRow.update(k); paintCal(); repaint();
   });
-  tlRow.style.borderBottom = 'none';
-  tlRow.style.flex = '1 1 auto';
-  tlRow.style.minWidth = '0';
 
-  const tlBar = document.createElement('div');
-  tlBar.style.cssText = 'display:flex;align-items:stretch;border-bottom:1px solid var(--line);'
-    + 'background:var(--panel);';
+  // The calendar sits INSIDE the scrolling chip row, as its first item, so it
+  // travels with 2026 / H2H / L5 / ... instead of being pinned while they slide
+  // underneath it. It is a sibling of the chips rather than a fixed gutter.
   const calBtn = document.createElement('button');
   calBtn.dataset.pbCal = 'toggle';
   calBtn.setAttribute('aria-label', 'Custom date range');
-  calBtn.style.cssText = 'flex:0 0 auto;margin:8px 0 8px 14px;padding:7px 12px;border-radius:999px;'
+  calBtn.style.cssText = 'flex:0 0 auto;padding:7px 12px;border-radius:999px;'
     + 'font-size:13px;font-weight:700;cursor:pointer;font-family:var(--sans);line-height:1.2;';
-  tlBar.appendChild(calBtn);
-  tlBar.appendChild(tlRow);
-  timelineHolder.appendChild(tlBar);
+  tlRow.style.borderBottom = '1px solid var(--line)';
+  tlRow.insertBefore(calBtn, tlRow.firstChild);
+  timelineHolder.appendChild(tlRow);
 
   // The picker itself, collapsed until the calendar is tapped.
   const calPanel = document.createElement('div');
