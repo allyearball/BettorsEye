@@ -10278,36 +10278,42 @@ const SPORT_DEFS = {
       {key:'hand',    label:'vs L/R'},     // replaces vs. Size
     ],
 
+    // TWO LABELS PER CHIP, AND THE REASON IS THE ROLE SWITCH.
+    //
+    // `label` is the unambiguous name, used whenever BOTH sides are on the board --
+    // there, "H" would appear twice (a batter's hit and a hit allowed) and so would
+    // "K", which is exactly the "unclear who that is for" problem that got Walks
+    // renamed. `short` is the scoreboard abbreviation, used once a side is selected
+    // and the ambiguity is gone: under Pitchers there is only one kind of H.
+    //
+    // ORDER IS JON'S, per side, and the array is sequenced so that filtering by role
+    // yields each list already in the order he asked for -- rather than sorting it
+    // somewhere else and letting the two definitions drift.
     markets: [
-      {key:'all',    label:'All',        stats:null},
+      {key:'all',    label:'All',          short:'All',      stats:null},
       // batters
-      {key:'hits',   label:'Hits',       stats:['hits_bat']},
-      {key:'tb',     label:'Total Bases',stats:['total_bases']},
-      {key:'hr',     label:'Home Runs',  stats:['hr']},
-      {key:'rbi',    label:'RBIs',       stats:['rbi']},
-      {key:'runs',   label:'Runs',       stats:['runs']},
-      {key:'hrr',    label:'H+R+RBI',    stats:['hrr']},
+      {key:'hits',   label:'Hits',         short:'H',        stats:['hits_bat']},
+      {key:'runs',   label:'Runs',         short:'R',        stats:['runs']},
+      {key:'rbi',    label:'RBIs',         short:'RBI',      stats:['rbi']},
+      {key:'hrr',    label:'H+R+RBI',      short:'H+R+RBI',  stats:['hrr']},
+      {key:'hr',     label:'Home Runs',    short:'HR',       stats:['hr']},
+      {key:'tb',     label:'Total Bases',  short:'TB',       stats:['total_bases']},
+      {key:'so_bat', label:'Batter Ks',    short:'K',        stats:['so_bat']},
       // "Walks" alone reads as a PITCHING stat to most people, so on a row that also
       // carries the pitcher's version it says nothing about whose walk it is. Drawn /
       // Allowed is the standard pair and names both sides.
-      {key:'bb',     label:'Walks Drawn',stats:['bb']},
-      {key:'so_bat', label:'Batter Ks',  stats:['so_bat']},
-      {key:'sb',     label:'Stolen Bases', stats:['sb']},
+      {key:'bb',     label:'Walks Drawn',  short:'BBs',      stats:['bb']},
+      {key:'sb',     label:'Stolen Bases', short:'SB',       stats:['sb']},
       // pitchers
-      {key:'so_pit', label:'Pitcher Ks', stats:['so_pit']},
-      {key:'outs',   label:'Outs',       stats:['outs']},
-      {key:'er',     label:'Earned Runs',stats:['er']},
-      {key:'hits_allowed', label:'Hits Allowed', stats:['hits_allowed']},
+      {key:'outs',   label:'Outs',         short:'Outs',     stats:['outs']},
+      {key:'er',     label:'Earned Runs',  short:'ER',       stats:['er']},
+      {key:'hits_allowed', label:'Hits Allowed', short:'H',  stats:['hits_allowed']},
+      {key:'so_pit', label:'Pitcher Ks',   short:'K',        stats:['so_pit']},
       // propMarkets has mapped pitcher_walks to bb_pit since MLB went in, but no chip
       // ever offered it, so the market was unreachable from the board.
-      {key:'bb_pit', label:'Walks Allowed', stats:['bb_pit']},
+      {key:'bb_pit', label:'Walks Allowed', short:'BB',      stats:['bb_pit']},
     ],
 
-    // WHICH STAT KEYS BELONG TO PITCHING. Declared here rather than inferred from
-    // the 'pitcher_' prefix on the Odds API market keys, because that prefix is
-    // someone else's naming convention and we already translate away from it. This
-    // is what lets the board split into hitters and pitchers: everything else in
-    // propMarkets is, by construction, a batting stat.
     pitcherStats: ['so_pit', 'outs', 'er', 'hits_allowed', 'bb_pit'],
 
     profileStats: [
@@ -10412,7 +10418,11 @@ function sportMarketsForRole(role, sport){
   // 'all' is accepted alongside 'both' so a role value persisted by an older build,
   // or passed by a caller that has not been updated, widens rather than empties.
   if(!role || role === 'both' || role === 'all' || !sportHasRoleFilter(sport)) return all;
-  return all.filter(m => !m.stats || m.stats.every(s => sportStatRole(s, sport) === role));
+  // One side only, so the short forms are unambiguous and the row fits without
+  // scrolling. A copy, not a mutation -- the registry entry keeps its full label for
+  // every other reader, the bet line on the card included.
+  return all.filter(m => !m.stats || m.stats.every(s => sportStatRole(s, sport) === role))
+            .map(m => m.short ? Object.assign({}, m, {label: m.short}) : m);
 }
 function sportCombos(sport){ return sportDef(sport).combos || {}; }
 function sportStatLabel(statKey, sport){
@@ -11544,9 +11554,9 @@ function psLegPosition(leg){
 // Pitchers still means swiping past nine batting chips that cannot be pressed.
 // Hiding them makes the row a short list of what is actually on offer.
 const PS_ROLES = [
-  {key:'pitcher', label:'Pitchers'},
-  {key:'hitter',  label:'Hitters'},
   {key:'both',    label:'Both'},
+  {key:'hitter',  label:'Hitters'},
+  {key:'pitcher', label:'Pitchers'},
 ];
 // Classified by the MARKET, not by the man. A two-way player's strikeout prop is a
 // pitching bet and his home-run prop is a batting one; keying off the roster's
