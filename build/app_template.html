@@ -10409,7 +10409,9 @@ function sportStatRole(statKey, sport){
 // no stats and is always kept.
 function sportMarketsForRole(role, sport){
   const all = sportMarkets(sport);
-  if(!role || role === 'all' || !sportHasRoleFilter(sport)) return all;
+  // 'all' is accepted alongside 'both' so a role value persisted by an older build,
+  // or passed by a caller that has not been updated, widens rather than empties.
+  if(!role || role === 'both' || role === 'all' || !sportHasRoleFilter(sport)) return all;
   return all.filter(m => !m.stats || m.stats.every(s => sportStatRole(s, sport) === role));
 }
 function sportCombos(sport){ return sportDef(sport).combos || {}; }
@@ -10922,6 +10924,15 @@ const PS_MAX_PRICE = 199;
 // One definition of the band, so the Markets page and anything that verifies it
 // cannot disagree about whether the boundary is inclusive.
 const psInMarketBand = price => price >= PS_MIN_PRICE && price <= PS_MAX_PRICE;
+// 'Both' rather than 'All' because this row does not widen a filter, it picks which
+// half of baseball you are looking at -- and next to a market row that also has an
+// "All", two chips reading All would be answering two different questions.
+const PS_ROLE_DEFAULT = 'both';
+// One reader for the role, so 'all' -- the key this row shipped with before it was
+// renamed -- widens the board instead of emptying it. Without this, a value that is
+// neither 'hitter' nor 'pitcher' nor the current default matches no leg at all, and
+// the board goes blank with every chip looking correct.
+const psRole = () => (!PS_STATE.role || PS_STATE.role === 'all') ? PS_ROLE_DEFAULT : PS_STATE.role;
 const PS_PAGE_SIZE = 40;            // rows rendered per batch; the pool is 300-600
 const PS_FAVS_KEY = 'be_favs_v1';
 
@@ -11499,7 +11510,7 @@ async function psLoadPool(force){
 // is kept as a read-only mirror of the first entry so anything still reading the old
 // single-value field gets something sane rather than undefined.
 const PS_STATE = {sport:'wnba', metric:'l10', markets:['all'], market:'all', screen:'props',
-                  positions:['all'], role:'all', search:'', limit:PS_PAGE_SIZE};
+                  positions:['all'], role:PS_ROLE_DEFAULT, search:'', limit:PS_PAGE_SIZE};
 
 // ---- position chips (basketball only) --------------------------------------
 // Guard / Forward / Center, at most TWO at once. The cap is Jon's and it is the
@@ -11524,12 +11535,18 @@ function psLegPosition(leg){
 // ---- role chips (baseball) --------------------------------------------------
 // A pitcher and a hitter share a board and nothing else. Mixed together, a starter's
 // strikeout line sits between two total-bases props and every scroll crosses the
-// divide. Single-select on purpose -- Jon asked for a switch, and "both" is what
-// 'All' already means, so a multi-select here would offer the same board twice.
+// divide. Single-select on purpose: with two sides, a multi-select would offer the
+// same board twice.
+//
+// THE OTHER SIDE'S MARKETS ARE HIDDEN, NOT GREYED. Both were built; Jon looked at
+// them and picked hidden, and he is right for the reason that matters on a phone:
+// dimmed chips still occupy the horizontal scroll, so finding "Earned Runs" under
+// Pitchers still means swiping past nine batting chips that cannot be pressed.
+// Hiding them makes the row a short list of what is actually on offer.
 const PS_ROLES = [
-  {key:'all',     label:'All'},
-  {key:'hitter',  label:'Hitters'},
   {key:'pitcher', label:'Pitchers'},
+  {key:'hitter',  label:'Hitters'},
+  {key:'both',    label:'Both'},
 ];
 // Classified by the MARKET, not by the man. A two-way player's strikeout prop is a
 // pitching bet and his home-run prop is a batting one; keying off the roster's
@@ -11537,6 +11554,16 @@ const PS_ROLES = [
 function psLegRole(leg){
   try{ return sportStatRole(leg && leg.statKey); }
   catch(e){ return null; }
+}
+
+// One place that decides what a chip looks like, so the initial paint and the
+// in-place restyle cannot drift -- they did once already, which is how a chip could
+// be lit in one state and flat in the other after a tap.
+function psChipStyle(b, on){
+  b.style.cssText = 'flex:0 0 auto;padding:7px 14px;border-radius:999px;font-size:13px;'
+    + 'font-weight:700;cursor:pointer;font-family:var(--sans);border:1px solid '
+    + (on ? 'var(--navy2)' : 'var(--line)') + ';'
+    + (on ? 'background:var(--navy2);color:#fff;' : 'background:var(--panel);color:var(--sub);');
 }
 
 // Returns the row with an update(activeKey) method. Restyling in place rather
@@ -11568,10 +11595,7 @@ function psChipRow(items, active, onPick, opts){
     b.dataset.key = it.key;
     const on = isOn(it.key);
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
-    b.style.cssText = 'flex:0 0 auto;padding:7px 14px;border-radius:999px;font-size:13px;'
-      + 'font-weight:700;cursor:pointer;font-family:var(--sans);border:1px solid '
-      + (on ? 'var(--navy2)' : 'var(--line)') + ';'
-      + (on ? 'background:var(--navy2);color:#fff;' : 'background:var(--panel);color:var(--sub);');
+    psChipStyle(b, on);
     b.addEventListener('click', ()=>onPick(it.key));
     wrap.appendChild(b);
   });
@@ -11586,9 +11610,7 @@ function psChipRow(items, active, onPick, opts){
       if(!b.dataset.key) return;
       const on = test(b.dataset.key);
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      b.style.borderColor = on ? 'var(--navy2)' : 'var(--line)';
-      b.style.background  = on ? 'var(--navy2)' : 'var(--panel)';
-      b.style.color       = on ? '#fff' : 'var(--sub)';
+      psChipStyle(b, on);
     });
   };
   return wrap;
@@ -11956,7 +11978,7 @@ async function renderPropsScreen(){
   let row3 = null;
   function buildRow3(){
     row3Holder.innerHTML = '';
-    row3 = psChipRow(sportMarketsForRole(PS_STATE.role, PS_STATE.sport), PS_STATE.markets, k=>{
+    row3 = psChipRow(sportMarketsForRole(psRole(), PS_STATE.sport), PS_STATE.markets, k=>{
       const cur = new Set(PS_STATE.markets);
       if(k === 'all'){
         PS_STATE.markets = ['all'];
@@ -11997,7 +12019,7 @@ async function renderPropsScreen(){
     }, {multi:true, row:'position'});
     row4Holder.appendChild(row4);
   } else if(sportHasRoleFilter()){
-    row4 = psChipRow(PS_ROLES, PS_STATE.role, k=>{
+    row4 = psChipRow(PS_ROLES, psRole(), k=>{
       PS_STATE.role = k;
       // Market picks the new side cannot bet are DROPPED, not carried invisibly.
       // Keeping "Home Runs" selected under Pitchers leaves an empty board with no
@@ -12063,8 +12085,8 @@ async function renderPropsScreen(){
     }
     // Gated on the sport, not only on the value: leaving Pitchers selected and
     // switching to the WNBA must not silently empty a board that has no pitchers.
-    if(PS_STATE.role && PS_STATE.role !== 'all' && sportHasRoleFilter()){
-      rows = rows.filter(l => psLegRole(l) === PS_STATE.role);
+    if(psRole() !== PS_ROLE_DEFAULT && sportHasRoleFilter()){
+      rows = rows.filter(l => psLegRole(l) === psRole());
     }
     if(PS_STATE.search){
       const q = PS_STATE.search;
