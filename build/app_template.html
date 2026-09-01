@@ -10292,6 +10292,16 @@ const SPORT_DEFS = {
       {key:'runs',        label:'R'},    {key:'hrr',         label:'H+R+RBI'},
       {key:'bb',          label:'BB'},   {key:'so_bat',      label:'K'},
     ],
+    // A PITCHER IS NOT A HITTER WITH DIFFERENT NUMBERS. The list above is the
+    // batting board, and it was being handed to pitchers as well -- so every chip on
+    // a starter's profile charted a stat he has barely recorded since the DH, and
+    // every chart came up empty. Basketball has no equivalent split, which is why
+    // one list per sport was enough until baseball arrived.
+    profileStatsPitcher: [
+      {key:'so_pit',       label:'K'},      {key:'outs',    label:'OUTS'},
+      {key:'hits_allowed', label:'H ALW'},  {key:'er',      label:'ER'},
+      {key:'bb_pit',       label:'BB ALW'},
+    ],
     statLabels: {
       hits_bat:'H', total_bases:'TB', hr:'HR', rbi:'RBI', runs:'R', hrr:'H+R+RBI',
       bb:'BB', so_bat:'K', sb:'SB',
@@ -10341,6 +10351,16 @@ function sportList(){ return Object.values(SPORT_DEFS).filter(s=>s.active); }
 function sportMarkets(sport){ return sportDef(sport).markets || []; }
 function sportMetrics(sport){ return sportDef(sport).metrics || []; }
 function sportProfileStats(sport){ return sportDef(sport).profileStats || []; }
+// The stat chips for ONE player, which is not the same question as the stat chips
+// for a sport. Falls back to the sport's list whenever there is no pitcher list or
+// no way to tell -- an unknown player gets the common case rather than nothing.
+function sportProfileStatsFor(playerName, team, sport){
+  const def = sportDef(sport);
+  if(!def.profileStatsPitcher) return def.profileStats || [];
+  const rec = (((typeof sportDATA === 'function' ? sportDATA(sport) : null) || {})
+                .fullPlayerLogs || {})[playerName + '|' + team];
+  return (rec && rec.isPitcher) ? def.profileStatsPitcher : (def.profileStats || []);
+}
 function sportCombos(sport){ return sportDef(sport).combos || {}; }
 function sportStatLabel(statKey, sport){
   return (sportDef(sport).statLabels || {})[statKey] || String(statKey || '').toUpperCase();
@@ -12080,7 +12100,9 @@ function locSettingsSection(){
 
 // Per sport, from the registry: Pts/Reb/Ast/3PM and the combos for basketball,
 // H/TB/HR/RBI/R/H+R+RBI/BB/K for baseball.
-const PB_STATS_FOR = (sport) => sportProfileStats(sport);
+const PB_STATS_FOR = (sport, player, team) => (player
+  ? sportProfileStatsFor(player, team, sport)
+  : sportProfileStats(sport));
 const PB_TIMELINES = [
   {key:'season', label:null},          // labeled per sport at render
   {key:'h2h',    label:'H2H'},
@@ -12679,7 +12701,11 @@ function pbOddsRows(player, statKey, cachedFetch){
     sources.forEach(src=>{
       (src.bookmakers||[]).forEach(book=>{
         (book.markets||[]).forEach(mk=>{
-          const sk = PROP_MARKET_TO_STAT[mk.key];
+          // propMarketStat, NOT the literal map. PROP_MARKET_TO_STAT is the WNBA
+          // table; on a baseball slate every lookup returned undefined, nothing ever
+          // matched statKey, and every MLB player's profile said "no book is posting
+          // this market" while the board beside it showed his priced props.
+          const sk = propMarketStat(mk.key);
           if(sk !== statKey) return;
           if(/_alternate$/.test(mk.key)) return;      // alt ladders belong on the board, not here
           const mine = (mk.outcomes||[]).filter(o => o.description === player);
@@ -12817,7 +12843,9 @@ function buildPlayerBetsTab(container, playerName, team, opponent, bio){
     return hit ? hit.line : null;
   }
 
-  const pbStats = PB_STATS_FOR(PS_STATE.sport);
+  // Per PLAYER, not per sport -- a starting pitcher gets K / OUTS / H ALW / ER /
+  // BB ALW rather than the batting markets he never records.
+  const pbStats = PB_STATS_FOR(PS_STATE.sport, playerName, team);
   // A stat remembered from another sport is meaningless here -- 'pts' has no
   // column in a baseball log -- so the default is re-taken from the registry
   // whenever the current selection is not one this sport offers.
